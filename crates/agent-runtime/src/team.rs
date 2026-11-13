@@ -245,6 +245,10 @@ impl Runtime {
     }
 
     pub(crate) fn run_event(&self, run_id: &str, agent: Option<&str>, kind: &str, detail: Value) {
+        // The tracker item the run came from has this in its history (Work, "In Orchestrator").
+        if matches!(kind, "run.state" | "run.pr_opened") {
+            self.work_on_run_event(run_id, kind, &detail);
+        }
         self.db.add_run_event(now_ms(), run_id, agent, kind, detail);
     }
 
@@ -1006,11 +1010,13 @@ impl Runtime {
             Ok(rep) => {
                 // An outcome of the digest (D12), not an Inbox item.
                 for id in &rep.conflicts {
-                    let handle = self.db.task(*id).ok().flatten().map(|t| t.handle()).unwrap_or_default();
+                    let task = self.db.task(*id).ok().flatten();
+                    let handle = task.as_ref().map(|t| t.handle()).unwrap_or_default();
                     self.event(
                         "-",
                         "task.sync_conflict",
-                        json!({"task": id, "handle": handle, "remote": remote, "project": project.id}),
+                        json!({"task": id, "handle": handle, "remote": remote, "project": project.id,
+                               "run": task.and_then(|t| t.team_run_id), "tracker": project.backend().kind()}),
                     );
                 }
                 // Something moved (the unmapped states are a standing note, not a change).

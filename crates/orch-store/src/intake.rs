@@ -148,6 +148,20 @@ pub struct IntakeStatus {
 const COLS: &str = "id, project_id, source, ref, title, url, body, meta, updated_at, fetched_at_ms, position, state, \
                     started_kind, started_ref, hidden_at_ms, hidden_rev, node_id, kind, parent_id, depth, deleted";
 
+/// [`COLS`] without the body (empty): for reads of the whole tree.
+const COLS_LIGHT: &str = "id, project_id, source, ref, title, url, '' AS body, meta, updated_at, fetched_at_ms, position, state, \
+                    started_kind, started_ref, hidden_at_ms, hidden_rev, node_id, kind, parent_id, depth, deleted";
+
+/// One entry of a node's history in the app.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct WorkEvent {
+    pub at_ms: u64,
+    pub what: String,
+    pub feature: Option<String>,
+    pub program: Option<Value>,
+    pub detail: Option<String>,
+}
+
 fn row(r: &rusqlite::Row) -> rusqlite::Result<IntakeRow> {
     Ok(IntakeRow {
         id: r.get::<_, i64>(0)? as u64,
@@ -198,6 +212,88 @@ impl Store {
                 "SELECT {COLS} FROM work_nodes WHERE ?1 IS NULL OR project_id=?1 ORDER BY project_id, position, id"
             ))?;
             Ok(st.query_map([p], row)?.collect::<rusqlite::Result<_>>()?)
+        })
+    }
+
+    /// The nodes of one project (the brief rows apart), without their bodies.
+    pub fn work_nodes_light(&self, project: &str) -> Result<Vec<IntakeRow>> {
+        let p = project.to_string();
+        self.read(move |c| {
+            let mut st = c.prepare(&format!(
+                "SELECT {COLS_LIGHT} FROM work_nodes WHERE project_id=?1 AND source!=?2 ORDER BY position, id"
+            ))?;
+            Ok(st.query_map(params![p, BRIEF_SOURCE], row)?.collect::<rusqlite::Result<_>>()?)
+        })
+    }
+
+    /// The nodes of every project whose `node_id` is `node`.
+    pub fn work_node_rows(&self, node: &str) -> Result<Vec<IntakeRow>> {
+        let n = node.to_string();
+        self.read(move |c| {
+            let mut st = c.prepare(&format!("SELECT {COLS} FROM work_nodes WHERE node_id=?1 AND source!=?2"))?;
+            Ok(st.query_map(params![n, BRIEF_SOURCE], row)?.collect::<rusqlite::Result<_>>()?)
+        })
+    }
+
+    /// The node a run was started from.
+    pub fn work_node_of_run(&self, run: &str) -> Result<Option<IntakeRow>> {
+        let r = run.to_string();
+        self.read(move |c| {
+            Ok(c.query_row(
+                &format!("SELECT {COLS} FROM work_nodes WHERE state='started' AND started_kind='run' AND started_ref=?1 AND source!=?2"),
+                params![r, BRIEF_SOURCE],
+                row,
+            )
+            .optional()?)
+        })
+    }
+
+    /// A node that ran before (its run merged) starts again: the new run is its mark.
+    pub fn intake_restart(&self, id: u64, kind: &str, reference: &str) -> Result<bool> {
+        let (kind, reference) = (kind.to_string(), reference.to_string());
+        let n = self.write(move |tx| {
+            Ok(tx.execute(
+                "UPDATE work_nodes SET started_kind=?2, started_ref=?3 WHERE id=?1 AND state='started'",
+                params![id as i64, kind, reference],
+            )?)
+        })?;
+        if n > 0 {
+            self.note([TOPIC]);
+        }
+        Ok(n > 0)
+    }
+
+    /// Adds an entry to a node's history.
+    pub fn work_note(&self, project: &str, node: &str, e: &WorkEvent) -> Result<()> {
+        let (p, n, e) = (project.to_string(), node.to_string(), e.clone());
+        self.write(move |tx| {
+            tx.execute(
+                "INSERT INTO work_history(project_id, node_id, at_ms, what, feature, program, detail)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7)",
+                params![p, n, e.at_ms as i64, e.what, e.feature, e.program.as_ref().map(js), e.detail],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// A node's history, oldest first.
+    pub fn work_history(&self, project: &str, node: &str) -> Result<Vec<WorkEvent>> {
+        let (p, n) = (project.to_string(), node.to_string());
+        self.read(move |c| {
+            let mut st = c.prepare(
+                "SELECT at_ms, what, feature, program, detail FROM work_history
+                 WHERE project_id=?1 AND node_id=?2 ORDER BY at_ms, id",
+            )?;
+            let rows = st.query_map(params![p, n], |r| {
+                Ok(WorkEvent {
+                    at_ms: r.get::<_, i64>(0)? as u64,
+                    what: r.get(1)?,
+                    feature: r.get(2)?,
+                    program: r.get::<_, Option<String>>(3)?.and_then(|s| serde_json::from_str(&s).ok()),
+                    detail: r.get(4)?,
+                })
+            })?;
+            Ok(rows.collect::<rusqlite::Result<_>>()?)
         })
     }
 
@@ -419,7 +515,7 @@ impl Store {
         let n = self.write(move |tx| {
             Ok(tx.execute(
                 "UPDATE work_nodes SET state='started', started_kind=?2, started_ref=?3,
-                   hidden_at_ms=NULL, hidden_rev=NULL WHERE id=?1 AND state='ready'",
+                   hidden_at_ms=NULL, hidden_rev=NULL WHERE id=?1 AND state IN ('ready', 'hidden')",
                 params![id as i64, kind, reference],
             )?)
         })?;

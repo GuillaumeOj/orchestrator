@@ -155,8 +155,8 @@ fn issues_query(tree: bool) -> String {
 
 fn sub_issues_query(tree: bool) -> String {
     format!(
-        "query OrchTreeSubIssues($owner: String!, $name: String!, $number: Int!) {{ repository(owner: $owner, name: $name) \
-         {{ issue(number: $number) {{ subIssues(first: 50) {{ nodes {{ {} }} }} }} }} }}",
+        "query OrchTreeSubIssues($owner: String!, $name: String!, $number: Int!, $after: String) {{ repository(owner: $owner, name: $name) \
+         {{ issue(number: $number) {{ subIssues(first: 50, after: $after) {{ pageInfo {{ hasNextPage endCursor }} nodes {{ {} }} }} }} }} }}",
         issue_fields(tree)
     )
 }
@@ -376,6 +376,44 @@ fn read_issues(gh: &dyn Gh, o: &GithubTree, states: &str, since: Option<&str>, t
     Ok(Read { nodes, partial, url })
 }
 
+/// Every sub-issue of issue `parent`, in every state, page after page (each with its parent set).
+fn read_sub_issues(gh: &dyn Gh, o: &GithubTree, parent: u64) -> R<Vec<Value>> {
+    let (owner, name) = o.repo.split_once('/').unwrap_or((o.repo, ""));
+    let query = sub_issues_query(true);
+    let (mut out, mut after) = (vec![], None::<String>);
+    for _ in 0..TREE_PAGES {
+        let mut vars = vec![("owner", owner.to_string()), ("name", name.to_string()), ("number", parent.to_string())];
+        if let Some(a) = &after {
+            vars.push(("after", a.clone()));
+        }
+        let v = gql(gh, &query, &vars)?;
+        let subs = &v["data"]["repository"]["issue"]["subIssues"];
+        for c in subs["nodes"].as_array().into_iter().flatten() {
+            let mut c = c.clone();
+            c["parent"] = json!({"number": parent});
+            out.push(c);
+        }
+        match next_cursor(&subs["pageInfo"]) {
+            Some(c) => after = Some(c),
+            None => break,
+        }
+    }
+    Ok(out)
+}
+
+/// The sub-issues of one GitHub issue as nodes, every state, no cap short of
+/// [`TREE_PAGES`] pages (the lazy children of Work). Team tasks are not nodes.
+pub fn github_children(gh: &dyn Gh, o: &GithubTree, parent: u64) -> R<Vec<Node>> {
+    let none = std::collections::HashSet::new();
+    Ok(read_sub_issues(gh, o, parent)?
+        .iter()
+        .filter_map(|c| {
+            let (_, team_task) = labels_of(c);
+            gh_issue_node(&Raw { c, team_task }, o, &none)
+        })
+        .collect())
+}
+
 /// Reads the GitHub tree of `o.repo` (module doc for what it covers).
 pub fn github_tree(gh: &dyn Gh, o: &GithubTree) -> R<Tree> {
     let since_closed = iso_days_ago(o.now_ms, CLOSED_WINDOW_DAYS);
@@ -452,14 +490,11 @@ pub fn github_tree(gh: &dyn Gh, o: &GithubTree) -> R<Tree> {
             .take(PARENT_FILL_MAX)
             .collect();
         for p in missing {
-            let vars = [("owner", owner.to_string()), ("name", name.to_string()), ("number", p.to_string())];
-            let Ok(v) = gql(gh, &sub_issues_query(true), &vars) else { continue };
-            for c in v["data"]["repository"]["issue"]["subIssues"]["nodes"].as_array().into_iter().flatten() {
+            let Ok(kids) = read_sub_issues(gh, o, p) else { continue };
+            for c in kids {
                 if let Some(n) = c["number"].as_u64()
                     && have.insert(n)
                 {
-                    let mut c = c.clone();
-                    c["parent"] = json!({"number": p});
                     raw.push(c);
                 }
             }
@@ -670,6 +705,20 @@ fn linear_issue_node(
     Some((node, team_task))
 }
 
+/// The sub-issues of one Linear issue (`parent`: its id) as nodes, every state
+/// (the lazy children of Work). Team tasks are not nodes.
+pub fn linear_children(gql: &dyn Graphql, backoff: &Backoff, now_ms: u64, parent: &str) -> R<Vec<Node>> {
+    let filter = json!({"parent": {"id": {"eq": parent}}});
+    let (raw, _) = linear_pages(gql, backoff, now_ms, &linear_issues_query(), &filter, "issues")?;
+    let none = std::collections::HashMap::new();
+    Ok(raw
+        .iter()
+        .filter_map(|v| linear_issue_node(v, now_ms, &none))
+        .filter(|(_, team)| !team)
+        .map(|(n, _)| n)
+        .collect())
+}
+
 /// Reads the Linear tree (module doc for what it covers).
 pub fn linear_tree(gql: &dyn Graphql, backoff: &Backoff, q: &LinearTree) -> R<Tree> {
     let now = q.now_ms;
@@ -677,7 +726,7 @@ pub fn linear_tree(gql: &dyn Graphql, backoff: &Backoff, q: &LinearTree) -> R<Tr
     let mut slugs: std::collections::HashMap<String, String> = Default::default();
     // Initiatives, projects and their milestones.
     if q.since.is_none() {
-        let mut pf = json!({"accessibleTeams": team_in(q.teams)});
+        let mut pf = json!({"accessibleTeams": {"some": team_in(q.teams)}});
         if !q.projects.is_empty() {
             pf = json!({"and": [pf, {"id": {"in": q.projects}}]});
         }

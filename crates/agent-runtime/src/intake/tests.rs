@@ -508,11 +508,11 @@ impl Fx {
 }
 
 fn item(i: &str) -> Option<IntakeLink> {
-    Some(IntakeLink { item: Some(i.into()), brief_decision: None })
+    Some(IntakeLink { item: Some(i.into()), ..Default::default() })
 }
 
 fn brief(d: &str) -> Option<IntakeLink> {
-    Some(IntakeLink { item: None, brief_decision: Some(d.into()) })
+    Some(IntakeLink { brief_decision: Some(d.into()), ..Default::default() })
 }
 
 fn stale_of(e: anyhow::Error) -> Value {
@@ -587,7 +587,11 @@ fn a_team_run_and_a_solo_session_carry_their_item_and_give_it_back() {
     f.rt.intake_hide(&three).unwrap();
     assert_eq!(stale_of(f.solo("s3", item(&three)).unwrap_err())["message"], "not ready");
     assert!(
-        f.solo("s3", Some(IntakeLink { item: Some(two.clone()), brief_decision: Some("brief-1".into()) })).is_err()
+        f.solo(
+            "s3",
+            Some(IntakeLink { item: Some(two.clone()), brief_decision: Some("brief-1".into()), source: None })
+        )
+        .is_err()
     );
     // Solo session from #2.
     f.solo("fix-two", item(&two)).unwrap();
@@ -1047,7 +1051,7 @@ fn the_lane_shows_ready_nodes_with_their_breadcrumb_and_actions_and_the_tree_sta
     );
     assert_eq!(it["actions"]["solo"], "ok");
     assert_eq!(it["actions"]["team"], json!({"disabled": "This project has no team yet"}));
-    assert_eq!(it["actions"]["program"], json!({"disabled": "No sub-issues to run as a program"}));
+    assert_eq!(it["actions"]["program"], "hidden", "a leaf is not run as a program");
     assert_eq!(f.source()["counts"], json!({"items": 4, "roots": 2, "ready": 1}), "milestone and #3 are roots");
     // The whole tree is cached, the lane only shows what is ready.
     assert_eq!(f.rt.db.work_nodes(Some(&f.project.id)).unwrap().len(), 4);
@@ -1173,4 +1177,440 @@ fn the_preview_reads_the_tree_with_counts_a_breadcrumb_a_warning_and_the_backlog
         f.rt.tracker_options(&f.project.id, &json!({"kind": "local", "backlog_glob": ".orchestrator/backlog/*.md"}))
             .unwrap();
     assert_eq!((o["matches"].as_u64(), o["files"].clone()), (Some(2), p["files"].clone()));
+}
+
+// ------------------------------------------------------------ Work commands (B3)
+
+fn scope(f: &Fx) -> Value {
+    json!({"projects": [f.project.id]})
+}
+
+fn ids(v: &Value) -> Vec<String> {
+    v["nodes"].as_array().unwrap().iter().map(|n| n["id"].as_str().unwrap().to_string()).collect()
+}
+
+/// A tree: milestone v2 › #1 (2 sub-issues: #2 open, #3 closed) and a root #4 (label bug).
+fn work_fixture() -> Fx {
+    let f = fx();
+    github_tracker(&f);
+    answer_tree(
+        &f,
+        vec![
+            tree_issue(
+                1,
+                json!({"milestone": {"number": 3, "title": "v2"}, "labels": {"nodes": []},
+                       "subIssuesSummary": {"total": 2, "completed": 1}}),
+            ),
+            tree_issue(2, json!({"parent": {"number": 1}})),
+            tree_issue(3, json!({"parent": {"number": 1}, "state": "CLOSED", "labels": {"nodes": []}})),
+            tree_issue(
+                4,
+                json!({"labels": {"nodes": [{"name": "ready"}, {"name": "bug"}]}, "assignees": {"nodes": [{"login": "ann"}]}}),
+            ),
+        ],
+        vec![milestone(3, "v2")],
+    );
+    f.refresh();
+    f
+}
+
+#[test]
+fn work_tree_serves_roots_children_filters_and_ancestors_from_the_cache() {
+    let f = work_fixture();
+    let calls = f.calls.lock().unwrap().len();
+    let r = f.rt.work_tree(&scope(&f), &Value::Null, &json!({}), None).unwrap();
+    assert_eq!(ids(&r), ["gh-milestone:acme/shop/3", "gh:acme/shop#4"]);
+    assert_eq!(r["status"][&f.project.id]["counts"], json!({"items": 5, "roots": 2, "ready": 2}));
+    let ms = &r["nodes"][0];
+    assert_eq!((ms["kind"].as_str(), ms["depth"].as_u64()), (Some("milestone"), Some(1)));
+    assert_eq!(ms["actions"]["solo"], "hidden", "a container starts nothing");
+    // Children of the milestone, then of #1: open ones by default, the closed one with the State filter.
+    let k = f.rt.work_tree(&scope(&f), &json!(["gh-milestone:acme/shop/3"]), &json!({}), None).unwrap();
+    assert_eq!(ids(&k), ["gh:acme/shop#1"]);
+    let one = &k["nodes"][0];
+    assert_eq!(one["children"], json!({"total": 2, "open": 1, "done": 1}));
+    assert_eq!(one["actions"]["program"], "ok");
+    assert_eq!(one["actions"]["team"], json!({"disabled": "This project has no team yet"}));
+    let c = f.rt.work_tree(&scope(&f), &json!(["gh:acme/shop#1"]), &json!({}), None).unwrap();
+    assert_eq!(ids(&c), ["gh:acme/shop#2"]);
+    let all = f.rt.work_tree(&scope(&f), &json!(["gh:acme/shop#1"]), &json!({"state": "all"}), None).unwrap();
+    assert_eq!(ids(&all), ["gh:acme/shop#2", "gh:acme/shop#3"]);
+    let closed = f.rt.work_tree(&scope(&f), &json!(["gh:acme/shop#1"]), &json!({"state": "closed"}), None).unwrap();
+    assert_eq!(ids(&closed), ["gh:acme/shop#3"]);
+    assert_eq!(
+        closed["nodes"][0]["actions"]["solo"],
+        json!({"disabled": "Closed in GitHub. Reopen it there to start it."})
+    );
+    // A filtered tree keeps the ancestors of what matches, flagged.
+    let bug = f.rt.work_tree(&scope(&f), &Value::Null, &json!({"labels": ["bug"]}), None).unwrap();
+    assert_eq!(ids(&bug), ["gh:acme/shop#4"]);
+    let ready = f.rt.work_tree(&scope(&f), &Value::Null, &json!({"only_ready": true}), None).unwrap();
+    assert_eq!(ids(&ready), ["gh-milestone:acme/shop/3", "gh:acme/shop#4"], "{ready}");
+    assert_eq!(
+        (ready["nodes"][0]["ancestor_only"].clone(), ready["nodes"][1].get("ancestor_only")),
+        (json!(true), None)
+    );
+    // `@me` is the tracker's user, resolved at refresh time and cached.
+    f.rt.db.set_setting(&super::work::viewer_key(&f.project.id), &json!("ann")).unwrap();
+    let mine = f.rt.work_tree(&scope(&f), &Value::Null, &json!({"assignees": ["@me"]}), None).unwrap();
+    assert_eq!(ids(&mine), ["gh:acme/shop#4"]);
+    // Several parents in one call (restore), and everything came from the cache.
+    let two =
+        f.rt.work_tree(&scope(&f), &json!(["gh-milestone:acme/shop/3", "gh:acme/shop#1"]), &json!({}), None).unwrap();
+    assert_eq!(ids(&two), ["gh:acme/shop#1", "gh:acme/shop#2"]);
+    assert_eq!(f.calls.lock().unwrap().len(), calls, "no network read");
+}
+
+#[test]
+fn work_tree_pages_the_roots_by_cursor() {
+    let f = fx();
+    github_tracker(&f);
+    answer_tree(&f, (1..=130).map(|n| tree_issue(n, json!({}))).collect(), vec![]);
+    f.refresh();
+    let first = f.rt.work_tree(&scope(&f), &Value::Null, &json!({}), None).unwrap();
+    assert_eq!(first["nodes"].as_array().unwrap().len(), 100);
+    assert_eq!(first["more"]["roots"], json!({"left": 30, "cursor": "100"}));
+    let rest = f.rt.work_tree(&scope(&f), &Value::Null, &json!({}), Some("100")).unwrap();
+    assert_eq!(rest["nodes"].as_array().unwrap().len(), 30);
+    assert!(rest["more"].as_object().unwrap().is_empty());
+    assert_eq!(rest["nodes"][0]["id"], "gh:acme/shop#101");
+}
+
+#[test]
+fn app_state_rollup_and_actions_follow_what_runs() {
+    let f = work_fixture();
+    let id = |n: u64| f.rt.db.work_node_rows(&format!("gh:acme/shop#{n}")).unwrap().into_iter().next().unwrap().id;
+    // #2 runs as a solo session, #4 as a team run that reached its PR; #1's run merged.
+    f.rt.db.intake_mark_started(id(2), "agent", "fix-feed").unwrap();
+    let feature = orch_store::Feature {
+        id: "f1".into(),
+        project_id: f.project.id.clone(),
+        slug: "checkout".into(),
+        title: "t".into(),
+        brief: String::new(),
+        base: "main".into(),
+        integration_worktree: None,
+        allocation: None,
+        created_at_ms: 1,
+        archived: false,
+    };
+    f.rt.db.upsert_feature(&feature).unwrap();
+    let run = |rid: &str, status, pr: Option<&str>| orch_store::TeamRun {
+        id: rid.into(),
+        team_id: "t".into(),
+        team_scope: Default::default(),
+        team_version: 1,
+        feature_id: "f1".into(),
+        status,
+        resume_status: None,
+        pr_url: pr.map(str::to_string),
+        started_at_ms: 1,
+        ended_at_ms: Some(9),
+        pr_number: pr.map(|_| 61),
+        pr: None,
+    };
+    f.rt.db.upsert_run(&run("r4", orch_team::RunState::PrOpen, Some("https://github.com/acme/shop/pull/61"))).unwrap();
+    f.rt.db.upsert_run(&run("r1", orch_team::RunState::Done, None)).unwrap();
+    f.rt.db.intake_mark_started(id(4), "run", "r4").unwrap();
+    // The team of run r4 wrote two tasks: counted on the node, never children, listed as fold rows.
+    for title in ["API client", "Form"] {
+        let mut t = orch_store::Task::new(&f.project.id, "github", title, 1);
+        t.team_run_id = Some("r4".into());
+        t.node = Some("back".into());
+        f.rt.db.upsert_task(&t).unwrap();
+    }
+    let nodes = |parents: Value| f.rt.work_tree(&scope(&f), &parents, &json!({"state": "all"}), None).unwrap();
+    let roots = nodes(Value::Null);
+    let four = roots["nodes"].as_array().unwrap().iter().find(|n| n["id"] == "gh:acme/shop#4").unwrap().clone();
+    assert_eq!(
+        four["app"],
+        json!({"state": "pr", "feature": "checkout", "pr": {"number": 61, "url": "https://github.com/acme/shop/pull/61"}})
+    );
+    assert_eq!((four["actions"]["team"].clone(), four["actions"]["solo"].clone()), (json!("hidden"), json!("hidden")));
+    assert_eq!((four["team_tasks"].as_u64(), four["children"]["total"].as_u64()), (Some(2), Some(0)));
+    let fold =
+        f.rt.work_tree(&scope(&f), &json!(["gh:acme/shop#4"]), &json!({"include_team_tasks": true}), None).unwrap();
+    assert_eq!(fold["nodes"].as_array().unwrap().len(), 2);
+    let t0 = &fold["nodes"][0];
+    assert_eq!(
+        (t0["team_task"].as_bool(), t0["run"].as_str(), t0["feature"].as_str(), t0["tracker"].as_str()),
+        (Some(true), Some("r4"), Some("checkout"), Some("github"))
+    );
+    assert_eq!(t0["upstream"]["assignees"], json!(["back"]));
+    let plain = f.rt.work_tree(&scope(&f), &json!(["gh:acme/shop#4"]), &json!({}), None).unwrap();
+    assert!(plain["nodes"].as_array().unwrap().is_empty(), "the fold is asked for");
+    let kids = nodes(json!(["gh:acme/shop#1"]));
+    assert_eq!(kids["nodes"][0]["app"], json!({"state": "solo", "agent": "fix-feed", "name": "fix-feed"}));
+    // The roll-up of the parent counts its descendants: one running (the solo session).
+    let one = &nodes(json!(["gh-milestone:acme/shop/3"]))["nodes"][0];
+    assert_eq!(
+        one["rollup"],
+        json!({"running": 1, "pr": 0, "waiting": 0, "queued": 0, "merged": 0, "failed": 0, "skipped": 0})
+    );
+    assert_eq!(roots["nodes"][0]["rollup"]["running"], 1, "the milestone sees it too");
+    assert_eq!(one["app"], json!({"state": "none"}));
+    // A node whose run merged is `done`, can run again, and says what it ran as.
+    f.rt.db.intake_mark_started(id(1), "run", "r1").unwrap();
+    let again = f.rt.work_node("gh:acme/shop#1", &json!({})).unwrap();
+    assert_eq!(again["app"]["state"], "done");
+    assert_eq!(again["actions"]["solo"], "ok");
+    let pre = f.rt.work_prefill("gh:acme/shop#1", Some("solo")).unwrap();
+    assert_eq!(pre["ran_before"]["feature"], "checkout");
+    // #4 is at its PR: not startable.
+    assert!(f.rt.work_prefill("gh:acme/shop#4", None).is_err());
+}
+
+#[test]
+fn work_search_ranks_ref_title_body_with_a_snippet_a_breadcrumb_and_a_root() {
+    let f = fx();
+    github_tracker(&f);
+    answer_tree(
+        &f,
+        vec![
+            tree_issue(
+                12,
+                json!({"title": "Checkout v2", "body": "Overview", "subIssuesSummary": {"total": 1, "completed": 0}}),
+            ),
+            tree_issue(
+                13,
+                json!({"title": "Address step", "body": "The postcode lookup **fails** for new addresses",
+                "parent": {"number": 12}}),
+            ),
+            tree_issue(14, json!({"title": "Postcode lookup", "body": "x"})),
+            tree_issue(
+                15,
+                json!({"title": "Other", "body": "Mentions address checkout flow", "labels": {"nodes": [{"name": "bug"}]}}),
+            ),
+        ],
+        vec![],
+    );
+    f.refresh();
+    let s = f.rt.work_search(&scope(&f), "#12", &json!({})).unwrap();
+    assert_eq!(ids(&s), ["gh:acme/shop#12"]);
+    assert_eq!(s["nodes"][0]["match"], json!({"field": "ref", "snippet": "#12"}));
+    let s = f.rt.work_search(&scope(&f), "address", &json!({})).unwrap();
+    assert_eq!(ids(&s), ["gh:acme/shop#13", "gh:acme/shop#15"], "title before body");
+    assert_eq!(s["nodes"][0]["match"]["field"], "title");
+    assert_eq!(s["nodes"][1]["match"]["field"], "body");
+    assert!(s["nodes"][1]["match"]["snippet"].as_str().unwrap().contains("address"));
+    assert!(s["nodes"][1]["match"]["snippet"].as_str().unwrap().chars().count() <= 82);
+    assert_eq!(s["nodes"][0]["breadcrumb"], json!([{"id": "gh:acme/shop#12", "ref": "#12", "title": "Checkout v2"}]));
+    // Filters hide matches and say how many; a root restricts the search to its subtree.
+    let s = f.rt.work_search(&scope(&f), "address", &json!({"labels": ["bug"]})).unwrap();
+    assert_eq!((s["total"].as_u64(), s["hidden_by_filters"].as_u64()), (Some(1), Some(1)));
+    let s =
+        f.rt.work_search(&json!({"projects": [f.project.id], "root": "gh:acme/shop#12"}), "address", &json!({}))
+            .unwrap();
+    assert_eq!(ids(&s), ["gh:acme/shop#13"]);
+    assert_eq!(f.rt.work_search(&scope(&f), "  ", &json!({})).unwrap()["total"], 0);
+    assert_eq!(f.rt.work_search(&scope(&f), "zzz", &json!({})).unwrap()["total"], 0);
+}
+
+#[test]
+fn work_node_reveal_hide_and_refresh() {
+    let f = work_fixture();
+    let n = f.rt.work_node("gh:acme/shop#2", &json!({})).unwrap();
+    assert_eq!((n["body"].as_str(), n["body_clipped"].as_bool()), (Some("Body of 2"), Some(false)));
+    assert_eq!(
+        n["breadcrumb"],
+        json!([{"id": "gh-milestone:acme/shop/3", "ref": "v2", "title": "v2"}, {"id": "gh:acme/shop#1", "ref": "#1", "title": "Issue 1"}])
+    );
+    assert_eq!(n["history"], json!([]));
+    assert!(n.get("child_nodes").is_none());
+    let p = f.rt.work_node("gh:acme/shop#1", &json!({"children": true})).unwrap();
+    assert_eq!(p["child_nodes"].as_array().unwrap().len(), 2);
+    assert!(f.rt.work_node("gh:nope#1", &json!({})).is_err());
+    // Reveal: the chain and the siblings of each link.
+    let r = f.rt.work_reveal("gh:acme/shop#2").unwrap();
+    assert_eq!(r["chain"], json!(["gh-milestone:acme/shop/3", "gh:acme/shop#1", "gh:acme/shop#2"]));
+    let got = ids(&r);
+    for want in ["gh:acme/shop#4", "gh:acme/shop#2", "gh:acme/shop#3", "gh-milestone:acme/shop/3"] {
+        assert!(got.contains(&want.to_string()), "{want} in {got:?}");
+    }
+    // Hide: the node leaves the lane, stays in the tree, and comes back.
+    assert_eq!(f.refs(), ["#2", "#4"]);
+    let state4 = |f: &Fx| f.items().iter().find(|i| i["ref"] == "#4").unwrap()["state"].clone();
+    f.rt.work_hide("gh:acme/shop#4").unwrap();
+    assert_eq!(state4(&f), "hidden");
+    let t = f.rt.work_tree(&scope(&f), &Value::Null, &json!({}), None).unwrap();
+    let four = t["nodes"].as_array().unwrap().iter().find(|x| x["id"] == "gh:acme/shop#4").unwrap().clone();
+    assert_eq!((four["hidden"].as_bool(), four["actions"]["hide"].as_str()), (Some(true), Some("ok")));
+    f.rt.work_unhide("gh:acme/shop#4").unwrap();
+    assert_eq!(state4(&f), "ready");
+    // Refresh returns at once and asks for a full read.
+    lock(&f.rt.intake.incr).insert(f.project.id.clone(), (1, 1));
+    f.rt.work_refresh(Some(&f.project.id)).unwrap();
+    assert!(lock(&f.rt.intake.incr).get(&f.project.id).is_none());
+    assert!(f.rt.work_refresh(Some("nope")).is_err());
+}
+
+#[test]
+fn work_prefill_adds_origin_scope_blockers_and_the_write_back_line() {
+    let f = fx();
+    github_tracker(&f);
+    answer_tree(
+        &f,
+        vec![
+            tree_issue(12, json!({"title": "Checkout v2", "subIssuesSummary": {"total": 1, "completed": 0}})),
+            tree_issue(
+                13,
+                json!({"title": "Address step", "parent": {"number": 12}, "issueType": {"name": "Bug"},
+                    "subIssuesSummary": {"total": 2, "completed": 1},
+                    "blockedBy": {"nodes": [{"number": 11, "title": "Postcode API", "state": "OPEN", "url": "u",
+                        "repository": {"nameWithOwner": "acme/shop"}}]}}),
+            ),
+            tree_issue(
+                17,
+                json!({"title": "Address validation", "parent": {"number": 13}, "issueType": {"name": "Bug"}}),
+            ),
+            tree_issue(16, json!({"title": "Postcode lookup", "parent": {"number": 13}, "state": "CLOSED"})),
+        ],
+        vec![],
+    );
+    f.refresh();
+    let p = f.rt.work_prefill("gh:acme/shop#13", Some("team")).unwrap();
+    let brief = p["launch"]["brief"].as_str().unwrap();
+    assert!(brief.starts_with("# Address step (#13)\n\nIn acme/shop › #12 Checkout v2."), "{brief}");
+    assert!(
+        brief.contains("## Scope: sub-issues\n- [ ] #17 Address validation (Bug)\n- [x] #16 Postcode lookup (closed)"),
+        "{brief}"
+    );
+    assert!(brief.contains("## Depends on\n- #11 Postcode API (open)"), "{brief}");
+    assert_eq!(p["open_sub_issues"], 1);
+    assert_eq!(p["blocked_by_open"][0]["ref"], "#11");
+    assert_eq!(p["ran_before"], Value::Null);
+    assert_eq!(
+        p["origin"],
+        json!({"id": "gh:acme/shop#13", "ref": "#13", "title": "Address step", "url": "https://github.com/acme/shop/issues/13",
+               "breadcrumb": [{"id": "gh:acme/shop#12", "ref": "#12", "title": "Checkout v2"}], "tracker": "github"})
+    );
+    assert_eq!(p["write_back_line"], "#13 gets the label orch:running and a comment in GitHub.");
+    let solo = f.rt.work_prefill("gh:acme/shop#13", Some("solo")).unwrap();
+    assert!(solo["session"]["message"].as_str().unwrap().contains("Address step"));
+    let mut t = f.rt.db.tracker(&f.project.id).unwrap();
+    t.write_back.enabled = false;
+    f.rt.db.set_tracker(&f.project.id, &t).unwrap();
+    assert_eq!(f.rt.work_prefill("gh:acme/shop#13", None).unwrap()["write_back_line"], Value::Null);
+    // A container is not started: it runs as a program.
+    assert!(f.rt.work_prefill("gh:nope#1", None).is_err());
+}
+
+#[test]
+fn a_node_starts_with_its_source_and_leaves_its_history_and_run_source() {
+    let f = work_fixture();
+    let id = |n: u64| f.rt.db.work_node_rows(&format!("gh:acme/shop#{n}")).unwrap().into_iter().next().unwrap();
+    let link = IntakeLink { source: Some("gh:acme/shop#2".into()), ..Default::default() };
+    // The claim accepts a node, hidden or not, and records it as started.
+    let claim = f.rt.intake_claim(&f.project.id, Some(&link)).unwrap();
+    f.rt.intake_started(claim, &f.project.id, "agent", "fix-feed", "fix-feed");
+    let r = id(2);
+    assert_eq!((r.state, r.started_ref.as_deref()), (IntakeState::Started, Some("fix-feed")));
+    let h = f.rt.db.work_history(&f.project.id, "gh:acme/shop#2").unwrap();
+    assert_eq!(h.iter().map(|e| e.what.as_str()).collect::<Vec<_>>(), ["started"]);
+    // Already running: stale. A container, an unknown node or another project's: refused.
+    assert!(f.rt.intake_claim(&f.project.id, Some(&link)).is_err());
+    let bad = |n: &str| IntakeLink { source: Some(n.into()), ..Default::default() };
+    assert!(f.rt.intake_claim(&f.project.id, Some(&bad("gh-milestone:acme/shop/3"))).is_err());
+    assert!(f.rt.intake_claim(&f.project.id, Some(&bad("gh:nope#9"))).is_err());
+    assert!(f.rt.intake_claim("other", Some(&bad("gh:acme/shop#4"))).is_err());
+    // `run.source` of the session: node, breadcrumb, tracker, write-back, closed / deleted flags.
+    let o = f.rt.intake_origins();
+    let s = &o.src_agents["fix-feed"];
+    assert_eq!(
+        (s["node"].as_str(), s["ref"].as_str(), s["tracker"].as_str(), s["write_back"].as_str()),
+        (Some("gh:acme/shop#2"), Some("#2"), Some("github"), Some("on"))
+    );
+    assert_eq!(s["breadcrumb"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        (s["closed_upstream"].as_bool(), s["deleted"].as_bool(), s["program"].clone()),
+        (Some(false), Some(false), Value::Null)
+    );
+    // Killed before any outcome: back, with its history.
+    f.rt.intake_on_session_killed("fix-feed");
+    assert_eq!(id(2).state, IntakeState::Ready);
+    let h = f.rt.db.work_history(&f.project.id, "gh:acme/shop#2").unwrap();
+    assert_eq!(h.iter().map(|e| e.what.as_str()).collect::<Vec<_>>(), ["started", "returned"]);
+    // Run events of a started run are history too.
+    let feature = orch_store::Feature {
+        id: "f2".into(),
+        project_id: f.project.id.clone(),
+        slug: "address".into(),
+        title: "t".into(),
+        brief: String::new(),
+        base: "main".into(),
+        integration_worktree: None,
+        allocation: None,
+        created_at_ms: 1,
+        archived: false,
+    };
+    f.rt.db.upsert_feature(&feature).unwrap();
+    f.rt.db
+        .upsert_run(&orch_store::TeamRun {
+            id: "r9".into(),
+            team_id: "t".into(),
+            team_scope: Default::default(),
+            team_version: 1,
+            feature_id: "f2".into(),
+            status: orch_team::RunState::Spec,
+            resume_status: None,
+            pr_url: None,
+            started_at_ms: 1,
+            ended_at_ms: None,
+            pr_number: None,
+            pr: None,
+        })
+        .unwrap();
+    f.rt.db.intake_mark_started(id(4).id, "run", "r9").unwrap();
+    f.rt.run_event("r9", None, "run.state", json!({"from": "spec_gate", "to": "planning", "why": "spec approved"}));
+    f.rt.run_event("r9", None, "run.pr_opened", json!({"url": "https://github.com/acme/shop/pull/7"}));
+    f.rt.run_event("r9", None, "run.state", json!({"from": "pr_gate", "to": "done"}));
+    f.rt.run_event("r9", None, "task.created", json!({}));
+    let h = f.rt.db.work_history(&f.project.id, "gh:acme/shop#4").unwrap();
+    assert_eq!(h.iter().map(|e| e.what.as_str()).collect::<Vec<_>>(), ["spec_approved", "pr_opened", "merged"]);
+}
+
+#[test]
+fn missing_children_are_fetched_once_with_a_per_parent_error_and_no_cap() {
+    let f = fx();
+    github_tracker(&f);
+    answer_tree(
+        &f,
+        vec![
+            tree_issue(1, json!({"labels": {"nodes": []}, "subIssuesSummary": {"total": 3, "completed": 1}})),
+            tree_issue(2, json!({"parent": {"number": 1}})),
+        ],
+        vec![],
+    );
+    f.refresh();
+    let kids = |f: &Fx, filter: Value| f.rt.work_tree(&scope(f), &json!(["gh:acme/shop#1"]), &filter, None).unwrap();
+    let sub = |n: u64, state: &str| {
+        let mut i = tree_issue(n, json!({"labels": {"nodes": []}}));
+        i["state"] = json!(state);
+        i
+    };
+    let subs = |nodes: Vec<Value>| {
+        json!({"data": {"repository": {"issue": {"subIssues": {"pageInfo": {"hasNextPage": false, "endCursor": null},
+            "nodes": nodes}}}}})
+    };
+    let asks =
+        |f: &Fx| f.calls.lock().unwrap().iter().filter(|c| c.iter().any(|a| a.contains("OrchTreeSubIssues"))).count();
+    // The read of the tree could not complete the children: the fetch fails, the error is the parent's.
+    f.fail("graphql:OrchTreeSubIssues", "HTTP 502: bad gateway");
+    let before = asks(&f);
+    let r = kids(&f, json!({"state": "all"}));
+    assert_eq!(ids(&r), ["gh:acme/shop#2"]);
+    assert!(r["more"]["gh:acme/shop#1"]["error"]["code"].is_string(), "{r}");
+    // It answers: the missing ones are cached (every state), no error, and the parent's counts are whole.
+    f.answer("graphql:OrchTreeSubIssues", subs(vec![sub(2, "OPEN"), sub(3, "CLOSED"), sub(5, "OPEN")]));
+    let r = kids(&f, json!({"state": "all"}));
+    assert_eq!(ids(&r), ["gh:acme/shop#2", "gh:acme/shop#3", "gh:acme/shop#5"]);
+    assert!(r["more"].as_object().unwrap().is_empty(), "{r}");
+    let asked = asks(&f);
+    assert!(asked > before);
+    // Once per revision: the next call reads the cache.
+    kids(&f, json!({}));
+    let n = f.rt.work_node("gh:acme/shop#1", &json!({"children": true})).unwrap();
+    assert_eq!(n["child_nodes"].as_array().unwrap().len(), 3);
+    assert_eq!(n["children"], json!({"total": 3, "open": 2, "done": 1}));
+    assert_eq!(asks(&f), asked);
 }

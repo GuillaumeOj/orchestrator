@@ -160,7 +160,7 @@ fn a_week_of_work_started_from_intake() {
             slug: form["slug"].as_str().unwrap().into(),
             title: form["title"].as_str().unwrap().into(),
             brief: form["brief"].as_str().unwrap().into(),
-            intake: Some(IntakeLink { item: Some(it12.clone()), brief_decision: None }),
+            intake: Some(IntakeLink { item: Some(it12.clone()), ..Default::default() }),
             ..Default::default()
         })
         .unwrap();
@@ -177,7 +177,7 @@ fn a_week_of_work_started_from_intake() {
         allocation: Some(b.id.clone()),
         ..Default::default()
     };
-    rt.start_solo(&spec, &b.id, Some(&IntakeLink { item: Some(eng.clone()), brief_decision: None })).unwrap();
+    rt.start_solo(&spec, &b.id, Some(&IntakeLink { item: Some(eng.clone()), ..Default::default() })).unwrap();
     assert!(refs(&rt, &b.id).is_empty(), "ENG-42 left the lane");
     wait_for("the solo session's first turn", 30, || agent(&core.sock, &name)["turns"].as_u64() >= Some(1));
 
@@ -225,7 +225,7 @@ fn a_week_of_work_started_from_intake() {
             slug: form["slug"].as_str().unwrap().into(),
             title: form["title"].as_str().unwrap().into(),
             brief: form["brief"].as_str().unwrap().into(),
-            intake: Some(IntakeLink { item: None, brief_decision: Some(decision.clone()) }),
+            intake: Some(IntakeLink { brief_decision: Some(decision.clone()), ..Default::default() }),
             ..Default::default()
         })
         .unwrap();

@@ -124,6 +124,12 @@ pub struct WaitingOn {
     #[serde(rename = "ref", skip_serializing_if = "Option::is_none")]
     pub r#ref: Option<String>,
     pub since_ms: u64,
+    /// A task wait (`T-n`): the run that owns the task and the project's tracker kind
+    /// (`local` | `github` | `linear`), so the chip opens the feature on that task (F24).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tracker: Option<String>,
 }
 
 /// What identifies a wait episode: `(level, kind, ref)`.
@@ -165,6 +171,9 @@ pub struct AgentAttention {
     /// was started from.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub origin: Option<serde_json::Value>,
+    /// B3 (contract §2, F23): the tracker node it was started from.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<serde_json::Value>,
 }
 
 /// A message that waits this long (unseen) shows on its agent's record.
@@ -255,6 +264,9 @@ pub struct RunAttention {
     /// P4.5 (api-contract §2.3): the intake item or brief the run was started from.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub origin: Option<serde_json::Value>,
+    /// B3 (contract §2, F23): the tracker node it was started from.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<serde_json::Value>,
 }
 
 /// A run's tasks by status. Disjoint, except `blocked`: the not-done tasks
@@ -1228,7 +1240,13 @@ impl<'a> Ctx<'a> {
             activity: (found.level == Level::Running).then(|| self.activity(a)),
             level: found.level,
             status: found.status,
-            waiting_on: found.wait.map(|(kind, r)| WaitingOn { kind, r#ref: r, since_ms: 0 }),
+            waiting_on: found.wait.map(|(kind, r)| WaitingOn {
+                kind,
+                r#ref: r,
+                since_ms: 0,
+                run: (kind == WaitKind::Task).then(|| seat.map(|t| t.run_id.clone())).flatten(),
+                tracker: None,
+            }),
             reason: found.reason,
             live: live && s != AgentState::Archived,
             since_ms: 0,
@@ -1236,6 +1254,7 @@ impl<'a> Ctx<'a> {
             queue,
             undelivered: self.undelivered(a, live),
             origin: None,
+            source: None,
         };
         rec.set_since(since.unwrap_or(0));
         rec
@@ -1339,6 +1358,7 @@ fn run_record(
         held_in: r.held_in.filter(|_| matches!(r.run.status, RunState::Paused | RunState::Deferred | RunState::Failed)),
         until_ms: (r.run.status == RunState::Deferred).then_some(gov.week_resets_ms).flatten(),
         origin: None,
+        source: None,
     }
 }
 

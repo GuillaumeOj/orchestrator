@@ -27,6 +27,7 @@ pub mod estimate;
 pub mod report;
 pub mod start;
 pub mod tracker;
+pub mod work;
 
 pub use start::IntakeLink;
 
@@ -521,6 +522,8 @@ impl Runtime {
         } else {
             t
         };
+        // `@me` of the Work filters: asked of the tracker once.
+        self.resolve_viewer(&p, &t);
         let t0 = std::time::Instant::now();
         let mut status = self.db.intake_status(id).unwrap_or_default();
         // Local at the tip already read: nothing can have changed (a tracker
@@ -668,10 +671,6 @@ impl Runtime {
         let rows = self.db.intake_listed(None).unwrap_or_default();
         // Every node of the trees, for the breadcrumbs and the children.
         let all = self.db.work_index().unwrap_or_default();
-        let by_node: std::collections::HashMap<(&str, &str), &orch_store::WorkIndex> =
-            all.iter().map(|r| ((r.project_id.as_str(), r.node_id.as_str()), r)).collect();
-        let parents: std::collections::HashSet<(&str, &str)> =
-            all.iter().filter_map(|r| Some((r.project_id.as_str(), r.parent_id.as_deref()?))).collect();
         let inflight = lock(&self.intake.sched).inflight.clone();
         let est = self.intake_est();
         let mut items = vec![];
@@ -693,24 +692,15 @@ impl Runtime {
             let hidden: Vec<&&IntakeRow> = mine.iter().filter(|r| r.state == IntakeState::Hidden).collect();
             let status = self.db.intake_status(&p.id).unwrap_or_default();
             let shown = ready.len().min(src::CAP);
+            // The tree: the node, its ancestors (root first, the project row left out) and the row actions.
+            let ctx = work::Ctx::new(self, p).ok();
             for r in ready.iter().take(src::CAP).chain(hidden.iter()) {
                 let mut v = item_json(&ItemFields::of_row(r), &facts, &est);
-                // The tree: the node, its ancestors (root first, the project row left out) and the row actions.
-                let (mut chain, mut up) = (vec![], r.parent_id.as_deref());
-                while let Some(parent) = up.and_then(|p| by_node.get(&(r.project_id.as_str(), p))) {
-                    if chain.len() > 50 {
-                        break;
-                    }
-                    chain.push(json!({"id": parent.node_id, "ref": parent.reference, "title": parent.title}));
-                    up = parent.parent_id.as_deref();
-                }
-                chain.reverse();
                 v["node"] = json!(r.node_id);
-                v["breadcrumb"] = json!(chain);
-                v["actions"] = tracker::actions_json(
-                    facts.can_team,
-                    parents.contains(&(r.project_id.as_str(), r.node_id.as_str())),
-                );
+                if let Some((ctx, i)) = ctx.as_ref().and_then(|c| Some((c, c.index(&r.node_id)?))) {
+                    v["breadcrumb"] = json!(ctx.breadcrumb(i));
+                    v["actions"] = ctx.actions(i);
+                }
                 items.push(v);
             }
             let repo = self.intake_repo_known(p, &source);
