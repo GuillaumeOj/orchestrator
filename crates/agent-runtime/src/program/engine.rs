@@ -27,16 +27,6 @@ struct Live {
     merged_at_ms: Option<u64>,
 }
 
-fn phase_of(s: RunState) -> &'static str {
-    match s {
-        RunState::Draft | RunState::Spec | RunState::SpecGate => "spec",
-        RunState::Planning => "planning",
-        RunState::Integrating => "integrating",
-        RunState::PrGate | RunState::PrOpen => "pr",
-        _ => "executing",
-    }
-}
-
 impl Runtime {
     /// The features' live state, from their runs and sessions; `None` before they started.
     fn feature_live(&self, f: &Feature, project: &str) -> Option<Live> {
@@ -63,7 +53,7 @@ impl Runtime {
                     });
                     Live {
                         state: if queued { "queued" } else { "running" },
-                        phase: Some(phase_of(s).into()),
+                        phase: Some(crate::intake::work::phase(s).into()),
                         pr: None,
                         merged_at_ms: None,
                     }

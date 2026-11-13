@@ -162,7 +162,8 @@ pub(crate) struct Ctx {
     wb: HashMap<String, Value>,
 }
 
-fn phase(s: RunState) -> &'static str {
+/// The phase word of a run's state (Work's app state, a program feature's phase).
+pub(crate) fn phase(s: RunState) -> &'static str {
     match s {
         RunState::Draft | RunState::Spec | RunState::SpecGate => "spec",
         RunState::Planning => "planning",

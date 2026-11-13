@@ -689,7 +689,11 @@ impl Runtime {
         }
         // Slugs: valid and unique, the user's own; not a feature that has a team running.
         let mut seen = HashSet::new();
+        let mut keys = HashSet::new();
         for f in &p.features {
+            if f.key.is_empty() || !keys.insert(f.key.clone()) {
+                return Err(bad("key", "every feature has its own key"));
+            }
             if !orch_team::valid_slug(&f.slug) || f.slug == "solo" || !seen.insert(f.slug.clone()) {
                 return Err(bad("slug", format!("slug {:?}: a-z, 0-9, - and _, at most 40, one per feature", f.slug)));
             }

@@ -488,16 +488,16 @@ impl Runtime {
                         .unwrap_or(Value::Null);
                     s
                 });
-            match kind.as_str() {
-                "run" => {
-                    out.src_runs.extend(source.map(|s| (reference.clone(), s)));
-                    out.runs.insert(reference, v)
-                }
-                _ => {
-                    out.src_agents.extend(source.map(|s| (reference.clone(), s)));
-                    out.agents.insert(reference, v)
-                }
+            // (a program feature's items share one run: its origin is the feature's first item, as its source is)
+            let is_first = first.as_ref().is_none_or(|f| *f == r.node_id);
+            let (srcs, origins) = match kind.as_str() {
+                "run" => (&mut out.src_runs, &mut out.runs),
+                _ => (&mut out.src_agents, &mut out.agents),
             };
+            srcs.extend(source.map(|s| (reference.clone(), s)));
+            if is_first || !origins.contains_key(&reference) {
+                origins.insert(reference, v);
+            }
         }
         out
     }
