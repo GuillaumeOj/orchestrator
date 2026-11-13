@@ -20,6 +20,13 @@ export const STATE_TYPES = [
   { id: 'backlog', label: 'Backlog' },
   { id: 'unstarted', label: 'Unstarted' },
 ];
+/** `types` with `id` ticked or not: the known types in their order, types the form does not list (a saved `started`) kept. */
+export function toggleType(types, id, on) {
+  const next = on ? [...new Set([...types, id])] : types.filter((t) => t !== id);
+  const order = STATE_TYPES.map((x) => x.id);
+  return [...order.filter((t) => next.includes(t)), ...next.filter((t) => !order.includes(t))];
+}
+
 export const CYCLES = [
   { value: 'current', label: 'Current' },
   { value: 'next', label: 'Next' },
@@ -54,6 +61,8 @@ export function switchKind(form, kind) {
     ...form,
     tracker: trackerDefaults(kind),
     ready: readyDefaults(kind),
+    // The board status / Linear state belong to a kind: they do not carry over.
+    write_back: { ...form.write_back, board_status: null, linear_state: null },
     task_states: null,
     group_by_milestone: kind === 'github' ? form.group_by_milestone : true,
   };
@@ -67,6 +76,9 @@ export function repoOfRemote(url) {
 
 const REPO = /^[^/\s]+\/[^/\s]+$/;
 
+/** A glob the core refuses: absolute, or with a `..` path component (`v1..v2` is fine). */
+export const hasParentPart = (g) => g.startsWith('/') || g.split(/[/\\]/).includes('..');
+
 /** Client rules (the same fields the core validates), field → message in the notes' words; {} when valid. */
 export function problems(form) {
   const p = /** @type {Record<string, string>} */ ({});
@@ -78,8 +90,7 @@ export function problems(form) {
     if (t.projects && !t.projects.length) p.projects = 'Pick at least one project.';
   } else {
     const g = (t.backlog_glob ?? '').trim();
-    if (g && (g.startsWith('/') || g.includes('..')))
-      p.backlog_glob = 'Use a path inside the repo: no leading `/`, no `..`.';
+    if (g && hasParentPart(g)) p.backlog_glob = 'Use a path inside the repo: no leading `/`, no `..`.';
   }
   return p;
 }
@@ -133,11 +144,13 @@ export function readySummary(ready, projectName = (id) => id) {
     return parts.length ? `Open issues ${parts.join(', ')}` : 'Nothing: the lane stays empty until you pick something';
   }
   const types = STATE_TYPES.filter((s) => ready.state_types.includes(s.id)).map((s) => s.label);
-  if (!types.length) return 'Nothing: the lane stays empty until you pick something';
   const parts = [];
   if (ready.label) parts.push(`labelled ${ready.label}`);
   if (ready.project) parts.push(`in project ${projectName(ready.project)}`);
   if (ready.cycle) parts.push(`in the ${ready.cycle} cycle`);
+  // No state type ticked: the core still lists what a label or project selects.
+  if (!types.length)
+    return parts.length ? `Issues ${parts.join(', ')}` : 'Nothing: the lane stays empty until you pick something';
   return `${types.join(' and ')} issues${parts.length ? ` ${parts.join(', ')}` : ''}`;
 }
 
@@ -172,8 +185,10 @@ export function writeBackLines(form, known = null, target = null) {
   ];
 }
 
-/** Default column of a Linear state, by its type (the mapping moved from Task backend, unchanged). */
+/** Default column of a Linear state: what the core sends (`default_column`), else by its type (the mapping moved from Task backend). */
 export function stateColumn(s) {
+  // The core's own default wins (`default_column`; null = it maps nowhere).
+  if ('default_column' in s) return s.default_column ?? null;
   if (s.type === 'started') return /review/i.test(s.name) ? 'review' : 'in_progress';
   return (
     { backlog: 'backlog', triage: 'backlog', unstarted: 'ready', completed: 'done', canceled: 'done' }[s.type] ??
@@ -193,7 +208,7 @@ export function stateRows(states, saved) {
 /** `task_states` to save: only the rows off their default; null when none. */
 export function statesToSave(rows) {
   const out = {};
-  for (const r of rows) if (r.column !== r.def) out[r.id] = r.column;
+  for (const r of rows) if (r.column && r.column !== r.def) out[r.id] = r.column;
   return Object.keys(out).length ? out : null;
 }
 
@@ -213,7 +228,7 @@ export function sampleWhere(node, kind) {
 }
 
 /** A source error in words, with the Tracker fixes of notes §10.7 on top of the shared table. */
-export function trackerError(error, kind) {
+export function trackerError(error, kind, name = null) {
   const code = error?.code;
   const info = errorInfo(error, { type: kind });
   switch (code) {
@@ -227,7 +242,7 @@ export function trackerError(error, kind) {
     case 'gh_sub_issues':
       return {
         ...info,
-        text: "GitHub didn't return sub-issues. Work shows issues without hierarchy.",
+        text: `GitHub didn't return sub-issues${name ? ` for ${name}` : ''}. Work shows issues without hierarchy.`,
         fix: 'retry',
         fixLabel: 'Retry',
       };
@@ -237,8 +252,8 @@ export function trackerError(error, kind) {
         ...info,
         text:
           code === 'gh_write'
-            ? "GitHub refused the change: your login can't write to this repository."
-            : "Linear refused the change: your key can't write to these teams.",
+            ? `GitHub refused the change: your login can't write to ${name ?? 'this repository'}.`
+            : `Linear refused the change: your key can't write to ${name ?? 'these teams'}.`,
         fix: 'turn_off_write_back',
         fixLabel: 'Turn off write-back',
       };
