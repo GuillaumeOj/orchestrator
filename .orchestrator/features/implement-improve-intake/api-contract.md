@@ -43,7 +43,7 @@ MigrationNotice = {                  // F16; null when none or dismissed
 |---|---|---|
 | `tracker_settings` | `project` | `{ settings: TrackerSettings, migration_notice: MigrationNotice \| null }` |
 | `tracker_settings_set` | `project, settings` | same as `tracker_settings` (resolves a `mismatch` notice; triggers a refresh) |
-| `tracker_preview` | `project, settings` (dry run, nothing saved) | `{ roots, items, ready, sample: [WorkNode + breadcrumb] (≤ 5), error: SourceError \| null }` |
+| `tracker_preview` | `project, settings` (dry run, nothing saved) | `{ roots, items, ready, sample: [WorkNode + breadcrumb] (≤ 5; Local: the matched file names), error: SourceError \| null, warning: "gh_sub_issues" \| null }` |
 | `tracker_options` | `project, tracker` (partial: what is filled so far) | GitHub `{ labels[], milestones[], issue_types[], boards: [{owner, number, title, statuses[]}] }` · Linear `{ teams: [{id, key, name}], projects: [{id, name, team}], labels[], states: [{id, name, type}] }` (F17; errors as `SourceError`) |
 | `tracker_notice_dismiss` | `project` | `()` |
 
