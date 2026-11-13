@@ -435,21 +435,6 @@ pub async fn preset_update(core: CoreState<'_>, team: String, scope: orch_team::
 }
 
 #[tauri::command]
-pub async fn board_view(core: CoreState<'_>, project: String) -> Res<Value> {
-    blocking(core, move |c| c.board_view(&project)).await
-}
-
-#[tauri::command]
-pub async fn board_sync(core: CoreState<'_>, project: String) -> Res<Value> {
-    blocking(core, move |c| c.board_sync(&project)).await
-}
-
-#[tauri::command]
-pub async fn board_open_sync(core: CoreState<'_>, project: String) -> Res<Value> {
-    blocking(core, move |c| c.board_open_sync(&project)).await
-}
-
-#[tauri::command]
 pub async fn task_create(core: CoreState<'_>, form: Value) -> Res<Value> {
     blocking(core, move |c| c.task_create(form)).await
 }
@@ -584,16 +569,6 @@ pub async fn notion_status(core: CoreState<'_>, feature: String) -> Res<Value> {
     blocking(core, move |c| c.notion_status(&feature)).await
 }
 
-#[tauri::command]
-pub async fn linear_teams(core: CoreState<'_>) -> Res<Value> {
-    blocking(core, |c| c.linear_teams()).await
-}
-
-#[tauri::command]
-pub async fn linear_states(core: CoreState<'_>, team: String) -> Res<Value> {
-    blocking(core, move |c| c.linear_states(&team)).await
-}
-
 // ---- P4.5 intake (api-contract §3.1)
 
 // ---- implement-improve-intake B1: tracker settings (api-contract §1)
@@ -717,58 +692,6 @@ pub async fn program(core: CoreState<'_>, id: String) -> Res<Value> {
 #[tauri::command]
 pub async fn writeback_retry(core: CoreState<'_>, node: String) -> Res<Value> {
     blocking(core, move |c| c.runtime()?.writeback_retry(&node)).await
-}
-
-#[tauri::command]
-pub async fn intake_source(core: CoreState<'_>, project: String) -> Res<Value> {
-    blocking(core, move |c| c.runtime()?.intake_source(&project)).await
-}
-
-/// Validates, stores and refreshes at once: `{ preview }`.
-#[tauri::command]
-pub async fn intake_source_set(core: CoreState<'_>, project: String, source: Value) -> Res<Value> {
-    blocking(core, move |c| c.runtime()?.intake_source_set(&project, &source)).await
-}
-
-#[tauri::command]
-pub async fn intake_preview(core: CoreState<'_>, project: String, source: Value) -> Res<Value> {
-    blocking(core, move |c| c.runtime()?.intake_preview(&project, &source)).await
-}
-
-#[tauri::command]
-pub async fn intake_options(core: CoreState<'_>, project: String, source: Value) -> Res<Value> {
-    blocking(core, move |c| c.runtime()?.intake_options(&project, &source)).await
-}
-
-#[tauri::command]
-pub async fn intake_refresh(core: CoreState<'_>, project: Option<String>) -> Res<Value> {
-    blocking(core, move |c| c.runtime()?.intake_refresh(project.as_deref())).await
-}
-
-#[tauri::command]
-pub async fn intake_item(core: CoreState<'_>, item: String) -> Res<Value> {
-    blocking(core, move |c| c.runtime()?.intake_item(&item)).await
-}
-
-#[tauri::command]
-pub async fn intake_hide(core: CoreState<'_>, item: String) -> Res<Value> {
-    blocking(core, move |c| c.runtime()?.intake_hide(&item)).await
-}
-
-#[tauri::command(rename_all = "snake_case")]
-pub async fn intake_prefill(
-    core: CoreState<'_>,
-    item: Option<String>,
-    brief_decision: Option<String>,
-    mode: Option<String>,
-) -> Res<Value> {
-    blocking(core, move |c| c.runtime()?.intake_prefill(item.as_deref(), brief_decision.as_deref(), mode.as_deref()))
-        .await
-}
-
-#[tauri::command]
-pub async fn intake_unhide(core: CoreState<'_>, item: String) -> Res<Value> {
-    blocking(core, move |c| c.runtime()?.intake_unhide(&item)).await
 }
 
 /// `queue_off_hours`: `entry` and `task` are string ids per the contract

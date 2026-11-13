@@ -560,8 +560,8 @@ impl Runtime {
             startup_timeout_ms: self.cfg.startup_timeout.as_millis() as u64,
         });
         // Spec and PR decisions of a program's features carry the program (F29).
+        let tags = self.program_of_starts();
         {
-            let tags = self.program_of_starts();
             if !tags.is_empty() {
                 for d in decisions.iter_mut() {
                     if let Some((t, _)) = d.subject["run"].as_str().and_then(|r| tags.get(r)) {
@@ -593,7 +593,7 @@ impl Runtime {
             self.outcomes_of_day(midnight, &st.outcomes.day, st.outcomes.after, &tz, &runs, &st.team.projects);
         st.outcomes.after = last_read;
         // P4.5: where each started run and session came from (F13: on outcomes too).
-        let origins = self.intake_origins();
+        let origins = self.intake_origins_with(&tags);
         let origin_of = |run: Option<&str>, agent: Option<&str>| {
             run.and_then(|r| origins.runs.get(r)).or_else(|| agent.and_then(|a| origins.agents.get(a))).cloned()
         };

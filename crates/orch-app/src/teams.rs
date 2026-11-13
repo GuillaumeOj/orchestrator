@@ -183,108 +183,6 @@ impl Core {
         self.runtime()?.feature_asset(feature_id, path)
     }
 
-    /// The Board (FR-502): a project's tasks in one model whatever the
-    /// backend, with the nodes each active run can assign to.
-    pub fn board_view(&self, project_id: &str) -> Result<Value> {
-        let rt = self.runtime()?;
-        let p = rt.db.project(project_id)?.ok_or_else(|| anyhow!("no project {project_id}"))?;
-        let features = rt.db.features(Some(project_id))?;
-        // One query for the active runs (newest first), then each feature's snapshot.
-        let mut active: std::collections::HashMap<String, orch_store::TeamRun> = std::collections::HashMap::new();
-        for r in rt.db.runs(None, true)? {
-            active.entry(r.feature_id.clone()).or_insert(r);
-        }
-        let runs: Vec<Value> = features
-            .iter()
-            .filter_map(|f| {
-                let run = active.remove(&f.id)?;
-                let (team, _) = rt.db.team_version(&run.team_scope, &run.team_id, run.team_version).ok()??;
-                let nodes = team
-                    .nodes
-                    .into_iter()
-                    .map(|n| json!({"id": n.id, "role": n.role_id, "lead": n.is_lead}))
-                    .collect::<Vec<_>>();
-                Some(json!({"id": run.id, "feature_id": f.id, "slug": f.slug, "status": run.status, "nodes": nodes}))
-            })
-            .collect();
-        let backend = p.backend();
-        let last = rt.last_sync(project_id);
-        let won: Vec<u64> = last["conflicts"].as_array().into_iter().flatten().filter_map(Value::as_u64).collect();
-        let marks = rt.off_hours_marks();
-        // The repository issue URLs point to: the configured one, else what
-        // the first sync resolved for the checkout (no link before; the
-        // render never runs `gh`).
-        let github_repo = match backend {
-            TaskBackendConfig::Github { .. } => rt.tasks_for(&p).known_github_repo(),
-            _ => None,
-        };
-        let tasks: Vec<Value> = rt
-            .db
-            .tasks(Some(project_id), None, None)?
-            .into_iter()
-            .map(|t| {
-                let off = marks.tasks.contains(&t.id) || t.team_run_id.as_ref().is_some_and(|r| marks.runs.contains(r));
-                let mut v = json!(t);
-                v["remote_won"] = json!(won.contains(&t.id));
-                v["off_hours"] = json!(off);
-                v["remote_url"] = match (&github_repo, &t.external_id) {
-                    (Some(repo), Some(n)) if t.backend == "github" => {
-                        json!(format!("https://github.com/{repo}/issues/{n}"))
-                    }
-                    _ => Value::Null,
-                };
-                v
-            })
-            .collect();
-        Ok(json!({
-            "project": {"id": p.id, "name": p.name},
-            "backend": backend.kind(),
-            "repo": match &backend { TaskBackendConfig::Github { repo } => json!(repo), _ => Value::Null },
-            "linear_team": match &backend { TaskBackendConfig::Linear { team, .. } => json!(team), _ => Value::Null },
-            "last_sync_at_ms": last["at_ms"],
-            "last_sync": last.get("report").cloned().unwrap_or(Value::Null),
-            "last_sync_error": self
-                .sync_errors
-                .lock()
-                .ok()
-                .and_then(|m| m.get(project_id).cloned())
-                .map(Value::from)
-                .unwrap_or_else(|| last["error"].clone()),
-            "tasks": tasks,
-            "features": features.iter().map(|f| json!({"id": f.id, "slug": f.slug})).collect::<Vec<_>>(),
-            "runs": runs,
-        }))
-    }
-
-    /// The Board opened: syncs the project's remote backend unless it was
-    /// synced less than a minute ago, and watches it for the background sync.
-    pub fn board_open_sync(&self, project_id: &str) -> Result<Value> {
-        let rt = self.runtime()?;
-        let p = rt.db.project(project_id)?.ok_or_else(|| anyhow!("no project {project_id}"))?;
-        let Some(r) = rt.open_sync(&p) else { return Ok(json!({"synced": false})) };
-        self.record_sync(project_id, &r);
-        Ok(json!({"synced": true, "report": r?.summary()}))
-    }
-
-    /// Keeps (or clears) the sync error the Board shows for a project.
-    fn record_sync(&self, project_id: &str, r: &Result<orch_tasks::SyncReport>) {
-        if let Ok(mut m) = self.sync_errors.lock() {
-            match r {
-                Ok(_) => m.remove(project_id),
-                Err(e) => m.insert(project_id.to_string(), format!("{e:#}")),
-            };
-        }
-    }
-
-    /// The Board's `r`: sync the project's remote backend now (FR-503).
-    pub fn board_sync(&self, project_id: &str) -> Result<Value> {
-        let rt = self.runtime()?;
-        let p = rt.db.project(project_id)?.ok_or_else(|| anyhow!("no project {project_id}"))?;
-        let r = rt.sync_tasks(&p);
-        self.record_sync(project_id, &r);
-        Ok(r?.summary())
-    }
-
     pub fn task_create(&self, f: Value) -> Result<Value> {
         #[derive(Deserialize)]
         struct F {
@@ -441,14 +339,6 @@ impl Core {
         let out = rt.tracker_commit(project_id, &s)?;
         self.finish_backend_move(rt, project_id, mv)?;
         Ok(out)
-    }
-
-    pub fn linear_teams(&self) -> Result<Value> {
-        self.runtime()?.linear_teams()
-    }
-
-    pub fn linear_states(&self, team: &str) -> Result<Value> {
-        self.runtime()?.linear_states(team)
     }
 }
 

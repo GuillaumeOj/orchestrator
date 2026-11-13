@@ -1019,7 +1019,13 @@ impl Runtime {
 
     /// `brief_prefill(decision, mode)`: the form of a planned brief (no origin).
     pub fn brief_prefill(&self, decision: &str, mode: Option<&str>) -> Result<Value> {
-        self.intake_prefill(None, Some(decision), mode)
+        let d = self.open_brief(decision)?;
+        let pl = &d.payload;
+        let p = self.intake_project(pl["project"].as_str().unwrap_or(""))?;
+        let s = |k: &str| pl[k].as_str().map(str::to_string);
+        let (title, text) = (s("title").unwrap_or_default(), s("brief").unwrap_or_default());
+        let suggested = s("mode").unwrap_or_else(|| "team".into());
+        self.prefill_forms(&p, &title, &text, &suggested, s("team").as_deref(), s("slug"), None, mode)
     }
 
     /// Resolves who `@me` is for the project's tracker (the GitHub login, the Linear user name), once.
@@ -1065,7 +1071,7 @@ impl Runtime {
             for r in self.db.work_nodes_of("run", run).unwrap_or_default() {
                 self.wb_spawn(&r.project_id, &r.node_id, crate::writeback::WbOp::Merged);
             }
-            self.programs_tick();
+            self.programs_kick();
         }
     }
 

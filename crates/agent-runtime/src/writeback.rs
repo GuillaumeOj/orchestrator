@@ -54,9 +54,9 @@ fn fails_key(project: &str) -> String {
     format!("work.writeback.fails:{project}")
 }
 
-/// Whether Linear team key `key` is one of the project's `teams` (keys, or team ids).
-pub(crate) fn linear_team_ok(teams: &[String], key: &str) -> bool {
-    teams.iter().any(|x| x.eq_ignore_ascii_case(key) || x.len() == 36)
+/// A Linear team given as an id (a UUID) rather than a key.
+fn is_team_id(x: &str) -> bool {
+    x.len() == 36 && x.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
 }
 
 /// Whether `hay` carries `id` as a whole reference (`eng-4` is not in `eng-42`).
@@ -68,6 +68,12 @@ fn carries(hay: &str, id: &str) -> bool {
     })
 }
 
+/// `gh-milestone:owner/name/3`: the repository and the milestone's number.
+fn github_milestone(node: &str) -> Option<(String, u64)> {
+    let (repo, n) = node.strip_prefix("gh-milestone:")?.rsplit_once('/')?;
+    Some((repo.to_string(), n.parse().ok()?))
+}
+
 /// A node's id says which tracker item it is: `gh:owner/name#12`.
 fn github_item(node: &str) -> Option<(String, u64)> {
     let rest = node.strip_prefix("gh:")?;
@@ -76,6 +82,30 @@ fn github_item(node: &str) -> Option<(String, u64)> {
 }
 
 impl Runtime {
+    /// Whether Linear team key `key` is one of the project's `teams` (keys, or team ids resolved to their key).
+    pub(crate) fn linear_team_ok(&self, teams: &[String], key: &str) -> bool {
+        teams.iter().any(|x| {
+            if is_team_id(x) {
+                self.linear_team_key(x).is_some_and(|k| k.eq_ignore_ascii_case(key))
+            } else {
+                x.eq_ignore_ascii_case(key)
+            }
+        })
+    }
+
+    /// The key of team `id` (asked once, then remembered; none when Linear can't say).
+    fn linear_team_key(&self, id: &str) -> Option<String> {
+        if let Some(k) = crate::intake::lock(&self.intake.team_keys).get(id) {
+            return Some(k.clone());
+        }
+        let teams = orch_tasks::linear::teams(self.linear_transport().as_ref()).ok()?;
+        let mut seen = crate::intake::lock(&self.intake.team_keys);
+        for t in teams {
+            seen.insert(t.id, t.key);
+        }
+        seen.get(id).cloned()
+    }
+
     /// Runs `op` on `node` off the caller's path (a short thread; inline in tests).
     pub(crate) fn wb_spawn(&self, project: &str, node: &str, op: WbOp) {
         #[cfg(test)]
@@ -112,14 +142,18 @@ impl Runtime {
     fn wb_owns(&self, p: &Project, t: &TrackerSettings, row: &IntakeRow) -> bool {
         match &t.tracker {
             Tracker::Github { repo, .. } => {
-                let Some((r, _)) = github_item(&row.node_id) else { return false };
+                let Some((r, _)) = github_item(&row.node_id).or_else(|| github_milestone(&row.node_id)) else {
+                    return false;
+                };
                 let mine = repo.clone().or_else(|| self.intake_repo_known(p, &t.intake_source()));
                 mine.is_none_or(|m| m.eq_ignore_ascii_case(&r))
             }
+            // A project is the project's own: only its status is written (when a program on it is done).
+            Tracker::Linear { .. } if row.node_id.starts_with("lin-project:") => true,
             Tracker::Linear { teams, .. } => {
                 let Some(rest) = row.node_id.strip_prefix("lin:") else { return false };
                 let team = rest.rsplit_once('-').map_or("", |(t, _)| t);
-                linear_team_ok(teams, team)
+                self.linear_team_ok(teams, team)
             }
             Tracker::Local { .. } => false,
         }
@@ -127,6 +161,22 @@ impl Runtime {
 
     fn wb_apply(&self, p: &Project, t: &TrackerSettings, row: &IntakeRow, op: &WbOp) -> Result<(), SourceError> {
         let wbk = &t.write_back;
+        // The root of a program that is not an issue: a GitHub milestone is closed, a Linear project completed.
+        if matches!(op, WbOp::Parent) && row.kind != "issue" {
+            return match (&t.tracker, row.kind.as_str()) {
+                (Tracker::Github { .. }, "milestone") => {
+                    let (repo, n) =
+                        github_milestone(&row.node_id).ok_or_else(|| SourceError::new("failed", "not a milestone"))?;
+                    w::gh_close_milestone(self.gh_in(p).as_ref(), &repo, n)
+                }
+                (Tracker::Linear { .. }, "linear_project") => {
+                    let id = row.node_id.strip_prefix("lin-project:").unwrap_or_default();
+                    w::lin_project_complete(self.linear_transport().as_ref(), id)
+                }
+                // A Linear milestone or initiative has no state to close.
+                _ => Ok(()),
+            };
+        }
         match &t.tracker {
             Tracker::Github { project_board, .. } => {
                 let (repo, n) =
@@ -184,8 +234,10 @@ impl Runtime {
                 match op {
                     WbOp::Started { feature } => {
                         // An issue already in a started state (In Review…) is not moved back.
+                        // (`linear_state` is one team's state: another team's issue gets its own first started state)
+                        let own = wbk.linear_state.clone().filter(|s| issue.states.iter().any(|(id, _)| id == s));
                         let state = (issue.state_type != "started")
-                            .then(|| wbk.linear_state.clone().or_else(|| issue.first_of("started").map(str::to_string)))
+                            .then(|| own.or_else(|| issue.first_of("started").map(str::to_string)))
                             .flatten();
                         let mut input = json!({});
                         if let Some(s) = state {
