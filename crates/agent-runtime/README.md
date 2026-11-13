@@ -653,6 +653,8 @@ new place, the known worktrees are repaired (targeted) and re-locked.
 
 - Unit tests per module, including fixture worktrees/transcripts/spools for the reconciler and the
   P0 recovery hook samples replayed through the state machine.
+- `tests/contract_cli.rs`, `live_claude.rs`, `live_command.rs`: the **contract tests** against the real `claude`
+  (opt-in, `ORCH_LIVE_CLAUDE=1`; `make contract` runs them): see [docs/app/CONTRACT-TESTS.md](../../docs/app/CONTRACT-TESTS.md).
 - `tests/e2e_fake_claude.rs`: real bus server, PTYs and helper binaries, with `tests/fake_claude.sh`
   in place of `claude` (no quota): start, delivery (marker, `/` escape), usage → Governor, a commit
   through the real orch-mcp, suspend, resume (`--resume`), kill; memory pressure (cap 1, LRU idle

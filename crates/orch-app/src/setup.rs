@@ -87,7 +87,10 @@ pub fn version_warnings(c: Option<&ClaudeCheck>) -> Vec<String> {
     let Some(v) = &c.version else { return vec![] };
     let range = preflight::SUPPORTED_CLAUDE;
     if c.untested {
-        vec![format!("claude {v} is newer than the last tested version: run the contract tests (R2)")]
+        match preflight::Version::find(v) {
+            Some(v) => vec![preflight::untested_warning(v, range.tested_max)],
+            None => vec![],
+        }
     } else if c.problem_kind == Some(ProblemKind::Version) {
         vec![format!("claude: claude {v} is older than the supported minimum {}", range.min)]
     } else {
@@ -676,7 +679,8 @@ mod tests {
 
     #[test]
     fn version_warnings_follow_the_current_check() {
-        let runtime = "claude 2.9.0 is newer than the last tested version: run the contract tests (R2)";
+        let runtime = preflight::untested_warning(preflight::Version(2, 9, 0), preflight::SUPPORTED_CLAUDE.tested_max);
+        let runtime = runtime.as_str();
         let old = "claude: claude 2.1.200 is older than the supported minimum 2.1.302";
         assert!(is_runtime_version_warning(runtime) && is_runtime_version_warning(old));
         assert!(!is_runtime_version_warning("claude: no claude at /x"));
@@ -689,6 +693,7 @@ mod tests {
         };
         assert_eq!(version_warnings(None), Vec::<String>::new());
         assert_eq!(version_warnings(Some(&check("2.9.0", true, None))), [runtime]);
+        assert!(runtime.contains("Agents still run") && runtime.contains("`make contract`") && !runtime.contains("R2"));
         assert_eq!(version_warnings(Some(&check("2.1.200", false, Some(ProblemKind::Version)))), [old]);
         // After an in-app update to a supported version: no warning.
         assert!(version_warnings(Some(&check("2.1.302", false, None))).is_empty());

@@ -95,8 +95,8 @@ Open `~/Applications/Orchestrator.app`. The **Set up Orchestrator** pane opens u
 Done (palette: "Set up Orchestrator" reopens it).
 
 1. **Claude Code.** The app runs `claude --version` and `claude auth status` (it never writes to
-   `~/.claude` or `~/.claude.json`). Supported: 2.1.302 (newer versions run with a warning: run the
-   contract tests). Not installed, too old, not logged in, or logged in with an API key instead
+   `~/.claude` or `~/.claude.json`). Supported: 2.1.302 (newer versions run with a warning: see
+   [CONTRACT-TESTS.md](CONTRACT-TESTS.md), `make contract`). Not installed, too old, not logged in, or logged in with an API key instead
    of Pro/Max: a red "Read-only" banner says what to fix, and agents cannot start until you fix it
    and restart the app. The app never sets `ANTHROPIC_API_KEY` and warns if it inherits one.
 2. **Projects.** Add project (⌘N or `+` in the sidebar): a folder (a worktree registers its main
