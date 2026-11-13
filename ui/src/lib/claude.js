@@ -168,6 +168,9 @@ export function installedHeader(c) {
 
 const VERIFY_FALLBACK = { command: 'make contract', doc: 'docs/app/CONTRACT-TESTS.md' };
 
+/** `{ command, doc }` to verify a newer version: from `supported.verify`, else the default. */
+export const verifySpec = (s) => ({ ...VERIFY_FALLBACK, ...s?.verify });
+
 /** True for the core's "claude <v> is newer than the last tested version" warning (api-contract §1). */
 export const isVersionWarning = (w) => /^claude \S+ is newer than the last tested version/.test(String(w ?? ''));
 
@@ -188,7 +191,7 @@ export function compat(c) {
   const s = c?.supported;
   const notes = [];
   if (!s) return { supported: null, notes, verify: null };
-  const v = { ...VERIFY_FALLBACK, ...s.verify };
+  const v = verifySpec(s);
   const tooOld = c.problem_kind === 'version' || cmpVersion(c.version, s.min) === -1;
   if (tooOld) notes.push({ tone: 'red', text: 'Too old. The app is read-only until Claude Code is updated.' });
   const installedNewer = cmpVersion(c.version, s.tested_max) === 1;

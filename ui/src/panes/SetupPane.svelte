@@ -7,6 +7,7 @@
   // kitty.conf import; the editor command; the first weekly plan. Shown at start
   // until "Done"; the palette reopens it.
   import { app, applyTheme, closePane, findPane, openProject, openTrust, projects, refresh, toast } from '../lib/app.svelte.js';
+  import { verifySpec } from '../lib/claude.js';
   import { expandHome, shortPath } from '../lib/format.js';
   import { errText, invoke } from '../lib/ipc.js';
   import { tooltip } from '../lib/tooltip.js';
@@ -79,7 +80,7 @@
       <p class="muted">Checking claude --version and the login…</p>
     {:else}
       <p>
-        <span class="mono">{short(c.path)}</span> · {c.version ?? 'not found'}{#if c.untested}{' '}(newer than the last tested version {c.supported?.tested_max}: agents still run; verify with <span class="mono">{c.supported?.verify?.command ?? 'make contract'}</span>){/if}
+        <span class="mono">{short(c.path)}</span> · {c.version ?? 'not found'}{#if c.untested}{' '}<span class="amber">(newer than the last tested version{c.supported?.tested_max ? ` ${c.supported.tested_max}` : ''}: agents still run; verify with <span class="mono">{verifySpec(c.supported).command}</span>)</span>{/if}
         {#if c.logged_in != null} · {c.logged_in ? `logged in (${c.auth_method}, ${c.subscription ?? 'no subscription'})` : 'not logged in'}{/if}
       </p>
       {#if c.problem_kind === 'version' || c.update?.state === 'updating'}<ClaudeUpdateBlock {c} compact />{/if}
@@ -136,6 +137,9 @@
 </div>
 
 <style>
+  .amber {
+    color: var(--color-pacing-amber);
+  }
   .setup {
     flex: 1;
     min-height: 0;

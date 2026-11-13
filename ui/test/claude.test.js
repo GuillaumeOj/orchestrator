@@ -488,7 +488,7 @@ describe('components', () => {
     expect(text(container)).toContain('(a few cents of plan quota). docs/app/CONTRACT-TESTS.md');
     await fireEvent.click(container.querySelector('[data-verify]'));
     expect(writeText).toHaveBeenCalledWith('make contract');
-    await waitFor(() => expect(app.toasts.some((t) => t.text === 'Copied')).toBe(true));
+    await waitFor(() => expect(app.toasts.some((t) => t.text === 'Copied the command')).toBe(true));
     cleanup();
     app.data.setup.claude = claude({}, { available: false });
     expect(text(render(ClaudeSettings).container)).not.toContain('To verify');
