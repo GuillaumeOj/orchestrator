@@ -301,6 +301,7 @@ fn kind_of(i: &InboxItem) -> (&'static str, Option<&'static str>) {
                 "program_dependency_added" => "program_dependency_added",
                 "program_done" => "program_done",
                 "program_feature_failed" => "program_feature_failed",
+                "writeback_failing" => "writeback_failing",
                 _ => "program_done",
             },
             None,
@@ -318,7 +319,7 @@ fn level_of(kind: &str) -> u8 {
         // Blocks nobody: never notifies, not in the badge (P4.4).
         "rule_proposal" | "brief" | "program_dependency_added" | "program_done" => 4,
         // A child added or closed upstream, a feature failed: needs you, not urgent (notes §7.3).
-        "program_new_item" | "program_item_closed" | "program_feature_failed" => 3,
+        "program_new_item" | "program_item_closed" | "program_feature_failed" | "writeback_failing" => 3,
         _ => 2,
     }
 }
@@ -377,6 +378,9 @@ fn program_card(kind: &str, p: &Value) -> (String, String, Vec<Value>, Vec<Actio
         "program_new_item" => vec![act("add", "Add to program", Some("⏎")), act("ignore", "Ignore", Some("r"))],
         "program_item_closed" => vec![act("skip", "Skip it", Some("⏎")), act("keep", "Keep", Some("r"))],
         "program_feature_failed" => vec![act("open", "Open feature", Some("⏎")), act("skip", "Skip it", Some("x"))],
+        "writeback_failing" => {
+            vec![act("settings", "Open settings", Some("⏎")), act("turn_off", "Turn off write-back", None)]
+        }
         _ => vec![act("open", "Open program", Some("⏎"))],
     };
     let text = s(p, "text");
@@ -548,7 +552,8 @@ fn stored(cx: &Ctx, i: &InboxItem) -> Decision {
             | "program_item_closed"
             | "program_dependency_added"
             | "program_done"
-            | "program_feature_failed"),
+            | "program_feature_failed"
+            | "writeback_failing"),
             _,
         ) => program_card(k, p),
         ("budget", _) => {

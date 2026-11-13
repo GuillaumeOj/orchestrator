@@ -459,6 +459,9 @@ impl Runtime {
             None | Some(Value::Null) => 0,
             Some(v) => v.as_u64().ok_or_else(|| anyhow!("`offset` must be a non-negative integer"))? as usize,
         };
+        if let Some(ident) = self.linear_issue_arg(args) {
+            return self.read_linear_issue(rec, &ident, offset);
+        }
         let (project, repo, n) = self.resolve_issue(rec, args)?;
         let gh = self.gh_in(&project);
         let run = |a: &[&str]| gh_run(gh.as_ref(), &a.iter().map(|s| s.to_string()).collect::<Vec<_>>());
@@ -470,14 +473,23 @@ impl Runtime {
             &run(&["api", "--paginate", &format!("repos/{repo}/issues/{n}/comments?per_page=100")])
                 .map_err(|e| gh_failure(&e, &repo, n))?,
         )?;
-        let text = render_issue(&repo, &issue, &comments);
+        let mut text = render_issue(&repo, &issue, &comments);
+        // Where it sits in the tracker's tree (from the cache).
+        let rel = self.relations_of(&project.id, &format!("gh:{repo}#{n}"));
+        if let Some((t, _)) = &rel {
+            text.push_str(t);
+        }
         let mut page = page_of(&text, offset, "read_issue")?;
         if offset > 0 {
             // Only the first page carries the banner; the comments an injection
             // hides in are often on a later one.
             page = format!("{}{page}", continued_banner(&repo, n));
         }
-        Ok((page, json!({"repo": repo, "number": n})))
+        let mut meta = json!({"repo": repo, "number": n});
+        if let (Some((_, r)), Some(o)) = (rel, meta.as_object_mut()) {
+            o.extend(r.as_object().cloned().unwrap_or_default());
+        }
+        Ok((page, meta))
     }
 
     /// The names of the repository's labels.
@@ -503,6 +515,9 @@ impl Runtime {
     /// `update_issue`: the changes of one call, in a fixed order; the first
     /// failure stops the rest and the error says what was applied.
     pub(crate) fn update_issue(&self, rec: &AgentRecord, args: &Value) -> Result<(String, Value)> {
+        if let Some(ident) = self.linear_issue_arg(args) {
+            return self.update_linear_issue(rec, &ident, args);
+        }
         let mut c = Change::parse(args)?;
         let (project, repo, n) = self.resolve_issue(rec, args)?;
         let gh = self.gh_in(&project);

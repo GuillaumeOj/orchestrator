@@ -108,6 +108,12 @@ pub struct Program {
     /// Upstream items the user chose to ignore.
     #[serde(default)]
     pub ignored: Vec<String>,
+    /// Closed items the user chose to "Include anyway": plan and start keep them in their feature.
+    #[serde(default)]
+    pub include: Vec<String>,
+    /// When each of `new_items` was seen upstream, by node id (ms).
+    #[serde(default)]
+    pub new_items_added: BTreeMap<String, u64>,
     #[serde(default)]
     pub estimate: Value,
     #[serde(default)]
@@ -168,13 +174,13 @@ fn open_scope(ctx: &Ctx, i: usize, out: &mut Scope, seen: &mut HashSet<usize>) -
             continue;
         }
         let row = &ctx.rows[n];
-        if !ctx.open(n) {
+        if !ctx.open(n) && !out.include.contains(&row.node_id) {
             out.closed.push(row.node_id.clone());
             continue;
         }
         let state = ctx.app_state(n);
         if matches!(state, "running" | "solo" | "pr" | "queued") {
-            out.running.push(json!({"id": row.node_id, "feature": ctx.app_feature(n)}));
+            out.running.push(json!({"id": row.node_id, "feature": ctx.app_feature(n), "wait": ctx.app_wait_key(n)}));
             continue;
         }
         if state == "done" {
@@ -194,6 +200,8 @@ fn open_scope(ctx: &Ctx, i: usize, out: &mut Scope, seen: &mut HashSet<usize>) -
 struct Scope {
     closed: Vec<String>,
     running: Vec<Value>,
+    /// Closed items kept in anyway (`Program.include`).
+    include: HashSet<String>,
 }
 
 /// The items of each feature under `roots` for `grouping` (first item of a group leads).
@@ -304,7 +312,10 @@ fn find_cycle(features: &[Feature], edges: &[Edge]) -> Option<Vec<[String; 2]>> 
 }
 
 /// `to` waits for `from`: from the trackers' dependencies between the features' items.
-fn tracker_edges(ctx: &Ctx, features: &[Feature]) -> Vec<Edge> {
+fn tracker_edges(ctx: &Ctx, features: &[Feature], running: &[Value]) -> Vec<Edge> {
+    // Items that run outside the program (as another feature or a session): `x:run:<id>` / `x:agent:<id>`.
+    let ext: HashMap<&str, &str> =
+        running.iter().filter_map(|r| Some((r["id"].as_str()?, r["wait"].as_str()?))).collect();
     let owner: HashMap<&str, &str> =
         features.iter().flat_map(|f| f.items.iter().map(move |i| (i.as_str(), f.key.as_str()))).collect();
     let mut by_pair: BTreeMap<(String, String), Vec<String>> = BTreeMap::new();
@@ -314,6 +325,14 @@ fn tracker_edges(ctx: &Ctx, features: &[Feature]) -> Vec<Edge> {
             let meta = &ctx.rows[i].meta;
             // `item` is blocked by `d`: d's feature goes first.
             for d in meta["blocked_by"].as_array().into_iter().flatten() {
+                // Blocked by an item that is already running: wait for its merge (an external dependency).
+                if let Some(id) = d["id"].as_str()
+                    && let Some(x) = ext.get(id)
+                    && d["open"] == true
+                {
+                    let e = by_pair.entry((x.to_string(), f.key.clone())).or_default();
+                    e.extend([id.to_string(), item.clone()]);
+                }
                 if let Some(id) = d["id"].as_str()
                     && let Some(from) = owner.get(id)
                     && *from != f.key
@@ -339,7 +358,8 @@ fn tracker_edges(ctx: &Ctx, features: &[Feature]) -> Vec<Edge> {
         .map(|((from, to), mut items)| {
             let mut seen = HashSet::new();
             items.retain(|i| seen.insert(i.clone()));
-            Edge { from, to, source: "tracker".into(), items }
+            let source = if from.starts_with("x:") { "external" } else { "tracker" };
+            Edge { from, to, source: source.into(), items }
         })
         .collect()
 }
@@ -521,12 +541,15 @@ impl Runtime {
             .flatten()
             .filter_map(|c| Some([c[0].as_str()?.to_string(), c[1].as_str()?.to_string()]))
             .collect();
-        let mut p = self.plan_for(&ctx, &idx, grouping, sequential, max, cut)?;
+        let include: Vec<String> =
+            opts["include"].as_array().into_iter().flatten().filter_map(|v| v.as_str().map(str::to_string)).collect();
+        let mut p = self.plan_for(&ctx, &idx, grouping, sequential, max, cut, include)?;
         p.created_at_ms = orch_protocol::now_ms();
         let issues = self.program_issues(&p);
         Ok(json!({"program": p, "issues": issues}))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn plan_for(
         &self,
         ctx: &Ctx,
@@ -535,9 +558,10 @@ impl Runtime {
         sequential: bool,
         max: u32,
         cut: Vec<[String; 2]>,
+        include: Vec<String>,
     ) -> Result<Program> {
         let project = ctx.project.clone();
-        let mut scope = Scope::default();
+        let mut scope = Scope { include: include.iter().cloned().collect(), ..Default::default() };
         let groups = groups(ctx, roots, grouping, &mut scope);
         let team = self.intake_team(&project, None);
         let base = project
@@ -600,7 +624,7 @@ impl Runtime {
                 })
                 .collect()
         } else {
-            tracker_edges(ctx, &features)
+            tracker_edges(ctx, &features, &scope.running)
         };
         edges.retain(|e| !cut.iter().any(|c| c[0] == e.from && c[1] == e.to));
         let mut p = Program {
@@ -617,6 +641,7 @@ impl Runtime {
             edges,
             cut,
             left_out: LeftOut { closed: scope.closed, running: scope.running },
+            include,
             ..Default::default()
         };
         set_depends(&mut p);
@@ -668,12 +693,14 @@ impl Runtime {
             let before = f.items.len();
             f.items.retain(|id| {
                 let Some(i) = ctx.index(id) else { return false };
-                if !ctx.open(i) {
+                if !ctx.open(i) && !p.include.contains(id) {
                     p.left_out.closed.push(id.clone());
                     return false;
                 }
                 if matches!(ctx.app_state(i), "running" | "solo" | "pr" | "queued") {
-                    p.left_out.running.push(json!({"id": id, "feature": ctx.app_feature(i)}));
+                    p.left_out
+                        .running
+                        .push(json!({"id": id, "feature": ctx.app_feature(i), "wait": ctx.app_wait_key(i)}));
                     return false;
                 }
                 true
@@ -686,7 +713,7 @@ impl Runtime {
             }
         }
         let known: HashSet<String> = p.features.iter().map(|f| f.key.clone()).collect();
-        p.edges.retain(|e| known.contains(&e.from) && known.contains(&e.to));
+        p.edges.retain(|e| (known.contains(&e.from) || e.from.starts_with("x:")) && known.contains(&e.to));
         p.max_parallel = if p.sequential { 1 } else { p.max_parallel.clamp(1, MAX_PARALLEL) };
         set_depends(&mut p);
         p.estimate = self.program_totals(&p);
@@ -782,15 +809,16 @@ impl Runtime {
                 f.state = "skipped".into();
                 // Dependents stop waiting for it.
                 set_depends(&mut p);
-                self.program_close_decisions(&p, |k| k.ends_with(&format!(":{key}")));
+                self.program_close_decisions(&p, "skip", |k| k.ends_with(&format!(":{key}")));
             }
             "ignore_item" => {
                 let item = arg.as_str().ok_or_else(|| bad("ignore_item", "a node id"))?.to_string();
                 p.new_items.retain(|i| *i != item);
+                p.new_items_added.remove(&item);
                 if !p.ignored.contains(&item) {
                     p.ignored.push(item.clone());
                 }
-                self.program_close_decisions(&p, |k| k == format!("new:{item}"));
+                self.program_close_decisions(&p, "ignore", |k| k == format!("new:{item}"));
             }
             "add_item" => self.program_add_item(&mut p, arg, obj)?,
             "cancel" => {
@@ -807,7 +835,7 @@ impl Runtime {
                 p.status = "cancelled".into();
                 p.done_at_ms = Some(now);
                 self.event("-", "program.cancelled", json!({"id": p.id, "project": p.project, "title": p.title}));
-                self.program_close_decisions(&p, |_| true);
+                self.program_close_decisions(&p, "dismiss", |_| true);
             }
             other => return Err(bad("patch", format!("{other} is not a program edit"))),
         }
@@ -852,11 +880,19 @@ impl Runtime {
             .find(|r| r.project_id == p.project)
             .ok_or_else(|| bad("add_item", "no such node"))?;
         let kids: Vec<usize> = ctx.kids_of(i).to_vec();
-        let slug = unique(&kebab(&full.title, 40), 40, |s| {
+        let taken = |s: &str| {
             s == "solo"
                 || p.features.iter().any(|f| f.slug == s)
                 || self.db.feature_by_slug(&p.project, s).ok().flatten().is_some()
-        });
+        };
+        // The user's slug, when given (valid and free), else one made from the title.
+        let slug = match patch.get("slug").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty()) {
+            Some(s) if !orch_team::valid_slug(s) || s == "solo" || taken(s) => {
+                return Err(bad("slug", format!("slug {s:?}: a-z, 0-9, - and _, at most 40, and not taken")));
+            }
+            Some(s) => s.to_string(),
+            None => unique(&kebab(&full.title, 40), 40, taken),
+        };
         let key = format!(
             "pf-{}",
             p.features.iter().filter_map(|f| f.key.strip_prefix("pf-")?.parse::<u32>().ok()).max().unwrap_or(0) + 1
@@ -882,9 +918,10 @@ impl Runtime {
             }
         }
         p.new_items.retain(|n| *n != node);
+        p.new_items_added.remove(&node);
         set_depends(p);
         p.estimate = self.program_totals(p);
-        self.program_close_decisions(p, |k| k == format!("new:{node}"));
+        self.program_close_decisions(p, "add", |k| k == format!("new:{node}"));
         Ok(())
     }
 }
@@ -901,34 +938,36 @@ impl Runtime {
         let program = pl["program"].as_str().unwrap_or("").to_string();
         let id = crate::decision::decision_id("program", n);
         let key = pl["key"].as_str().unwrap_or("");
-        let close = |effect: &'static str| {
-            self.close_item(n, orch_store::InboxStatus::Decided, action, "user");
-            self.advance(n, crate::inbox::Stage::Effect(effect, None));
-            self.touch("inbox");
-        };
         match (pl["kind"].as_str().unwrap_or(""), action) {
             ("program_new_item", "add") => {
                 Ok(json!({"ok": true, "open": "program_add", "program": program, "item": key.strip_prefix("new:")}))
             }
+            // The edit closes the card with the user's word, once.
             ("program_new_item", "ignore") => {
                 self.program_update(&program, &json!({"ignore_item": key.strip_prefix("new:").unwrap_or("")}))?;
-                close("ignored");
                 Ok(json!({"ok": true, "effect": "ignored", "decision": id}))
             }
             ("program_item_closed", "skip") | ("program_feature_failed", "skip") => {
                 self.program_update(&program, &json!({"skip": pl["feature"]}))?;
-                close("skipped");
                 Ok(json!({"ok": true, "effect": "skipped", "decision": id}))
             }
             ("program_item_closed", "keep") => {
-                close("kept");
+                self.program_close_one(n, "keep");
                 Ok(json!({"ok": true, "effect": "kept", "decision": id}))
             }
             ("program_feature_failed", "open") => {
                 Ok(json!({"ok": true, "open": "feature", "program": program, "feature": pl["slug"]}))
             }
+            ("writeback_failing", "settings") => {
+                Ok(json!({"ok": true, "open": "settings", "section": "tracker", "project": pl["project"]}))
+            }
+            ("writeback_failing", "turn_off") => {
+                self.wb_turn_off(pl["project"].as_str().unwrap_or(""))?;
+                self.program_close_one(n, "turn_off");
+                Ok(json!({"ok": true, "effect": "turned off", "decision": id}))
+            }
             (_, "open") => {
-                close("opened");
+                self.program_close_one(n, "open");
                 Ok(json!({"ok": true, "open": "program", "program": program}))
             }
             (k, a) => Err(anyhow!("{a} does not apply to {k}")),
@@ -957,7 +996,13 @@ impl Runtime {
 
     /// A program as `now` shows it (contract §4 `ProgramRow`).
     fn program_row(&self, p: &Program) -> Value {
-        let slug = |k: &str| p.features.iter().find(|f| f.key == k).map_or(k.to_string(), |f| f.slug.clone());
+        let slug = |k: &str| {
+            p.features.iter().find(|f| f.key == k).map(|f| f.slug.clone()).unwrap_or_else(|| {
+                // An item running outside the program: the feature it runs as.
+                let r = p.left_out.running.iter().find(|r| r["wait"] == k);
+                r.and_then(|r| r["feature"].as_str()).unwrap_or(k).to_string()
+            })
+        };
         let n = |s: &[&str]| p.features.iter().filter(|f| s.contains(&f.state.as_str())).count();
         let features: Vec<Value> = p
             .features
@@ -1046,7 +1091,7 @@ impl Runtime {
     fn program_upstream(&self, ctx: &Ctx, p: &mut Program) {
         // A child added under a root, not in any feature (F7).
         let roots: Vec<usize> = p.root.iter().filter_map(|r| ctx.index(r)).collect();
-        let mut scope = Scope::default();
+        let mut scope = Scope { include: p.include.iter().cloned().collect(), ..Default::default() };
         // (the program's own grouping: a "grandchild" plan leaves the child items that have sub-issues
         // out of every feature, and they are not new)
         let all: Vec<usize> = groups(ctx, &roots, &p.grouping, &mut scope).into_iter().flatten().collect();
@@ -1067,6 +1112,7 @@ impl Runtime {
                     ctx.rows[i].parent_id.as_deref().and_then(|q| ctx.index(q)).map(|q| ctx.rows[q].reference.clone()),
                 )
             };
+            p.new_items_added.insert(id.clone(), orch_protocol::now_ms());
             p.new_items.push(id.clone());
             let text = format!(
                 "{r} was added{} in {} upstream.",
@@ -1087,7 +1133,7 @@ impl Runtime {
         for f in p.features.iter_mut().filter(|f| !f.skip) {
             for id in &f.items {
                 let gone = ctx.index(id).is_none();
-                let shut = ctx.index(id).is_some_and(|i| !ctx.open(i));
+                let shut = !p.include.contains(id) && ctx.index(id).is_some_and(|i| !ctx.open(i));
                 let flag = if gone {
                     "deleted_upstream"
                 } else if shut {
@@ -1120,7 +1166,11 @@ impl Runtime {
             let mut added = false;
             let slug_of =
                 |p: &Program, k: &str| p.features.iter().find(|f| f.key == k).map_or(k.to_string(), |f| f.slug.clone());
-            for e in tracker_edges(ctx, &p.features.iter().filter(|f| !f.skip).cloned().collect::<Vec<_>>()) {
+            for e in tracker_edges(
+                ctx,
+                &p.features.iter().filter(|f| !f.skip).cloned().collect::<Vec<_>>(),
+                &p.left_out.running,
+            ) {
                 let k = (e.from.clone(), e.to.clone());
                 let started = p.features.iter().any(|f| f.key == e.to && (f.run.is_some() || f.agent.is_some()));
                 if have.contains(&k) || cut.contains(&k) || started {

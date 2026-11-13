@@ -39,7 +39,7 @@ fn phase_of(s: RunState) -> &'static str {
 
 impl Runtime {
     /// The features' live state, from their runs and sessions; `None` before they started.
-    fn feature_live(&self, f: &Feature) -> Option<Live> {
+    fn feature_live(&self, f: &Feature, project: &str) -> Option<Live> {
         if let Some(id) = &f.run {
             let run = self.db.run(id).ok().flatten()?;
             return Some(match run.status {
@@ -71,6 +71,37 @@ impl Runtime {
             });
         }
         if let Some(id) = &f.agent {
+            // A solo feature is done when its PR merges (the session's `run.pr_opened`); only a session that
+            // opened no PR falls back to "ended after a finished turn".
+            // A merged PR stays merged: no more polling.
+            if f.state == "merged"
+                && let Some(pr) = f.pr.as_ref().filter(|p| p["state"] == "MERGED")
+            {
+                return Some(Live { state: "merged", phase: None, pr: Some(pr.clone()), merged_at_ms: f.merged_at_ms });
+            }
+            if let Some(url) = self.solo_pr(id) {
+                let cached = f.pr.as_ref().filter(|p| {
+                    p["url"] == url.as_str()
+                        && orch_protocol::now_ms().saturating_sub(p["checked_at_ms"].as_u64().unwrap_or(0)) < 60_000
+                });
+                let st = match cached {
+                    Some(p) => p["state"].as_str().unwrap_or("OPEN").to_string(),
+                    None => {
+                        let project = self.db.project(project).ok().flatten()?;
+                        orch_tasks::writeback::gh_pr_state(self.gh_in(&project).as_ref(), &url)
+                            .unwrap_or_else(|_| "OPEN".into())
+                    }
+                };
+                let pr = json!({"url": url, "number": orch_store::pr_number_from_url(&url), "state": st,
+                                "checked_at_ms": cached.map_or_else(orch_protocol::now_ms, |p| p["checked_at_ms"].as_u64().unwrap_or(0))});
+                return Some(match st.as_str() {
+                    "MERGED" => {
+                        Live { state: "merged", phase: None, pr: Some(pr), merged_at_ms: Some(orch_protocol::now_ms()) }
+                    }
+                    "CLOSED" => Live { state: "failed", phase: None, pr: Some(pr), merged_at_ms: None },
+                    _ => Live { state: "pr", phase: Some("pr".into()), pr: Some(pr), merged_at_ms: None },
+                });
+            }
             let state = self.store.read(|s| s.agents.get(id).map(|a| a.tracker.state));
             let done = self.db.events(0, Some(id), Some("turn.done"), 1).map(|e| !e.is_empty()).unwrap_or(false);
             return Some(match state {
@@ -88,6 +119,28 @@ impl Runtime {
             });
         }
         None
+    }
+
+    /// The PR a solo session opened (its last `run.pr_opened`; events come newest first).
+    fn solo_pr(&self, agent: &str) -> Option<String> {
+        self.db
+            .events(0, Some(agent), Some("run.pr_opened"), 20)
+            .ok()?
+            .into_iter()
+            .filter_map(|e| e.detail["url"].as_str().map(str::to_string))
+            .next()
+    }
+
+    /// Whether the run / session a program waits on (outside it) has finished (`run:<id>` / `agent:<id>`).
+    fn external_done(&self, key: &str) -> bool {
+        match key.split_once(':') {
+            Some(("run", id)) => self.db.run(id).ok().flatten().is_none_or(|r| r.status == RunState::Done),
+            Some(("agent", id)) => self
+                .store
+                .read(|s| s.agents.get(id).map(|a| a.tracker.state))
+                .is_none_or(|st| matches!(st, AgentState::Archived | AgentState::Killed)),
+            _ => true,
+        }
     }
 
     /// One pass over every program in progress (also kicked by run events and refreshes).
@@ -113,13 +166,19 @@ impl Runtime {
         let now = orch_protocol::now_ms();
         // 1. What each started feature does now.
         for f in p.features.iter_mut().filter(|f| !f.skip) {
-            if let Some(l) = self.feature_live(f) {
+            if let Some(l) = self.feature_live(f, &p.project) {
                 (f.state, f.phase, f.pr) = (l.state.into(), l.phase, l.pr);
                 if l.merged_at_ms.is_some() {
                     f.merged_at_ms = f.merged_at_ms.or(l.merged_at_ms);
                 }
                 if f.state == "merged" && !p.notified.contains(&format!("merged:{}", f.key)) {
                     p.notified.push(format!("merged:{}", f.key));
+                    // A solo session's items close when its PR merged (a team run's do from its run event).
+                    if let Some(agent) = &f.agent {
+                        for r in self.db.work_nodes_of("agent", agent).unwrap_or_default() {
+                            self.wb_spawn(&r.project_id, &r.node_id, crate::writeback::WbOp::Merged);
+                        }
+                    }
                     self.event("-", "program.feature_merged", json!({"id": p.id, "feature": f.slug}));
                 }
             }
@@ -129,8 +188,12 @@ impl Runtime {
             p.features.iter().filter(|f| f.state == "merged").map(|f| f.key.clone()).collect();
         for f in p.features.iter_mut().filter(|f| !f.skip && f.run.is_none() && f.agent.is_none()) {
             if matches!(f.state.as_str(), "planned" | "waiting") {
-                f.state =
-                    if f.depends_on.iter().all(|d| merged.contains(d)) { "planned".into() } else { "waiting".into() };
+                // A dependency is a feature that merged, or `x:…` an item running outside the program that finished.
+                let met = |d: &String| match d.strip_prefix("x:") {
+                    Some(ext) => self.external_done(ext),
+                    None => merged.contains(d),
+                };
+                f.state = if f.depends_on.iter().all(met) { "planned".into() } else { "waiting".into() };
             }
         }
         // 3. Start what may, in order, while there is room (a paused program starts nothing).
@@ -185,6 +248,12 @@ impl Runtime {
                     json!({}),
                     "done",
                 );
+                // The root(s) are closed with the program when every child merged (nothing skipped or left running).
+                if skipped == 0 && p.left_out.running.is_empty() {
+                    for root in &p.root {
+                        self.wb_spawn(&p.project, root, crate::writeback::WbOp::Parent);
+                    }
+                }
             }
             self.event(
                 "-",
@@ -251,6 +320,11 @@ impl Runtime {
                                 detail: None,
                             };
                             let _ = self.db.work_note(&r.project_id, &r.node_id, &e);
+                            self.wb_spawn(
+                                &p.project,
+                                &r.node_id,
+                                crate::writeback::WbOp::Started { feature: f.slug.clone() },
+                            );
                         }
                     }
                 }
@@ -295,15 +369,41 @@ impl Runtime {
         }
     }
 
-    /// Closes the open decisions of program `p` whose key `pick` selects (`new:#19`, `failed:pf-2`…).
-    pub(crate) fn program_close_decisions(&self, p: &Program, pick: impl Fn(&str) -> bool) {
-        self.close_items_where(
-            |i| {
-                i.kind == "program"
-                    && i.payload["program"].as_str() == Some(p.id.as_str())
-                    && pick(i.payload["key"].as_str().unwrap_or(""))
-            },
-            "resolved",
-        );
+    /// Closes the open decisions of program `p` whose key `pick` selects (`new:#19`, `failed:pf-2`…) as
+    /// decided with `word` by the user (`add`, `ignore`, `skip`, `keep`, `open`, `dismiss`): the chat line
+    /// says what was done, once.
+    pub(crate) fn program_close_decisions(&self, p: &Program, word: &str, pick: impl Fn(&str) -> bool) {
+        let ids: Vec<u64> = self.store.read(|s| {
+            s.inbox
+                .iter()
+                .filter(|i| {
+                    i.open()
+                        && i.kind == "program"
+                        && i.payload["program"].as_str() == Some(p.id.as_str())
+                        && pick(i.payload["key"].as_str().unwrap_or(""))
+                })
+                .map(|i| i.id)
+                .collect()
+        });
+        for id in ids {
+            self.program_close_one(id, word);
+        }
+    }
+
+    /// Closes decision `id` as decided with `word` (and tells the chat).
+    pub(crate) fn program_close_one(&self, id: u64, word: &str) {
+        let effect: &'static str = match word {
+            "add" => "added",
+            "ignore" => "ignored",
+            "skip" => "skipped",
+            "keep" => "kept",
+            "open" => "opened",
+            "turn_off" => "turned off",
+            _ => "dismissed",
+        };
+        if self.close_item(id, orch_store::InboxStatus::Decided, word, "user").is_some() {
+            self.advance(id, crate::inbox::Stage::Effect(effect, None));
+            self.touch("inbox");
+        }
     }
 }

@@ -446,16 +446,19 @@ impl Runtime {
     fn start_lead(&self, cx: &RunCtx, lead: &str, row: &orch_store::WorktreeRow) -> Result<()> {
         let feature = &cx.feature;
         let rec = self.add_team_agent(cx, lead, self.free_agent_number(&feature.slug, lead)?, row)?;
-        self.deliver_kind(&rec.id, &Self::lead_brief(cx), TurnKind::Task)?;
+        self.deliver_kind(&rec.id, &self.lead_brief(cx), TurnKind::Task)?;
         Ok(())
     }
 
     /// A lead's first turn: the user's brief and what to do with it.
-    fn lead_brief(cx: &RunCtx) -> String {
+    fn lead_brief(&self, cx: &RunCtx) -> String {
         let feature = &cx.feature;
         let hint = crate::github_issue::brief_hint(&feature.brief, &cx.project)
             .map(|h| format!("{h}\n\n"))
             .unwrap_or_default();
+        // The tracker item the run came from, and its open children (B5).
+        let hint =
+            format!("{}{hint}", self.source_item_hint(&cx.run.id).map(|h| format!("{h}\n\n")).unwrap_or_default());
         format!(
             "ORCH: you lead the team on feature {} ({}). Brief from the user:\n\n{}\n\n{hint}Follow your protocol: write the docs in {}, commit them, then call mcp__orch__request_spec_approval.",
             feature.title,
@@ -476,7 +479,7 @@ impl Runtime {
         let cx = self.run_ctx(&seat.run_id).ok()?;
         match seat.task.and_then(|t| self.db.task(t).ok().flatten()) {
             Some(task) => Some(self.task_turn(&cx, &task, rec, &self.branch_of(rec))),
-            None if crate::runtime::is_lead(rec) => Some(Self::lead_brief(&cx)),
+            None if crate::runtime::is_lead(rec) => Some(self.lead_brief(&cx)),
             None => None,
         }
     }
@@ -1729,6 +1732,12 @@ impl Runtime {
                 t.flow.model = model;
                 let out = self.tasks_of(&cx).create(t)?;
                 let t = out.value;
+                // Written back as a sub-issue of the item the run came from (contract §5).
+                if t.external_id.is_some()
+                    && let Ok(Some(src)) = self.db.work_node_of_run(&cx.run.id)
+                {
+                    self.wb_spawn(&cx.project.id, &src.node_id, crate::writeback::WbOp::TeamTask { task: t.id });
+                }
                 self.run_event(
                     &cx.run.id,
                     Some(&rec.id),

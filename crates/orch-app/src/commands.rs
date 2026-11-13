@@ -713,6 +713,12 @@ pub async fn program(core: CoreState<'_>, id: String) -> Res<Value> {
     blocking(core, move |c| c.runtime()?.program(&id)).await
 }
 
+/// Repeats the write-back that failed on a node (contract §5).
+#[tauri::command]
+pub async fn writeback_retry(core: CoreState<'_>, node: String) -> Res<Value> {
+    blocking(core, move |c| c.runtime()?.writeback_retry(&node)).await
+}
+
 #[tauri::command]
 pub async fn intake_source(core: CoreState<'_>, project: String) -> Res<Value> {
     blocking(core, move |c| c.runtime()?.intake_source(&project)).await
