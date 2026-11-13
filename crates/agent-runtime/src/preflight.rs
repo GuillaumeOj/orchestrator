@@ -43,7 +43,7 @@ pub struct VersionRange {
 /// `min` is the P0 baseline (2.1.302). `tested_max` is the newest version the
 /// contract tests passed on: `scripts/contract.sh --accept` rewrites it.
 pub const SUPPORTED_CLAUDE: VersionRange =
-    VersionRange { min: Version(2, 1, 302), tested_max: Version(2, 1, 302), strict: false };
+    VersionRange { min: Version(2, 1, 302), tested_max: Version(2, 1, 323), strict: false };
 
 /// How to verify a Claude Code version newer than `tested_max`: the command to
 /// run in a checkout, and the doc that says what it checks and costs.
