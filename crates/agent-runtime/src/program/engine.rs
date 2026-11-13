@@ -73,6 +73,12 @@ impl Runtime {
         if let Some(id) = &f.agent {
             // A solo feature is done when its PR merges (the session's `run.pr_opened`); only a session that
             // opened no PR falls back to "ended after a finished turn".
+            // A merged PR stays merged: no more polling.
+            if f.state == "merged"
+                && let Some(pr) = f.pr.as_ref().filter(|p| p["state"] == "MERGED")
+            {
+                return Some(Live { state: "merged", phase: None, pr: Some(pr.clone()), merged_at_ms: f.merged_at_ms });
+            }
             if let Some(url) = self.solo_pr(id) {
                 let cached = f.pr.as_ref().filter(|p| {
                     p["url"] == url.as_str()
@@ -115,14 +121,14 @@ impl Runtime {
         None
     }
 
-    /// The PR a solo session opened (its last `run.pr_opened`).
+    /// The PR a solo session opened (its last `run.pr_opened`; events come newest first).
     fn solo_pr(&self, agent: &str) -> Option<String> {
         self.db
             .events(0, Some(agent), Some("run.pr_opened"), 20)
             .ok()?
             .into_iter()
             .filter_map(|e| e.detail["url"].as_str().map(str::to_string))
-            .next_back()
+            .next()
     }
 
     /// Whether the run / session a program waits on (outside it) has finished (`run:<id>` / `agent:<id>`).
@@ -242,6 +248,12 @@ impl Runtime {
                     json!({}),
                     "done",
                 );
+                // The root(s) are closed with the program when every child merged (nothing skipped or left running).
+                if skipped == 0 && p.left_out.running.is_empty() {
+                    for root in &p.root {
+                        self.wb_spawn(&p.project, root, crate::writeback::WbOp::Parent);
+                    }
+                }
             }
             self.event(
                 "-",

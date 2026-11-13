@@ -54,6 +54,20 @@ fn fails_key(project: &str) -> String {
     format!("work.writeback.fails:{project}")
 }
 
+/// Whether Linear team key `key` is one of the project's `teams` (keys, or team ids).
+pub(crate) fn linear_team_ok(teams: &[String], key: &str) -> bool {
+    teams.iter().any(|x| x.eq_ignore_ascii_case(key) || x.len() == 36)
+}
+
+/// Whether `hay` carries `id` as a whole reference (`eng-4` is not in `eng-42`).
+fn carries(hay: &str, id: &str) -> bool {
+    hay.match_indices(id).any(|(i, _)| {
+        let before = hay[..i].chars().next_back().is_none_or(|c| !c.is_ascii_alphanumeric());
+        let after = hay[i + id.len()..].chars().next().is_none_or(|c| !c.is_ascii_digit());
+        before && after
+    })
+}
+
 /// A node's id says which tracker item it is: `gh:owner/name#12`.
 fn github_item(node: &str) -> Option<(String, u64)> {
     let rest = node.strip_prefix("gh:")?;
@@ -105,7 +119,7 @@ impl Runtime {
             Tracker::Linear { teams, .. } => {
                 let Some(rest) = row.node_id.strip_prefix("lin:") else { return false };
                 let team = rest.rsplit_once('-').map_or("", |(t, _)| t);
-                teams.iter().any(|x| x.eq_ignore_ascii_case(team) || x.len() == 36)
+                linear_team_ok(teams, team)
             }
             Tracker::Local { .. } => false,
         }
@@ -169,7 +183,10 @@ impl Runtime {
                 let issue = w::lin_issue(gql, &row.reference)?;
                 match op {
                     WbOp::Started { feature } => {
-                        let state = wbk.linear_state.clone().or_else(|| issue.first_of("started").map(str::to_string));
+                        // An issue already in a started state (In Review…) is not moved back.
+                        let state = (issue.state_type != "started")
+                            .then(|| wbk.linear_state.clone().or_else(|| issue.first_of("started").map(str::to_string)))
+                            .flatten();
                         let mut input = json!({});
                         if let Some(s) = state {
                             input["stateId"] = json!(s);
@@ -183,7 +200,8 @@ impl Runtime {
                         w::lin_comment(gql, &issue.id, &format!("Started in Orchestrator: feature {feature}"))?;
                     }
                     WbOp::Merged | WbOp::Parent => {
-                        if issue.state_type != "completed"
+                        // A canceled issue stays canceled.
+                        if !matches!(issue.state_type.as_str(), "completed" | "canceled")
                             && let Some(s) = issue.first_of("completed")
                         {
                             w::lin_update(gql, &issue.id, json!({"stateId": s}))?;
@@ -236,7 +254,18 @@ impl Runtime {
         let _ = self.db.work_note(&p.id, &row.node_id, &e);
         let status = json!({"status": if ok { "ok" } else { "failed" }, "what": what, "at_ms": now, "message": message,
                             "code": code, "op": op});
-        let _ = self.db.set_setting(&status_key(&p.id, &row.node_id), &status);
+        // A success of another write does not hide a failure that can still be retried.
+        let key = status_key(&p.id, &row.node_id);
+        let keeps_failure = ok
+            && self
+                .db
+                .setting(&key)
+                .ok()
+                .flatten()
+                .is_some_and(|prev| prev["status"] == "failed" && prev["what"] != what);
+        if !keeps_failure {
+            let _ = self.db.set_setting(&key, &status);
+        }
         self.event(
             "-",
             if ok { "writeback.done" } else { "writeback.failed" },
@@ -332,13 +361,13 @@ impl Runtime {
                     } else {
                         format!("Closes {repo}#{n}")
                     };
-                    if !body.contains(&line) && !closes.contains(&line) {
+                    if !body.lines().any(|l| l.trim() == line) && !closes.contains(&line) {
                         closes.push(line);
                     }
                 }
                 Tracker::Linear { .. } => {
                     let id = r.reference.to_lowercase();
-                    if !branch.to_lowercase().contains(&id) && !title.to_lowercase().contains(&id) {
+                    if !carries(&branch.to_lowercase(), &id) && !carries(&title.to_lowercase(), &id) {
                         title = format!("[{}] {title}", r.reference);
                     }
                 }
@@ -358,5 +387,18 @@ impl Runtime {
         self.db.set_tracker(project, &t)?;
         self.db.set_setting(&fails_key(project), &json!(0))?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::carries;
+
+    #[test]
+    fn a_reference_is_carried_as_a_whole() {
+        assert!(carries("eng-42-refunds", "eng-42"));
+        assert!(carries("orch/eng-42", "eng-42"));
+        assert!(!carries("eng-421-x", "eng-42"));
+        assert!(!carries("reng-42", "eng-42"));
     }
 }

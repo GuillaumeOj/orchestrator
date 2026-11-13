@@ -17,12 +17,10 @@ type R<T> = Result<T, SourceError>;
 /// The error of a refused or failed GitHub write: a permission problem is `gh_write`.
 fn gh_write_error(e: &anyhow::Error) -> SourceError {
     let m = format!("{e:#}");
-    let l = m.to_ascii_lowercase();
-    let refused = ["403", "resource not accessible", "must have", "not permitted", "permission", "forbidden", "422"]
-        .iter()
-        .any(|p| l.contains(p));
+    // Offline, auth, scope, rate limit and not found keep their own codes (a 403 for a rate limit is not a
+    // refusal); what is left is GitHub saying no.
     let base = gh_error(e);
-    if refused || base.code == "failed" {
+    if base.code == "failed" {
         let first = m.lines().next().unwrap_or(&m).trim().to_string();
         SourceError::new("gh_write", format!("GitHub refused the change: {first}"))
     } else {
@@ -110,10 +108,14 @@ fn gh_node_id(g: &dyn Gh, repo: &str, n: u64) -> R<String> {
         .ok_or_else(|| SourceError::new("failed", format!("no node id for {repo}#{n}")))
 }
 
-fn gh_graphql(g: &dyn Gh, query: &str, vars: &[(&str, &str)]) -> R<Value> {
+/// `vars` are strings (`-f`); `ints` are Int variables (`-F`: `-f` would send a string, which GraphQL refuses for `Int!`).
+fn gh_graphql(g: &dyn Gh, query: &str, vars: &[(&str, &str)], ints: &[(&str, u64)]) -> R<Value> {
     let mut args: Vec<String> = vec!["api".into(), "graphql".into(), "-f".into(), format!("query={query}")];
     for (k, v) in vars {
         args.extend(["-f".into(), format!("{k}={v}")]);
+    }
+    for (k, v) in ints {
+        args.extend(["-F".into(), format!("{k}={v}")]);
     }
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
     let v = gh_json(g, &refs)?;
@@ -141,7 +143,7 @@ fn pick_status<'a>(options: &'a [Value], want: Option<&str>) -> Option<&'a Value
 /// board first); returns the status name set. `want`: the configured Status, else the first "in progress".
 pub fn gh_board_status(g: &dyn Gh, repo: &str, n: u64, owner: &str, number: u64, want: Option<&str>) -> R<String> {
     let issue = gh_node_id(g, repo, n)?;
-    let v = gh_graphql(g, BOARD_QUERY, &[("owner", owner), ("number", &number.to_string())])?;
+    let v = gh_graphql(g, BOARD_QUERY, &[("owner", owner)], &[("number", number)])?;
     let project = &v["data"]["repositoryOwner"]["projectV2"];
     let (pid, field) = (project["id"].as_str(), &project["field"]);
     let (Some(pid), Some(fid)) = (pid, field["id"].as_str()) else {
@@ -156,6 +158,7 @@ pub fn gh_board_status(g: &dyn Gh, repo: &str, n: u64, owner: &str, number: u64,
         g,
         "mutation OrchBoardAdd($project: ID!, $content: ID!) { addProjectV2ItemById(input: {projectId: $project, contentId: $content}) { item { id } } }",
         &[("project", pid), ("content", &issue)],
+        &[],
     )?;
     let item = add["data"]["addProjectV2ItemById"]["item"]["id"]
         .as_str()
@@ -164,6 +167,7 @@ pub fn gh_board_status(g: &dyn Gh, repo: &str, n: u64, owner: &str, number: u64,
         g,
         "mutation OrchBoardSet($project: ID!, $item: ID!, $field: ID!, $option: String!) { updateProjectV2ItemFieldValue(input: {projectId: $project, itemId: $item, fieldId: $field, value: {singleSelectOptionId: $option}}) { projectV2Item { id } } }",
         &[("project", pid), ("item", item), ("field", fid), ("option", oid)],
+        &[],
     )?;
     Ok(name)
 }
@@ -175,6 +179,7 @@ pub fn gh_add_sub_issue(g: &dyn Gh, repo: &str, parent: u64, child: u64) -> R<()
         g,
         "mutation OrchSubIssue($issue: ID!, $sub: ID!) { addSubIssue(input: {issueId: $issue, subIssueId: $sub}) { issue { id } } }",
         &[("issue", &p), ("sub", &c)],
+        &[],
     )?;
     Ok(())
 }
@@ -347,6 +352,9 @@ mod tests {
         // Offline keeps its own code (nothing to fix).
         let off = rec(|_| Err("dial tcp: network is unreachable".into()));
         assert_eq!(gh_comment(&off, "a/b", 1, "x").unwrap_err().code, "offline");
+        // A 403 that is a rate limit keeps its own code.
+        let rl = rec(|_| Err("HTTP 403: API rate limit exceeded".into()));
+        assert_eq!(gh_comment(&rl, "a/b", 1, "x").unwrap_err().code, "rate_limited");
     }
 
     #[test]
@@ -369,6 +377,9 @@ mod tests {
         let e = gh_board_status(&g, "a/b", 13, "acme", 4, Some("Blocked")).unwrap_err();
         assert_eq!(e.code, "gh_write");
         let calls = g.0.lock().unwrap();
+        // The board number is an Int variable: `-F`, not `-f`.
+        let q = calls.iter().find(|c| has(c, "OrchBoard(")).unwrap();
+        assert!(q.windows(2).any(|w| w[0] == "-F" && w[1] == "number=4"), "{q:?}");
         let set = calls.iter().find(|c| has(c, "updateProjectV2ItemFieldValue")).unwrap();
         assert!(
             has(set, "item=IT1") && has(set, "field=F1") && has(set, "option=o2") && has(set, "project=P1"),
