@@ -1,7 +1,18 @@
 // Entry to the Work browser (improve-intake notes §1.2): every caller (sidebar, Project pane, palette,
 // leader ⌘; b, Feature "Show in Work", run inspector) goes through `openWork`. One tab per scope:
 // the same scope focuses its tab (and lands the reveal / search there), another opens a new tab.
-import { addPane, app, confirm, findPane, openUrl, showPane, toast } from './app.svelte.js';
+import {
+  addPane,
+  app,
+  confirm,
+  featureBySlug,
+  findPane,
+  openFeature,
+  openSession,
+  openUrl,
+  showPane,
+  toast,
+} from './app.svelte.js';
 import { errText, invoke } from './ipc.js';
 import { scopeKey } from './workmodel.js';
 
@@ -113,10 +124,30 @@ export function skipFeature(p, f, then = (_r) => {}) {
 export async function openProgramSource(id) {
   try {
     const p = await invoke('program', { id });
-    const node = p?.root?.[0] ? await invoke('work_node', { id: p.root[0], opts: { children: false } }) : null;
-    if (node?.url) return openUrl(node.url);
-    toast(`${p?.root_ref ?? 'The source item'} has no link to open.`);
+    await openNodeLink(p?.root?.[0], p?.root_ref ?? 'The source item');
   } catch (e) {
     toast(`Could not open the link: ${errText(e)}`, { kind: 'error' });
   }
 }
+
+/** A node's link upstream, in the browser (`o` on a program's rows); `label` names it when it has none. */
+export async function openNodeLink(id, label) {
+  try {
+    const node = id ? await invoke('work_node', { id, opts: { children: false } }) : null;
+    if (node?.url) return openUrl(node.url);
+    toast(`${label} has no link to open.`);
+  } catch (e) {
+    toast(`Could not open the link: ${errText(e)}`, { kind: 'error' });
+  }
+}
+
+/** A program feature's Feature pane (by slug in the program's project), else its solo session, else `fallback`. */
+export function openProgramFeature(p, f, fallback = () => openProgram(p.id, p.title)) {
+  const feat = featureBySlug(p.project, f.slug);
+  if (feat) return openFeature(feat.id);
+  if (f.agent) return openSession(f.agent);
+  fallback();
+}
+
+/** The Program view's tab title. */
+export const programTabTitle = (title) => `${title || 'Program'} · program`;

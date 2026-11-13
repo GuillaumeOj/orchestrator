@@ -401,7 +401,9 @@ export function lanes(now, filter = null, at = Date.now(), { projects = [], show
     needs_you: needs,
     running: rows.running,
     // (kept while the program's row is the same object, like the other rows)
-    programs: programRows(now?.programs, shown).map((r) => rowOf(r.program, 'program', () => r)),
+    programs: programRows(now?.programs, shown).map((p) =>
+      rowOf(p, 'program', () => ({ kind: 'program', key: `program:${p.id}`, program: p, project: p.project })),
+    ),
     waiting: rows.waiting,
     queued: rows.queued,
     ready: ready.rows,
@@ -409,11 +411,7 @@ export function lanes(now, filter = null, at = Date.now(), { projects = [], show
   };
   const out = LANES.map((l) => {
     if (l.id === 'ready') return { ...l, ...ready };
-    if (l.id === 'programs') {
-      const count = programsCount(byLane.programs.map((r) => r.program));
-      return { ...l, rows: byLane.programs, count, header: count ? `${l.label} · ${count}` : l.label, status: null };
-    }
-    const count = rowCount(byLane[l.id]);
+    const count = l.id === 'programs' ? programsCount(byLane.programs.map((r) => r.program)) : rowCount(byLane[l.id]);
     return { ...l, rows: byLane[l.id], count, header: count ? `${l.label} · ${count}` : l.label, status: null };
   }).filter((l) => l.id === 'needs_you' || l.rows.length);
   const idleCount = rowCount(rows.idle);

@@ -7,14 +7,24 @@
   import Menu from '../components/Menu.svelte';
   import GraphStrip from '../components/program/GraphStrip.svelte';
   import Select from '../components/Select.svelte';
+  import AppChip from '../components/work/AppChip.svelte';
   import HintRow from '../components/work/HintRow.svelte';
-  import { app, features, findPane, openFeature, openSession, openUrl, showPane, toast } from '../lib/app.svelte.js';
+  import { app, findPane, openUrl, showPane, toast } from '../lib/app.svelte.js';
   import { errText, invoke } from '../lib/ipc.js';
   import { isTypingTarget } from '../lib/keyboard.js';
   import { onTopics } from '../lib/now.svelte.js';
   import * as P from '../lib/program.js';
   import { tooltip } from '../lib/tooltip.js';
-  import { cancelProgram, programTeams, skipFeature, togglePause, updateProgram } from '../lib/work.js';
+  import {
+    cancelProgram,
+    openNodeLink,
+    openProgramFeature,
+    programTabTitle,
+    programTeams,
+    skipFeature,
+    togglePause,
+    updateProgram,
+  } from '../lib/work.js';
 
   let { paneId } = $props();
   const spec = $derived(app.panes[paneId]);
@@ -24,8 +34,7 @@
   let loadError = $state(null);
   let sel = $state(0);
   let hoverKey = $state(null);
-  let news = $state({}); // new item id → its WorkNode (title, ref, parent, url)
-  let roots = $state({}); // root id → its WorkNode
+  let nodes = $state({}); // root / new item id → its WorkNode (title, ref, parent, url)
   let teams = $state(/** @type {{ id: string, name: string }[]} */ ([]));
   let teamsLoad = Promise.resolve(); // the row editor's prefill waits for the teams
   let adding = $state(null); // { item, mode, team, after: [keys] }: the row editor
@@ -33,7 +42,7 @@
 
   const live = $derived(P.isLive(p));
   const chip = $derived(p ? P.statusChip(p) : null);
-  const root = $derived(p ? roots[p.root?.[0]] : null);
+  const root = $derived(p ? nodes[p.root?.[0]] : null);
   const tracker = $derived(p?.root?.[0] ? P.trackerOfId(p.root[0]) : 'the tracker');
   const liveCap = $derived(P.liveCapText(app.now.counts?.global));
   const project = $derived(p?.project ?? null);
@@ -47,7 +56,7 @@
       loadError = null;
       // A tab opened from a card or an outcome knew only the id: it takes the program's title.
       const s = app.panes[paneId];
-      if (s && s.programTitle !== p.title) app.panes[paneId] = { ...s, programTitle: p.title, title: `${p.title} · program` };
+      if (s && s.programTitle !== p.title) app.panes[paneId] = { ...s, programTitle: p.title, title: programTabTitle(p.title) };
       if (sel >= p.features.length) sel = Math.max(0, p.features.length - 1);
       untrack(fetchNodes);
     } catch (e) {
@@ -57,21 +66,14 @@
 
   /** The roots' and the new items' nodes (titles, links), once each. */
   function fetchNodes() {
-    for (const r of p?.root ?? [])
-      if (!roots[r])
-        invoke('work_node', { id: r, opts: { children: false } })
-          .then((n) => n && (roots = { ...roots, [r]: n }))
-          .catch(() => {});
-    for (const n of p?.new_items ?? [])
-      if (!news[n])
-        invoke('work_node', { id: n, opts: { children: false } })
-          .then((x) => x && (news = { ...news, [n]: x }))
+    for (const id of [...(p?.root ?? []), ...(p?.new_items ?? [])])
+      if (!nodes[id])
+        invoke('work_node', { id, opts: { children: false } })
+          .then((n) => n && (nodes = { ...nodes, [id]: n }))
           .catch(() => {});
   }
 
-  onMount(() => {
-    return onTopics(['programs'], load);
-  });
+  onMount(() => onTopics(['programs'], load));
 
   // Teams of the program's project, for the row editor (once per project, not per reload).
   $effect(() => {
@@ -105,22 +107,8 @@
   const cancel = () => live && cancelProgram(p, after);
   const skip = (f) => live && P.skippable(f) && skipFeature(p, f, after);
 
-  function openRowFeature(f) {
-    const feat = features().find((x) => x.slug === f.slug && x.project_id === p.project);
-    if (feat) return openFeature(feat.id);
-    if (f.agent) return openSession(f.agent);
-    toast(`${f.slug} has not started yet.`);
-  }
-  function openItem(f) {
-    const node = f.items?.[0];
-    if (!node) return;
-    invoke('work_node', { id: node, opts: { children: false } })
-      .then((n) => {
-        if (n?.url) openUrl(n.url);
-        else toast(`${P.refOfId(node)} has no link to open.`);
-      })
-      .catch((e) => toast(`Could not open the link: ${errText(e)}`, { kind: 'error' }));
-  }
+  const openRowFeature = (f) => openProgramFeature(p, f, () => toast(`${f.slug} has not started yet.`));
+  const openItem = (f) => f.items?.[0] && openNodeLink(f.items[0], P.refOfId(f.items[0]));
 
   async function setAtOnce(v) {
     if (!live) return;
@@ -129,7 +117,7 @@
 
   /** The row editor of a new upstream item, prefilled: team mode with the first team (else solo), after the features its item is blocked by. */
   async function openAdd(item) {
-    const n = news[item] ?? (await invoke('work_node', { id: item, opts: { children: false } }).catch(() => null));
+    const n = nodes[item] ?? (await invoke('work_node', { id: item, opts: { children: false } }).catch(() => null));
     await teamsLoad;
     const blockers = new Set((n?.upstream?.blocked_by ?? []).map((b) => b.id).filter(Boolean));
     const deps = p.features.filter((f) => !f.skip && f.items.some((x) => blockers.has(x))).map((f) => f.key);
@@ -158,9 +146,8 @@
     { id: 'skip', label: 'Skip', key: 'x', disabled: !live || !P.skippable(f), run: () => skip(f) },
     { id: 'item', label: 'Open item', key: 'o', run: () => openItem(f) },
   ];
-  const featOptions = $derived(feats.filter((f) => !f.skip).map((f) => ({ value: f.key, label: `${f.slug} (${P.numberOf(p, f.key)})` })));
+  const featOptions = $derived(feats.map((f, i) => !f.skip && { value: f.key, label: `${f.slug} (${i + 1})` }).filter(Boolean));
   const teamOptions = $derived(teams.map((t) => ({ value: t.id, label: t.name })));
-  const AT_ONCE = [1, 2, 3, 4, 5].map((n) => ({ value: n, label: String(n) }));
 
   // ---- keys (§12.4)
 
@@ -189,25 +176,15 @@
     if (k === 'o') return run(() => openItem(cur));
   }
 
-  const hints = $derived(
-    live
-      ? [
-          ['j k', 'rows'],
-          ['⏎', 'open feature'],
-          ['x', 'skip'],
-          ...(p?.new_items?.length ? [['a', 'add item']] : []),
-          ['o', 'open item'],
-          ['p', p?.status === 'paused' ? 'resume' : 'pause'],
-          ['⇧K', 'cancel'],
-          ['Esc', 'back'],
-        ]
-      : [
-          ['j k', 'rows'],
-          ['⏎', 'open feature'],
-          ['o', 'open item'],
-          ['Esc', 'back'],
-        ],
-  );
+  const hints = $derived([
+    ['j k', 'rows'],
+    ['⏎', 'open feature'],
+    ...(live ? [['x', 'skip']] : []),
+    ...(live && p?.new_items?.length ? [['a', 'add item']] : []),
+    ['o', 'open item'],
+    ...(live ? [['p', p?.status === 'paused' ? 'resume' : 'pause'], ['⇧K', 'cancel']] : []),
+    ['Esc', 'back'],
+  ]);
 </script>
 
 <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
@@ -220,7 +197,7 @@
     <header class="head">
       <div class="l1">
         <h2>{p.title} · program</h2>
-        <span class="chip {chip.tone}" data-status={p.status}>{chip.text}</span>
+        <span data-status={p.status}><AppChip {chip} /></span>
         <span class="grow"></span>
         {#if live}
           <button type="button" class="btn" class:primary={p.status === 'paused'} disabled={busy} use:tooltip={{ label: p.status === 'paused' ? 'Resume' : 'Pause', key: 'p' }} onclick={pause}>{p.status === 'paused' ? 'Resume' : 'Pause'}</button>
@@ -228,7 +205,7 @@
         {/if}
       </div>
       <p class="sub muted" data-subline>
-        {#each P.viewSubline(p, { rootTitle: root?.title ?? '', where: '' }) as part, i (i)}{#if i}{' · '}{/if}{part}{#if i === 0 && root?.url}{' '}<button type="button" class="linkbtn" aria-label="Open {p.root_ref} in {tracker}" onclick={() => openUrl(root.url)}>↗</button>{/if}{/each}
+        {#each P.viewSubline(p, { rootTitle: root?.title ?? '', where: '' }) as part, i (i)}{#if i}{' · '}{/if}{part}{#if i === 0 && root?.url}{' '}<button type="button" class="link" aria-label="Open {p.root_ref} in {tracker}" onclick={() => openUrl(root.url)}>↗</button>{/if}{/each}
       </p>
     </header>
 
@@ -239,13 +216,14 @@
         <div class="th" role="row"><span>#</span><span>Feature</span><span>From</span><span>Mode</span><span>State</span><span>Estimate</span><span>Actual</span><span></span></div>
         {#each feats as f, i (f.key)}
           {@const st = P.viewState(f, p, { liveCap })}
+          {@const flag = P.flagText(f, tracker)}
           <!-- svelte-ignore a11y_click_events_have_key_events, a11y_interactive_supports_focus -->
           <div class="tr" class:sel={sel === i} class:hover={hoverKey === f.key} role="row" aria-selected={sel === i} data-row={f.key} data-state={f.state} onclick={() => (sel = i)} ondblclick={() => openRowFeature(f)}>
             <span class="muted">{i + 1}</span>
             <b class="mono">{f.slug}</b>
             <span class="mono" use:tooltip={P.fromTip(f) || null}>{P.fromText(f)}</span>
             <span>{f.mode === 'solo' ? 'Solo' : 'Team'}</span>
-            <span class="state {st.tone}">{st.text}{#if P.flagText(f, tracker)}<span class="flag">{` · ${P.flagText(f, tracker)}`}</span>{/if}</span>
+            <span class="state {st.tone}">{st.text}{#if flag}<span class="flag">{` · ${flag}`}</span>{/if}</span>
             <span>{P.estText(f.estimate, { unit: false })}</span>
             <span>{P.actualText(f)}</span>
             <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
@@ -257,12 +235,12 @@
 
       {#if live}
         {#each p.new_items ?? [] as item (item)}
-          {@const n = news[item]}
+          {@const n = nodes[item]}
           {#if adding?.item === item}
             <div class="editor" data-add-editor>
               <div class="eh"><b>Add {P.refOfId(item)}{n?.title ? ` ${n.title}` : ''}</b> <span class="muted">as feature {feats.length + 1}</span></div>
               <div class="fields">
-                <div class="f"><span>Mode</span><Select value={adding.mode} options={[{ value: 'team', label: 'Team' }, { value: 'solo', label: 'Solo' }]} aria-label="Mode" onchange={(v) => (adding.mode = v)} /></div>
+                <div class="f"><span>Mode</span><Select value={adding.mode} options={P.MODES} aria-label="Mode" onchange={(v) => (adding.mode = v)} /></div>
                 <div class="f"><span>Team</span>{#if adding.mode === 'team'}<Select value={adding.team} options={teamOptions} placeholder="— none" noun="team" aria-label="Team" onchange={(v) => (adding.team = v)} />{:else}<span class="muted">—</span>{/if}</div>
                 <div class="f"><span>After</span><Select value={adding.after[0] ?? ''} options={[{ value: '', label: 'first' }, ...featOptions]} aria-label="After" onchange={(v) => (adding.after = v ? [v] : [])} /></div>
                 <span class="grow"></span>
@@ -282,7 +260,7 @@
         <div class="settings">
           <span class="muted">Settings</span>
           <span>At once</span>
-          <Select value={p.sequential ? 1 : p.max_parallel} options={AT_ONCE} width="hug" disabled={p.sequential} aria-label="Features running at most" onchange={setAtOnce} />
+          <Select value={p.sequential ? 1 : p.max_parallel} options={P.AT_ONCE} width="hug" disabled={p.sequential} aria-label="Features running at most" onchange={setAtOnce} />
           <span class="muted">{p.sequential ? 'One after the other runs one at a time' : 'applies to the next start'}</span>
         </div>
       {:else}
@@ -321,27 +299,6 @@
   }
   .sub {
     margin: var(--space-xs) 0 0;
-  }
-  .chip {
-    --tone: var(--color-text-muted);
-    padding: 0 var(--space-xs);
-    border: var(--border-width-default) solid var(--tone);
-    border-radius: var(--radius-sm);
-    background: color-mix(in srgb, var(--tone) 20%, transparent);
-    color: var(--tone);
-    font: var(--text-mono-sm);
-  }
-  .chip.working {
-    --tone: var(--color-status-working);
-  }
-  .chip.paused {
-    --tone: var(--color-status-paused);
-  }
-  .chip.done {
-    --tone: var(--color-status-done);
-  }
-  .grow {
-    flex: 1;
   }
   .scroll {
     flex: 1;
@@ -445,16 +402,5 @@
   }
   .over {
     margin: var(--space-md) 0 0;
-  }
-  .err {
-    color: var(--color-status-error);
-  }
-  .linkbtn {
-    padding: 0;
-    border: 0;
-    background: none;
-    color: var(--color-accent-default);
-    font: inherit;
-    cursor: pointer;
   }
 </style>

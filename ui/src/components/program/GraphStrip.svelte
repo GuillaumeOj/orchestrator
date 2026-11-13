@@ -22,7 +22,7 @@
 {#if g}
   <div class="strip" data-graph>
     <span class="lab muted">Graph</span>
-    <svg {width} {height} viewBox="0 0 {width} {height}" role="img" aria-label="Order of the features: {g.edges.map((e) => `${g.nodes.find((n) => n.key === e.to)?.n} after ${g.nodes.find((n) => n.key === e.from)?.n}`).join(', ')}">
+    <svg {width} {height} viewBox="0 0 {width} {height}" role="img" aria-label="Order of the features: {g.edges.map((e) => `${e.toN} after ${e.fromN}`).join(', ')}">
       <defs>
         <marker id="gs-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
           <path d="M0,0 L8,4 L0,8" fill="none" stroke="currentColor" />

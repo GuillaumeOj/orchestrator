@@ -4,12 +4,15 @@
   // edits stay here; `program_start` validates the edited draft and starts it, or returns the issues
   // left (the dialog stays). Keys §12.3; states §6.5.
   import { onMount, tick } from 'svelte';
-  import { app, features, openCanvas, openFeature, openUrl, projectName, toast } from '../lib/app.svelte.js';
+  import { app, featureBySlug, openCanvas, openFeature, openUrl, projectName, toast } from '../lib/app.svelte.js';
+  import { plural } from '../lib/format.js';
+  import { staleOf } from '../lib/intake.js';
   import { errText, invoke } from '../lib/ipc.js';
   import { isTypingTarget } from '../lib/keyboard.js';
   import * as P from '../lib/program.js';
   import { tooltip } from '../lib/tooltip.js';
   import { openProgram, programTeams } from '../lib/work.js';
+  import { isClosed, isContainer } from '../lib/workmodel.js';
   import FloatingWindow from './FloatingWindow.svelte';
   import Menu from './Menu.svelte';
   import GraphStrip from './program/GraphStrip.svelte';
@@ -51,18 +54,16 @@
   const title = $derived(draft?.title ?? o?.title ?? 'program');
   const rootRef = $derived(draft?.root_ref ?? root?.ref ?? '');
   const single = $derived(roots.length === 1);
-  const container = $derived(['milestone', 'project', 'project_milestone', 'initiative'].includes(root?.kind));
-  const closedRoot = $derived(single && root && root.upstream?.state === 'closed');
+  const container = $derived(isContainer(root));
+  const closedRoot = $derived(single && isClosed(root));
   const hasGrand = $derived(root?.child_nodes ? root.child_nodes.some((c) => (c.children?.total ?? 0) > 0) : true);
   const busy = $derived(phase === 'planning' || phase === 'replanning');
+  const locked = $derived(busy || phase === 'stale');
+  const order = $derived(sequential ? 'seq' : 'deps');
+  const canStart = $derived(!!draft && !blocking && !busy && !starting && phase === 'planned' && P.liveCount(draft) > 0);
   const wbLine = $derived(P.writeBackLine(tracker, single ? rootRef : null));
   const totals = $derived(P.totalsParts(draft, pname));
   const teamOptions = $derived((teams ?? []).map((t) => ({ value: t.id, label: t.name })));
-  const MODES = [
-    { value: 'team', label: 'Team' },
-    { value: 'solo', label: 'Solo' },
-  ];
-  const AT_ONCE = [1, 2, 3, 4, 5].map((n) => ({ value: n, label: String(n) }));
   /** "From #12 Checkout v2 · in v2 · acme/shop · GitHub" · "From 3 selected under #12 · …". */
   const fromLine = $derived.by(() => {
     const parent = root?.breadcrumb?.at(-1);
@@ -83,6 +84,8 @@
     try {
       const r = await invoke('program_plan', { roots, grouping, opts: { sequential, max_parallel: atOnce, cut: draft?.cut ?? [] } });
       if (n !== seq) return;
+      // (the plan names the project before the root's node arrives: teams and tracker start now)
+      if (!teams && r.program?.project) loadProject(r.program.project);
       base = r.program;
       draft = P.withTotals(structuredClone(r.program));
       coreIssues = r.issues ?? [];
@@ -93,15 +96,19 @@
       phase = r.program.features?.length ? 'planned' : 'nothing';
     } catch (e) {
       if (n !== seq) return;
-      const s = P.staleOf(e);
-      if (s) {
-        stale = s;
-        phase = 'stale';
-      } else {
+      failed(e, () => {
         error = errText(e);
         phase = 'failed';
-      }
+      });
     }
+  }
+
+  /** A refusal: stale (banner) or `other`. */
+  function failed(e, other) {
+    const s = staleOf(e);
+    if (!s) return other();
+    stale = s;
+    phase = 'stale';
   }
 
   onMount(() => {
@@ -109,12 +116,15 @@
     invoke('work_node', { id: roots[0], opts: { children: true } })
       .then((n) => {
         root = n;
-        if (n?.project) loadProject(n.project);
+        if (!teams && n?.project) loadProject(n.project);
       })
       .catch(() => {});
   });
 
+  let loadedProject = null;
   function loadProject(id) {
+    if (loadedProject) return;
+    loadedProject = id;
     programTeams(id).then((t) => (teams = t));
     invoke('tracker_settings', { project: id })
       .then((r) => (tracker = r?.settings ?? null))
@@ -123,7 +133,6 @@
 
   // ---- the dialog
 
-  const isEdited = () => P.edited(draft, base);
   const close = () => {
     if (app.overlay === o) app.overlay = null;
   };
@@ -131,7 +140,7 @@
     if (ask) return (ask = null);
     if (cutFor) return (cutFor = null);
     if (briefKey) return (briefKey = null);
-    if (phase === 'planned' && isEdited()) return (ask = { text: 'Discard this plan?', yes: 'Discard', no: 'Keep editing', onYes: close });
+    if (phase === 'planned' && P.editedCount(draft, base)) return (ask = { text: 'Discard this plan?', yes: 'Discard', no: 'Keep editing', onYes: close });
     close();
   }
 
@@ -142,7 +151,7 @@
       plan({ replan: true });
     };
     const n = P.editedCount(draft, base);
-    if (phase === 'planned' && n) return (ask = { text: `Re-plan and lose your edits to ${n === 1 ? '1 feature' : `${n} features`}?`, yes: 'Re-plan', no: 'Keep edits', onYes: go });
+    if (phase === 'planned' && n) return (ask = { text: `Re-plan and lose your edits to ${plural(n, 'feature')}?`, yes: 'Re-plan', no: 'Keep edits', onYes: go });
     go();
   }
 
@@ -161,7 +170,6 @@
   // ---- rows
 
   const feats = $derived(draft?.features ?? []);
-  const keyAt = (i) => feats[i]?.key;
   const edit = (fn) => {
     draft = fn(draft);
     startError = null;
@@ -186,15 +194,12 @@
     briefKey = null;
   }
   function briefKeys(e) {
-    if (e.key === 'Escape') {
-      e.preventDefault();
-      e.stopPropagation();
-      briefKey = null;
-    } else if (e.key === 'Enter' && e.metaKey) {
-      e.preventDefault();
-      e.stopPropagation();
-      briefDone();
-    }
+    const done = e.key === 'Enter' && e.metaKey;
+    if (e.key !== 'Escape' && !done) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (done) briefDone();
+    else briefKey = null;
   }
   const rowMenu = (f) => [
     { id: 'skip', label: f.skip ? 'Unskip' : 'Skip', key: 'x', run: () => skip(f.key) },
@@ -214,7 +219,7 @@
       case 'sequential':
         return setSequential(true);
       case 'feature': {
-        const f = features().find((x) => x.slug === i.feature && x.project_id === project);
+        const f = featureBySlug(project, i.feature);
         close();
         if (f) openFeature(f.id);
         else toast(`${i.feature ?? 'The feature'} is not in this app.`);
@@ -236,15 +241,14 @@
   }
   const edgeLabel = (e) => {
     const [a, b] = [P.numberOf(draft, e[0]), P.numberOf(draft, e[1])];
-    const items = (draft.edges ?? []).find((x) => x.from === e[0] && x.to === e[1])?.items ?? [];
-    const why = items.length >= 2 ? ` (${P.refOfId(items[0])} blocks ${P.refOfId(items[1])})` : '';
-    return `${b} after ${a}${why}`;
+    const why = P.blocksText((draft.edges ?? []).find((x) => x.from === e[0] && x.to === e[1])?.items ?? []);
+    return `${b} after ${a}${why ? ` (${why})` : ''}`;
   };
 
   // ---- start (⌘⏎)
 
   async function start() {
-    if (!draft || blocking || starting || phase !== 'planned' || !P.liveCount(draft)) return;
+    if (!canStart) return;
     if (briefKey) briefDone();
     starting = true;
     startError = null;
@@ -252,17 +256,13 @@
       const r = await invoke('program_start', { program: $state.snapshot({ ...draft, max_parallel: sequential ? 1 : atOnce, sequential }) });
       if (r?.program) {
         close();
-        toast(`Started ${r.program.title} · ${P.liveCount(r.program) === 1 ? '1 feature' : `${P.liveCount(r.program)} features`}`);
+        toast(`Started ${r.program.title} · ${plural(P.liveCount(r.program), 'feature')}`);
         return;
       }
       // The tree changed: the dialog stays and the block shows what is left (no toast).
       coreIssues = r?.issues ?? [];
     } catch (e) {
-      const s = P.staleOf(e);
-      if (s) {
-        stale = s;
-        phase = 'stale';
-      } else startError = errText(e);
+      failed(e, () => (startError = errText(e)));
     } finally {
       starting = false;
     }
@@ -280,9 +280,7 @@
     if (ask) {
       if (e.key === 'Enter') {
         e.preventDefault();
-        const y = ask.onYes;
-        ask = null;
-        y();
+        confirmAsk();
       }
       return;
     }
@@ -299,6 +297,12 @@
     if (k === 'e') return run(() => openBrief(f));
   }
 
+  function confirmAsk() {
+    const yes = ask.onYes;
+    ask = null;
+    yes();
+  }
+
   function onClose(reason) {
     if (reason === 'esc') return tryClose();
     close();
@@ -309,7 +313,7 @@
   <div class="pd" class:dim={!!ask} data-plan-phase={phase}>
     <p class="from muted" data-from>
       {fromLine}
-      {#if root?.url && single}<button type="button" class="linkbtn" aria-label="Open {rootRef} in {trackerWord}" onclick={() => openUrl(root.url)}>↗</button>{/if}
+      {#if root?.url && single}<button type="button" class="link" aria-label="Open {rootRef} in {trackerWord}" onclick={() => openUrl(root.url)}>↗</button>{/if}
     </p>
     {#if phase === 'stale'}
       <div class="banner" role="alert" data-stale>
@@ -321,25 +325,25 @@
     {/if}
     {#if closedRoot && phase !== 'stale'}<p class="muted" data-closed-root>{rootRef} was closed in {trackerWord}. Its open sub-issues can still run.</p>{/if}
 
-    <div class="controls" class:off={busy || phase === 'stale'}>
+    <div class="controls" class:off={locked}>
       <span class="lab">Split into</span>
       <div class="radios" role="radiogroup" aria-label="Split into">
         {#each P.splitChoices(container, hasGrand) as c (c.value)}
           <label class="radio" class:disabled={c.disabled} use:tooltip={c.disabled ? c.reason : null}>
-            <input type="radio" name="grouping" value={c.value} checked={grouping === c.value} disabled={c.disabled || busy || phase === 'stale'} onchange={(e) => pick(e, grouping, () => setGrouping(c.value))} />
+            <input type="radio" name="grouping" value={c.value} checked={grouping === c.value} disabled={c.disabled || locked} onchange={(e) => pick(e, grouping, () => setGrouping(c.value))} />
             {c.label}
           </label>
         {/each}
       </div>
       <span class="lab">Order</span>
       <div class="radios" role="radiogroup" aria-label="Order">
-        <label class="radio"><input type="radio" name="order" value="deps" checked={!sequential} disabled={busy || phase === 'stale'} onchange={(e) => pick(e, sequential ? 'seq' : 'deps', () => setSequential(false))} /> By dependencies</label>
-        <label class="radio"><input type="radio" name="order" value="seq" checked={sequential} disabled={busy || phase === 'stale'} onchange={(e) => pick(e, sequential ? 'seq' : 'deps', () => setSequential(true))} /> One after the other, in tree order</label>
+        <label class="radio"><input type="radio" name="order" value="deps" checked={!sequential} disabled={locked} onchange={(e) => pick(e, order, () => setSequential(false))} /> By dependencies</label>
+        <label class="radio"><input type="radio" name="order" value="seq" checked={sequential} disabled={locked} onchange={(e) => pick(e, order, () => setSequential(true))} /> One after the other, in tree order</label>
       </div>
       <span class="lab">At once</span>
       <div class="atonce">
         <span class="sel" use:tooltip={sequential ? 'One after the other runs one at a time' : null}>
-          <Select value={sequential ? 1 : atOnce} options={AT_ONCE} width="hug" disabled={sequential || busy || phase === 'stale'} aria-label="Features running at most" onchange={setAtOnce} />
+          <Select value={sequential ? 1 : atOnce} options={P.AT_ONCE} width="hug" disabled={sequential || locked} aria-label="Features running at most" onchange={setAtOnce} />
         </span>
         <span class="muted">{sequential ? 'One after the other runs one at a time' : 'features running at most · Each running feature uses its own team.'}</span>
       </div>
@@ -397,7 +401,7 @@
             <span class="num muted">{i + 1}</span>
             <span class="feat"><b class="mono">{f.slug}</b><span class="muted">{f.title}</span></span>
             <span class="mono" use:tooltip={P.fromTip(f) || null}>{P.fromText(f)}</span>
-            <span><Select value={f.mode} options={MODES} width="hug" bare aria-label="Mode of {f.slug}" onchange={(v) => edit((p) => P.setMode(p, f.key, v, teams ?? []))} /></span>
+            <span><Select value={f.mode} options={P.MODES} width="hug" bare aria-label="Mode of {f.slug}" onchange={(v) => edit((p) => P.setMode(p, f.key, v, teams ?? []))} /></span>
             <span>
               {#if f.mode === 'solo'}<span class="muted">—</span>
               {:else}<Select value={f.team} options={teamOptions} placeholder="— none" width="hug" bare noun="team" aria-label="Team of {f.slug}" onchange={(v) => edit((p) => P.setTeam(p, f.key, v))} />{/if}
@@ -405,7 +409,7 @@
             <span class:struck={f.skip}>{P.estText(f.estimate)}</span>
             <span class="order" use:tooltip={P.orderTip(draft, f)}>
               <span>{#if flagged.has(f.key)}<span class="mark" aria-label="Has an issue">{'\u{F0026}'}</span> {/if}{P.orderText(draft, f)}</span>
-              {#if note}<span class="muted note">{note.startsWith('Sequential') || note.startsWith('Added') ? note : `⛓ ${note}`}</span>{/if}
+              {#if note}<span class="muted note">{note}</span>{/if}
             </span>
             <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
             <span class="menuwrap" onclick={(e) => e.stopPropagation()}><Menu items={rowMenu(f)} tabindex={-1} label="More for {f.slug}" /></span>
@@ -425,7 +429,7 @@
     {#if draft && phase !== 'planning'}
       <div class="totals">
         <p data-totals>{totals.total}{#if totals.room}<span class="muted">{` · ${totals.room}`}</span>{/if}{#if totals.over}<span class="warn">{` · ${totals.over}`}</span>{/if}</p>
-        <p class="muted">{P.GATES_LINE}</p>
+        <p class="muted">Each feature still asks you to approve its spec and its PR.</p>
         {#if wbLine}<p class="muted" data-writeback>{wbLine}</p>{/if}
       </div>
     {/if}
@@ -437,7 +441,7 @@
       {#if phase === 'nothing'}
         <button type="button" class="btn primary" onclick={close}>Close</button>
       {:else}
-        <button type="button" class="btn primary" data-start disabled={!draft || blocking > 0 || busy || starting || phase !== 'planned' || !P.liveCount(draft)} use:tooltip={blocking ? `Fix ${blocking === 1 ? '1 thing' : `${blocking} things`} first` : { label: 'Start program', key: '⌘⏎' }} onclick={start}>{starting ? 'Starting…' : P.startLabel(draft ?? { features: [] })}</button>
+        <button type="button" class="btn primary" data-start disabled={!canStart} use:tooltip={blocking ? `Fix ${plural(blocking, 'thing')} first` : { label: 'Start program', key: '⌘⏎' }} onclick={start}>{starting ? 'Starting…' : P.startLabel(draft)}</button>
       {/if}
     </div>
   </div>
@@ -447,7 +451,7 @@
       <div class="row-end">
         <button type="button" class="btn ghost" onclick={() => (ask = null)} use:tooltip={{ label: ask.no, key: 'esc' }}>{ask.no}</button>
         <!-- svelte-ignore a11y_autofocus -->
-        <button type="button" class="btn primary" autofocus onclick={() => { const y = ask.onYes; ask = null; y(); }} use:tooltip={{ label: ask.yes, key: '⏎' }}>{ask.yes}</button>
+        <button type="button" class="btn primary" autofocus onclick={confirmAsk} use:tooltip={{ label: ask.yes, key: '⏎' }}>{ask.yes}</button>
       </div>
     </div>
   {/if}
@@ -640,8 +644,7 @@
   .warn {
     color: var(--color-pacing-amber);
   }
-  .err {
-    color: var(--color-status-error);
+  p.err {
     margin: 0;
   }
   .banner {
@@ -654,9 +657,6 @@
     color: var(--color-status-error);
     background: color-mix(in srgb, var(--color-status-error) 15%, transparent);
   }
-  .grow {
-    flex: 1;
-  }
   .foot {
     display: flex;
     align-items: center;
@@ -665,14 +665,6 @@
   .foot .left {
     flex: 1;
     min-width: 0;
-  }
-  .linkbtn {
-    padding: 0;
-    border: 0;
-    background: none;
-    color: var(--color-accent-default);
-    font: inherit;
-    cursor: pointer;
   }
   .ask {
     position: absolute;

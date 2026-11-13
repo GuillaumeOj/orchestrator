@@ -22,11 +22,9 @@
     cancelQueued,
     confirm,
     contextProjectId,
-    features,
     focusCard,
     now30,
     openEditor,
-    openFeature,
     openReport,
     openSession,
     openTask,
@@ -45,9 +43,10 @@
   import { allowed, COUNT_KEYS, DONE_ROWS, decisionOf, defaultTarget, footerText, hiddenText, lanes, looseText, rowIndex, stops, target } from '../lib/mission.js';
   import { attention } from '../lib/now.svelte.js';
   import { liveCapText, SUBROWS_OPEN_MAX } from '../lib/program.js';
+  import { TRACKERS } from '../lib/source.js';
   import { LEVEL } from '../lib/status.js';
   import { tooltip } from '../lib/tooltip.js';
-  import { cancelProgram, openProgram, openProgramPlan, openProgramSource, openWork, togglePause } from '../lib/work.js';
+  import { cancelProgram, openProgram, openProgramFeature, openProgramPlan, openProgramSource, openWork, togglePause } from '../lib/work.js';
 
   let { paneId } = $props();
 
@@ -166,14 +165,8 @@
   const subOpen = (p) => subrows[p.id] ?? p.features.length <= SUBROWS_OPEN_MAX;
   const toggleSubs = (p) => (subrows = { ...subrows, [p.id]: !subOpen(p) });
   /** The tracker's name for a project's sub-row flags ("closed in GitHub"). */
-  const trackerFor = (project) => ({ github: 'GitHub', linear: 'Linear' })[(app.now.intake?.sources ?? []).find((s) => s.project === project)?.type] ?? 'the tracker';
+  const trackerFor = (project) => TRACKERS[(app.now.intake?.sources ?? []).find((s) => s.project === project)?.type] ?? 'the tracker';
   const liveCap = $derived(liveCapText(app.now.counts?.global));
-  /** A sub-row's feature: its Feature pane (by slug in the program's project), else the Program view. */
-  function openProgramFeature(p, f) {
-    const feat = features().find((x) => x.slug === f.slug && x.project_id === p.project);
-    if (feat) return openFeature(feat.id);
-    openProgram(p.id, p.title);
-  }
   const progActs = (p) => ({
     ontoggle: () => toggleSubs(p),
     onopen: () => openProgram(p.id, p.title),

@@ -51,6 +51,7 @@
   } = $props();
 
   const live = $derived(!line);
+  const tag = $derived(programTag(d)); // a program feature's spec / PR: "Checkout v2 · 2 of 3"
   const brief = $derived(d.kind === 'brief');
   // A brief's Launch / Edit opened the dialog: the card stays open meanwhile, its actions off (notes §8.4).
   const opening = $derived(live && brief && app.overlay?.intake?.brief_decision === d.id);
@@ -170,7 +171,7 @@
     <span class="muted age">{line ? '' : waited(d.created_ms, now)}</span>
   </div>
   <div class="title">{cardTitle}</div>
-  {#if programTag(d)}<div class="ptag" data-program-tag><span aria-hidden="true">{'\u{F0328}'}</span> {programTag(d)}</div>{/if}
+  {#if tag}<div class="ptag" data-program-tag><span aria-hidden="true">{'\u{F0328}'}</span> {tag}</div>{/if}
   {#if subjectLine(d)}<div class="subject secondary">{subjectLine(d)}</div>{/if}
   {#if askText}<div class="why muted" data-asks>{askText}</div>{/if}
   {#if d.summary && !d.context?.length}<p class="summary">{d.summary}</p>{/if}

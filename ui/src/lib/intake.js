@@ -320,7 +320,8 @@ export function staleOf(e) {
   const o = e && typeof e === 'object' ? e : null;
   if (o?.code === 'stale') return o;
   try {
-    const j = JSON.parse(String(e?.message ?? e));
+    const raw = String(e?.message ?? e);
+    const j = JSON.parse(raw.slice(Math.max(0, raw.indexOf('{'))));
     return j?.code === 'stale' ? j : null;
   } catch {
     return null;

@@ -27,7 +27,7 @@ const P = await import('../src/lib/program.js');
 const { lanes } = await import('../src/lib/mission.js');
 const { applyNow } = await import('../src/lib/now.svelte.js');
 const { keyIntent, intentFor } = await import('../src/lib/inbox.js');
-const { originText } = await import('../src/lib/intake.js');
+const { originText, staleOf } = await import('../src/lib/intake.js');
 const { openProgram, openProgramPlan } = await import('../src/lib/work.js');
 const { default: ProgramPlanDialog } = await import('../src/components/ProgramPlanDialog.svelte');
 const { default: MissionPane } = await import('../src/panes/MissionPane.svelte');
@@ -153,7 +153,7 @@ describe('plan rules (§6.2, §6.4)', () => {
     expect(P.refOfId('local:dark-mode.md')).toBe('dark-mode.md');
     expect(P.orderText(p, p.features[0])).toBe('first');
     expect(P.orderText(p, p.features[1])).toBe('after 1');
-    expect(P.orderNote(p, p.features[1])).toBe('#13 blocks #14');
+    expect(P.orderNote(p, p.features[1])).toBe('⛓ #13 blocks #14');
     expect(P.orderTip(p, p.features[1])).toBe('#13 blocks #14 in GitHub');
     expect(P.fromText(p.features[0])).toBe('#13 +2');
     expect(P.fromText(p.features[2])).toBe('#15');
@@ -266,7 +266,7 @@ describe('plan rules (§6.2, §6.4)', () => {
   it('graph strip: hidden without edges; levels by order; skipped dashed', () => {
     expect(P.graphOf(checkout({ edges: [] }))).toBeNull();
     const g = P.graphOf(P.toggleSkip(checkout(), 'pf-3'));
-    expect(g.edges).toEqual([{ from: 'pf-1', to: 'pf-2' }]);
+    expect(g.edges).toEqual([{ from: 'pf-1', to: 'pf-2', fromN: 1, toN: 2 }]);
     expect(g.nodes.map((n) => [n.n, n.level, n.skipped])).toEqual([
       [1, 0, false],
       [2, 1, false],
@@ -275,10 +275,10 @@ describe('plan rules (§6.2, §6.4)', () => {
   });
 
   it('a stale refusal is read from the error text', () => {
-    const s = P.staleOf(new Error('{"code":"stale","message":"already in program Checkout v2","program":"prg-1"}'));
+    const s = staleOf(new Error('{"code":"stale","message":"already in program Checkout v2","program":"prg-1"}'));
     expect(s).toMatchObject({ code: 'stale', program: 'prg-1' });
     expect(P.staleText(s, '#12')).toBe('#12 is already in program Checkout v2.');
-    expect(P.staleOf(new Error('boom'))).toBeNull();
+    expect(staleOf(new Error('boom'))).toBeNull();
   });
 });
 
@@ -351,10 +351,18 @@ function row(o = {}) {
 
 describe('Programs lane rules (§7.1)', () => {
   it('counts in the shared word order, only non-zero; failed is error text', () => {
-    expect(P.countsText(row())).toBe('1 of 5 merged · 1 running · 1 PR open · 1 waiting · 1 queued');
+    expect(
+      P.countParts(row())
+        .map((x) => x.text)
+        .join(' · '),
+    ).toBe('1 of 5 merged · 1 running · 1 PR open · 1 waiting · 1 queued');
     const f = row({ counts: { merged: 1, running: 0, pr: 0, waiting: 0, queued: 0, failed: 1, skipped: 1 } });
     f.features[4].state = 'skipped';
-    expect(P.countsText(f)).toBe('1 of 4 merged · 1 failed · 1 skipped');
+    expect(
+      P.countParts(f)
+        .map((x) => x.text)
+        .join(' · '),
+    ).toBe('1 of 4 merged · 1 failed · 1 skipped');
     expect(P.countParts(f).find((x) => x.key === 'failed').error).toBe(true);
     expect(P.progressOf(row())).toEqual([true, false, false, false, false]);
   });

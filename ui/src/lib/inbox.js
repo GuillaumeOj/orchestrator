@@ -89,15 +89,11 @@ export function intentFor(d, id) {
 /** What a key does on the selected decision (null: not handled). */
 export function keyIntent(key, d) {
   if (key === '⏎') key = 'enter';
-  if (isProgramCard(d) && ['enter', 'r', 'x'].includes(key)) {
+  // A key the card's own actions declare wins over its built-in meaning (a brief's e = Edit,
+  // a failed program feature's x = Skip it); moves and undo stay the column's.
+  if (!['j', 'k', 'arrowdown', 'arrowup', 'u'].includes(key)) {
     const act = actionByKey(d, key);
     if (act) return intentFor(d, act.id);
-    if (key === 'x') return { kind: 'mark' };
-    return null;
-  }
-  if (isBrief(d) && ['enter', 'e', 'r'].includes(key)) {
-    const act = actionByKey(d, key);
-    return act ? intentFor(d, act.id) : null;
   }
   switch (key) {
     case 'j':
@@ -208,6 +204,8 @@ export function pendingVerb(d, action) {
   return action === 'dismiss' || action === 'reject' ? 'Dismissing' : 'Sending your answer';
 }
 
+const PROGRAM_EFFECT = { ignored: 'Ignored', kept: 'Kept', resolved: 'Done in the program' };
+
 /** The undo toast: what will be sent, not what happened (the core has not answered yet). */
 export function pendingToast(d, action) {
   const verb = pendingVerb(d, action);
@@ -315,11 +313,9 @@ export function effectText(d, mine = {}) {
       return `Deleted · ${agent}`;
     // Program cards (improve-intake notes §7.3): the program was edited, or the card was settled by an edit.
     case 'ignored':
-      return `Ignored · ${cut(d.title, 40)}`;
     case 'kept':
-      return `Kept · ${cut(d.title, 40)}`;
     case 'resolved':
-      return `Done in the program · ${cut(d.title, 40)}`;
+      return `${PROGRAM_EFFECT[lc.effect]} · ${cut(d.title, 40)}`;
     default:
       return null;
   }

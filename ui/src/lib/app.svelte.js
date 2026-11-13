@@ -33,7 +33,7 @@ import {
   readyToast,
   updateActions,
 } from './update.js';
-import { openProgram, openProgramPlan, openWork, togglePause } from './work.js';
+import { openProgram, openProgramPlan, openWork, programTabTitle, togglePause } from './work.js';
 import { scopeTitle } from './workmodel.js';
 
 /** The dock's share of the work column when nothing is saved: agents need rows. */
@@ -518,7 +518,7 @@ function title(spec) {
       if (spec.type === 'feature') return features().find((f) => f.id === spec.featureId)?.slug ?? 'feature';
       if (spec.type === 'canvas') return spec.teamId ? `Team: ${spec.teamId}` : 'Team canvas';
       if (spec.type === 'program')
-        return `${app.now.programs?.[spec.programId]?.title || spec.programTitle || 'Program'} · program`;
+        return programTabTitle(app.now.programs?.[spec.programId]?.title || spec.programTitle);
       if (spec.type === 'work') return scopeTitle(spec.projects ?? null, (spec.projects ?? []).map(projectName));
       if (spec.type === 'diff')
         return `diff · ${
@@ -974,7 +974,7 @@ export function routeOpen(r, projectId = null) {
   else if (r.open === 'program' && r.program) openProgram(r.program);
   else if (r.open === 'program_add' && r.program) openProgram(r.program, '', { add: r.item ?? true });
   else if (r.open === 'feature' && r.feature) {
-    const f = features().find((x) => x.slug === r.feature && (!projectId || x.project_id === projectId));
+    const f = projectId ? featureBySlug(projectId, r.feature) : features().find((x) => x.slug === r.feature);
     if (f) openFeature(f.id);
     else if (r.program) openProgram(r.program);
   } else return false;

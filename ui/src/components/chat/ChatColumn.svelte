@@ -95,7 +95,10 @@
 
   let foldOpen = $state(false);
   let sel = $state(null); // 'c:<decision id>' | 'fold' | 'digest'
-  let nextOf = $state(null); // { after, id, text }: the "Next: <feature>'s spec" bar under an approved program spec
+  // { after, id, text }: the "Next: <feature>'s spec" bar under an approved program spec. `send` already
+  // moved the selection there (notes §7.5); the bar says so and brings it into view on a click.
+  let nextOf = $state(null);
+  const nextLive = $derived(!!nextOf && isOpen(app.now.decisions[nextOf.id]));
   let marked = $state(new Set());
   let reply = $state(null); // { id, action }
   let choices = $state({}); // decision id → the options block's choices
@@ -880,9 +883,6 @@
     const o = outcome ? outcomes.find((x) => x.id === outcome) : null;
     if (o && key === 'o') return take(), openOutcome(o);
     if (key === 'enter' && cur === 'fold') return take(), (foldOpen = !foldOpen);
-    // The "Next: …'s spec · ⏎" bar: ⏎ on the approved card (or with no ⏎ action) goes to that spec.
-    if (key === 'enter' && nextOf && isOpen(app.now.decisions[nextOf.id]) && (selCard?.id === nextOf.after || !keyIntent(key, selCard?.d ?? null)))
-      return take(), showNext(nextOf.id);
     const intent = keyIntent(key, selCard?.d ?? null);
     if (!intent) return;
     // Not on a card (the fold or digest header, a digest row still listed, a
@@ -1071,7 +1071,7 @@
             onhold={(on) => typed(it.id, on)}
           />
         </article>
-        {#if nextOf?.after === it.id && isOpen(app.now.decisions[nextOf.id])}
+        {#if nextLive && nextOf.after === it.id}
           <button type="button" class="nextspec" data-next-spec use:tooltip={{ label: 'Show the next spec', key: '⏎' }} onclick={() => showNext(nextOf.id)}>{nextOf.text} · ⏎</button>
         {/if}
       {/if}

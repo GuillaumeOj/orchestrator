@@ -5,6 +5,7 @@
   import { countParts, estText, progressOf, subRowOf } from '../../lib/program.js';
   import { tooltip } from '../../lib/tooltip.js';
   import Menu from '../Menu.svelte';
+  import AppChip from '../work/AppChip.svelte';
 
   /** @type {{ row: any, name?: string, tracker?: string, open?: boolean, liveCap?: string | null, ontoggle?: () => void, onopen?: () => void, onpause?: () => void, oncancel?: () => void, onsource?: () => void, onfeature?: (f: any) => void }} */
   let { row, name = '', tracker = 'GitHub', open = true, liveCap = null, ontoggle = () => {}, onopen = () => {}, onpause = () => {}, oncancel = () => {}, onsource = () => {}, onfeature = () => {} } = $props();
@@ -25,7 +26,7 @@
     <button type="button" class="chev" tabindex="-1" aria-expanded={open} aria-label={open ? 'Hide features' : 'Show features'} use:tooltip={{ label: open ? 'Hide features' : 'Show features', key: 'space' }} onclick={(e) => (e.stopPropagation(), ontoggle())}>{open ? '⌄' : '›'}</button>
     <span class="icon" aria-hidden="true">{'\u{F0328}'}</span>
     <b class="title" title={row.title}>{row.title}</b>
-    {#if paused}<span class="tag paused" data-paused>paused</span>{/if}
+    {#if paused}<span data-paused><AppChip chip={{ tone: 'paused', text: 'paused' }} /></span>{/if}
     <span class="from muted">from {row.root_ref}{name ? ` · ${name}` : ''}</span>
     <span class="counts" data-counts>
       {#each parts as p, i (p.key)}{#if i}<span class="muted">{' · '}</span>{/if}<span class:err={p.error}>{p.text}</span>{/each}
@@ -54,7 +55,7 @@
             <span class="slug">{f.slug}</span>
           {/if}
           <span class="what">{` · ${s.text}`}</span>
-          {#if s.open}<span class="what">{' · '}</span><button type="button" class="linkbtn err" tabindex="-1" onclick={(e) => (e.stopPropagation(), onfeature(f))}>Open</button>{/if}
+          {#if s.open}<span class="what">{' · '}</span><button type="button" class="linkish err" tabindex="-1" onclick={(e) => (e.stopPropagation(), onfeature(f))}>Open</button>{/if}
           {#if s.flag}<span class="flag">{` · ${s.flag}`}</span>{/if}
         </li>
       {/each}
@@ -111,20 +112,6 @@
     text-overflow: ellipsis;
     min-width: 0;
     color: var(--color-text-secondary);
-  }
-  .err {
-    color: var(--color-status-error);
-  }
-  .tag.paused {
-    padding: 0 var(--space-xs);
-    border: var(--border-width-default) solid var(--color-status-paused);
-    border-radius: var(--radius-sm);
-    color: var(--color-status-paused);
-    background: color-mix(in srgb, var(--color-status-paused) 20%, transparent);
-    font: var(--text-mono-sm);
-  }
-  .grow {
-    flex: 1;
   }
   .bars {
     display: inline-flex;
@@ -187,6 +174,7 @@
     color: var(--color-text-muted);
   }
   .linkish {
+    color: inherit;
     padding: 0;
     border: 0;
     background: none;
@@ -195,13 +183,6 @@
   }
   .linkish:hover {
     text-decoration: underline;
-  }
-  .linkbtn {
-    padding: 0;
-    border: 0;
-    background: none;
-    font: inherit;
-    cursor: pointer;
   }
   .more {
     margin: var(--space-xs) 0 0 calc(var(--size-icon-sm) + var(--space-md));

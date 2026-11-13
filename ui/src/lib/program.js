@@ -2,9 +2,10 @@
 // Programs lane rows, the Program view's states and the program cards. Pure functions over the
 // core's `Program`, `PlanIssue` and `ProgramRow`; the components only render them.
 
-import { clock, plural } from './format.js';
+import { clock, plural, ppAmount } from './format.js';
 import { isOpen } from './inbox.js';
 import { ppRange } from './intake.js';
+import { trackerName } from './workmodel.js';
 
 // ---------------------------------------------------------------- ids and refs
 
@@ -16,13 +17,8 @@ export function refOfId(id) {
   return colon >= 0 ? s.slice(colon + 1) : s;
 }
 
-/** The tracker of a node id, in copy: GitHub, Linear or Local. */
-export function trackerOfId(id) {
-  const s = String(id ?? '');
-  if (s.startsWith('gh')) return 'GitHub';
-  if (s.startsWith('lin')) return 'Linear';
-  return 'Local';
-}
+/** The tracker of a node id, in copy: GitHub, Linear, Local (else "the tracker"). */
+export const trackerOfId = (id) => trackerName({ id });
 
 /** "≈ 4–7 pp" (P4.5 rounding); "rough ≈ 4–7 pp" when the basis is the default. */
 export function estText(e, { unit = true } = {}) {
@@ -64,7 +60,7 @@ export function orderText(p, f) {
 }
 
 /** "#13 blocks #14" for a tracker edge's items (pairs blocker, blocked). */
-function blocksText(items) {
+export function blocksText(items) {
   const refs = items.map(refOfId);
   const pairs = [];
   for (let i = 0; i + 1 < refs.length; i += 2) pairs.push(`${refs[i]} blocks ${refs[i + 1]}`);
@@ -77,7 +73,7 @@ export function orderNote(p, f) {
   if (!deps.length) return '';
   if (deps.every((d) => d.source === 'sequential')) return 'Sequential';
   const tracker = deps.filter((d) => d.source === 'tracker' && d.items.length);
-  if (tracker.length) return tracker.map((d) => blocksText(d.items)).join(', ');
+  if (tracker.length) return `⛓ ${tracker.map((d) => blocksText(d.items)).join(', ')}`;
   return 'Added by you';
 }
 
@@ -99,40 +95,27 @@ export function orderTip(p, f) {
 // (a plain copy: the draft may be a Svelte $state proxy, which structuredClone refuses)
 const clone = (p) => JSON.parse(JSON.stringify(p));
 
-/** Skip / unskip a feature (x): the row dims, its estimate leaves the total, dependents stop waiting on it. */
-export function toggleSkip(p, key) {
+/** A copy of the plan with feature `key` changed by `fn`. */
+function editFeature(p, key, fn) {
   const q = clone(p);
   const f = q.features.find((x) => x.key === key);
-  if (f) f.skip = !f.skip;
-  return withTotals(q);
+  if (f) fn(f);
+  return q;
 }
+
+/** Skip / unskip a feature (x): the row dims, its estimate leaves the total, dependents stop waiting on it. */
+export const toggleSkip = (p, key) => withTotals(editFeature(p, key, (f) => (f.skip = !f.skip)));
 
 /** Mode team / solo (m); solo has no team; team takes the first team when it had none. */
-export function setMode(p, key, mode, teams = []) {
-  const q = clone(p);
-  const f = q.features.find((x) => x.key === key);
-  if (!f) return q;
-  f.mode = mode;
-  f.team = mode === 'solo' ? null : (f.team ?? teams[0]?.id ?? null);
-  return q;
-}
+export const setMode = (p, key, mode, teams = []) =>
+  editFeature(p, key, (f) => {
+    f.mode = mode;
+    f.team = mode === 'solo' ? null : (f.team ?? teams[0]?.id ?? null);
+  });
 
-export function setTeam(p, key, team) {
-  const q = clone(p);
-  const f = q.features.find((x) => x.key === key);
-  if (f) f.team = team || null;
-  return q;
-}
+export const setTeam = (p, key, team) => editFeature(p, key, (f) => (f.team = team || null));
 
-export function setBrief(p, key, brief, slug = null) {
-  const q = clone(p);
-  const f = q.features.find((x) => x.key === key);
-  if (f) {
-    f.brief = brief;
-    if (slug) f.slug = slug;
-  }
-  return q;
-}
+export const setBrief = (p, key, brief) => editFeature(p, key, (f) => (f.brief = brief));
 
 /** Merge into previous (⇧M): the row's items join the row above, its brief appended; edges follow. */
 export function mergeIntoPrevious(p, key) {
@@ -178,12 +161,6 @@ export function withTotals(q) {
 /** Features that would start (not skipped). */
 export const liveCount = (p) => (p?.features ?? []).filter((f) => !f.skip).length;
 
-/** True once the user changed a row (the re-plan / discard confirms). */
-export const edited = (p, base) =>
-  !!p &&
-  !!base &&
-  JSON.stringify(p.features) + JSON.stringify(p.cut) !== JSON.stringify(base.features) + JSON.stringify(base.cut);
-
 /** How many features differ from the plan (the re-plan confirm counts them). */
 export function editedCount(p, base) {
   if (!p || !base) return 0;
@@ -203,52 +180,38 @@ export function editedCount(p, base) {
  */
 export function liveIssues(p, issues = [], teams = null) {
   if (!p) return issues ?? [];
-  const out = [];
+  const mk = (kind, blocking, more = {}) => ({
+    kind,
+    blocking,
+    features: [],
+    items: [],
+    feature: null,
+    edges: [],
+    message: '',
+    ...more,
+  });
+  // The three kinds the client re-checks on the draft; the core's others stay as sent.
+  const out = (issues ?? []).filter((i) => !['cycle', 'no_team', 'over_room'].includes(i.kind));
   const cyc = findCycle(p);
-  for (const i of issues ?? []) {
-    if (i.kind === 'cycle') continue;
-    if (i.kind === 'no_team') continue;
-    if (i.kind === 'over_room') continue;
-    out.push(i);
-  }
   if (cyc) {
-    const slugs = cyc.map(([a]) => p.features.find((f) => f.key === a)?.slug ?? a);
     const items = cyc.flatMap(([a, b]) =>
       (p.edges ?? []).filter((e) => e.from === a && e.to === b).flatMap((e) => e.items ?? []),
     );
-    out.unshift({
-      kind: 'cycle',
-      blocking: true,
-      features: cyc.map(([a]) => a),
-      items,
-      feature: null,
-      edges: cyc,
-      message: '',
-    });
+    out.unshift(mk('cycle', true, { features: cyc.map(([a]) => a), items, edges: cyc }));
   }
   for (const f of p.features) {
     if (f.skip || f.mode !== 'team') continue;
-    const ok = f.team && (teams == null || teams.includes(f.team));
-    if (!ok)
-      out.push({
-        kind: 'no_team',
-        blocking: true,
-        features: [f.key],
-        items: [],
-        feature: f.slug,
-        edges: [],
-        message: '',
-      });
+    if (!f.team || (teams != null && !teams.includes(f.team)))
+      out.push(mk('no_team', true, { features: [f.key], feature: f.slug }));
   }
   const over = p.estimate?.over_room;
-  if (over && over !== 'none' && p.estimate?.room_pp != null)
-    out.push({ kind: 'over_room', blocking: false, features: [], items: [], feature: null, edges: [], message: '' });
+  if (over && over !== 'none' && p.estimate?.room_pp != null) out.push(mk('over_room', false));
   // Blocking first, the core's order inside.
   return [...out.filter((i) => i.blocking), ...out.filter((i) => !i.blocking)];
 }
 
 /** One loop among the live features' edges (cut and skipped left out), as its closing edges. */
-export function findCycle(p) {
+function findCycle(p) {
   const cut = cutSet(p);
   const live = new Set(p.features.filter((f) => !f.skip).map((f) => f.key));
   const adj = new Map();
@@ -288,7 +251,7 @@ export function findCycle(p) {
 export function issuesHeader(list) {
   const block = list.filter((i) => i.blocking).length;
   const notes = list.length - block;
-  if (block) return `${block === 1 ? '1 thing' : `${block} things`} to fix before starting`;
+  if (block) return `${plural(block, 'thing')} to fix before starting`;
   if (notes) return `Nothing to fix · ${plural(notes, 'note')}`;
   return '';
 }
@@ -317,11 +280,8 @@ export function issueText(i, p, ctx = {}) {
       return `${i.feature ?? slug(i.features?.[0])} needs a team: ${ctx.project ?? 'the project'} has no team.`;
     case 'over_room': {
       const e = p?.estimate ?? {};
-      const range = estText(e);
-      const room = `${ctx.project ?? 'the project'} (${Math.round(e.room_pp ?? 0)} pp left)`;
-      return e.over_room === 'low'
-        ? `${range} is over this week's room for ${room}. Features wait for room under the Governor.`
-        : `${range} is over this week's room for ${ctx.project ?? 'the project'} at the high end (${Math.round(e.room_pp ?? 0)} pp left). Features wait for room under the Governor.`;
+      const end = e.over_room === 'low' ? '' : ' at the high end';
+      return `${estText(e)} is over this week's room for ${ctx.project ?? 'the project'}${end} (${Math.round(e.room_pp ?? 0)} pp left). Features wait for room under the Governor.`;
     }
     default:
       return i.message ?? '';
@@ -364,8 +324,6 @@ export function totalsParts(p, projectName = 'the project') {
   return { total, room, over };
 }
 
-export const GATES_LINE = 'Each feature still asks you to approve its spec and its PR.';
-
 /**
  * The write-back line (§6.2, D4): items are written when their own feature starts. `t`: the
  * project's TrackerSettings; `rootRef`: the single root's ref (null: several roots, no closure).
@@ -399,6 +357,13 @@ export function footLine(p) {
   return `Skipped: ${skipped.length ? skipped.join(', ') : 'none'} · Left out: none`;
 }
 
+/** Mode and At once choices (the plan rows, the Program view's row editor and settings). */
+export const MODES = [
+  { value: 'team', label: 'Team' },
+  { value: 'solo', label: 'Solo' },
+];
+export const AT_ONCE = [1, 2, 3, 4, 5].map((n) => ({ value: n, label: String(n) }));
+
 /** "Start program · 3 features". */
 export const startLabel = (p) => `Start program · ${plural(liveCount(p), 'feature')}`;
 
@@ -427,17 +392,6 @@ export function fromText(f) {
 export const fromTip = (f) =>
   f.items?.length > 1 ? `Also in its scope: ${f.items.slice(1).map(refOfId).join(', ')}` : '';
 
-/** A stale `program_plan` / `program_start` refusal: `{ code: 'stale', program?, message }` from the error text. */
-export function staleOf(e) {
-  const raw = String(e?.message ?? e ?? '');
-  try {
-    const v = JSON.parse(raw.slice(raw.indexOf('{')));
-    return v?.code === 'stale' ? v : null;
-  } catch {
-    return null;
-  }
-}
-
 /** "#12 is already in program Checkout v2." from a stale refusal. */
 export function staleText(s, rootRef) {
   const m = /already in program (.+)$/.exec(s?.message ?? '');
@@ -451,13 +405,14 @@ export function staleText(s, rootRef) {
 export function graphOf(p) {
   const feats = p?.features ?? [];
   const cut = cutSet(p);
-  const edges = (p?.edges ?? []).filter(
-    (e) => !cut.has(`${e.from}>${e.to}`) && feats.some((f) => f.key === e.from) && feats.some((f) => f.key === e.to),
-  );
+  const num = new Map(feats.map((f, i) => [f.key, i + 1]));
+  const edges = (p?.edges ?? []).filter((e) => !cut.has(`${e.from}>${e.to}`) && num.has(e.from) && num.has(e.to));
   if (!edges.length) return null;
   // Level = longest path from a root (loops are cut by the visit guard).
   const level = new Map();
-  const into = (k) => edges.filter((e) => e.to === k).map((e) => e.from);
+  const incoming = new Map();
+  for (const e of edges) incoming.set(e.to, [...(incoming.get(e.to) ?? []), e.from]);
+  const into = (k) => incoming.get(k) ?? [];
   const lv = (k, guard = new Set()) => {
     if (level.has(k)) return level.get(k);
     if (guard.has(k)) return 0;
@@ -485,7 +440,7 @@ export function graphOf(p) {
     n.row = r;
     rows.set(n.level, r + 1);
   }
-  return { nodes, edges: edges.map((e) => ({ from: e.from, to: e.to })) };
+  return { nodes, edges: edges.map((e) => ({ from: e.from, to: e.to, fromN: num.get(e.from), toN: num.get(e.to) })) };
 }
 
 // ---------------------------------------------------------------- Programs lane (§7.1)
@@ -499,21 +454,13 @@ const COUNT_WORDS = [
   ['skipped', 'skipped'],
 ];
 
-/** The non-skipped total of a row ("1 of 3 merged" counts what will run). */
-export const totalOf = (row) => (row?.features ?? []).filter((f) => f.state !== 'skipped').length;
-
 /** Counts as parts: "1 of 3 merged", then running, PR open, waiting, queued, failed, skipped (non-zero). */
 export function countParts(row) {
   const c = row?.counts ?? {};
-  const out = [{ key: 'merged', text: `${c.merged ?? 0} of ${totalOf(row)} merged` }];
+  const out = [{ key: 'merged', text: `${c.merged ?? 0} of ${progressOf(row).length} merged` }];
   for (const [k, w] of COUNT_WORDS) if (c[k] > 0) out.push({ key: k, text: `${c[k]} ${w}`, error: k === 'failed' });
   return out;
 }
-
-export const countsText = (row) =>
-  countParts(row)
-    .map((x) => x.text)
-    .join(' · ');
 
 /** Progress segments: one per feature not skipped, filled when merged. */
 export function progressOf(row) {
@@ -549,36 +496,37 @@ export const flagText = (f, tracker = 'GitHub') =>
 
 /** A sub-row (§7.1): glyph, text, tone (muted / error / working / gate), flag tail. `tracker`: GitHub / Linear. */
 export function subRowOf(f, tracker = 'GitHub', { liveCap = null } = {}) {
-  const flag = flagText(f, tracker);
-  const pr = f.pr?.number != null ? `#${f.pr.number}` : '';
+  return { ...subRowState(f, liveCap), flag: flagText(f, tracker) };
+}
+
+function subRowState(f, liveCap) {
+  const pr = f.pr?.number != null ? ` #${f.pr.number}` : '';
   switch (f.state) {
     case 'merged':
-      return { glyph: '✓', text: `merged${pr ? ` ${pr}` : ''}`, tone: 'muted', flag };
+      return { glyph: '✓', text: `merged${pr}`, tone: 'muted' };
     case 'running':
       return {
         glyph: '●',
         text: [f.phase ?? 'running', f.mode === 'solo' ? 'solo' : f.team].filter(Boolean).join(' · '),
         tone: 'working',
-        flag,
       };
     case 'pr':
-      return { glyph: '◐', text: `PR${pr ? ` ${pr}` : ''} open`, tone: 'gate', flag };
+      return { glyph: '◐', text: `PR${pr} open`, tone: 'gate' };
     case 'waiting':
       return {
         glyph: '○',
         text: f.waiting_on?.length ? `waiting for ${andList(f.waiting_on)} to merge` : 'waiting',
         tone: '',
-        flag,
       };
     case 'queued':
     case 'planned':
-      return { glyph: '○', text: liveCap ? `queued · live cap ${liveCap}` : 'queued', tone: '', flag };
+      return { glyph: '○', text: liveCap ? `queued · live cap ${liveCap}` : 'queued', tone: '' };
     case 'skipped':
-      return { glyph: '–', text: 'skipped', tone: 'muted', flag };
+      return { glyph: '–', text: 'skipped', tone: 'muted' };
     case 'failed':
-      return { glyph: '✕', text: 'failed', tone: 'error', flag, open: true };
+      return { glyph: '✕', text: 'failed', tone: 'error', open: true };
     default:
-      return { glyph: '○', text: f.state ?? '', tone: '', flag };
+      return { glyph: '○', text: f.state ?? '', tone: '' };
   }
 }
 
@@ -588,11 +536,10 @@ function andList(xs) {
 }
 
 /** The lane's rows from `now.programs` (running and paused), filtered by project, oldest title order. */
-export function programRows(programs, shown = (/** @type {string | null} */ _p) => true) {
+export function programRows(programs, shown) {
   return Object.values(programs ?? {})
-    .filter((r) => (r.status === 'running' || r.status === 'paused') && shown(r.project))
-    .sort((a, b) => String(a.title).localeCompare(String(b.title)) || String(a.id).localeCompare(String(b.id)))
-    .map((r) => ({ kind: 'program', key: `program:${r.id}`, program: r, project: r.project }));
+    .filter((r) => isLive(r) && shown(r.project))
+    .sort((a, b) => String(a.title).localeCompare(String(b.title)) || String(a.id).localeCompare(String(b.id)));
 }
 
 // ---------------------------------------------------------------- Program view (§7.2)
@@ -600,7 +547,7 @@ export function programRows(programs, shown = (/** @type {string | null} */ _p) 
 /** The header chip: "running · 1 of 3 merged" · "paused · …" · "done · 3 merged · 13 Nov 18:20" · "cancelled · 1 merged". */
 export function statusChip(p) {
   const merged = (p?.features ?? []).filter((f) => f.state === 'merged').length;
-  const total = (p?.features ?? []).filter((f) => !f.skip && f.state !== 'skipped').length;
+  const total = (p?.features ?? []).filter((f) => !f.skip && f.state !== 'skipped').length; // (a draft's skip, a live program's state)
   switch (p?.status) {
     case 'done':
       return { tone: 'done', text: `done · ${merged} merged${p.done_at_ms ? ` · ${dateTime(p.done_at_ms)}` : ''}` };
@@ -613,12 +560,9 @@ export function statusChip(p) {
   }
 }
 
-const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 /** "12 Nov 09:40" (local 24 h). */
-export function dateTime(ms) {
-  const d = new Date(ms);
-  return `${d.getDate()} ${MONTHS[d.getMonth()]} ${clock(ms, ms)}`;
-}
+const dateTime = (ms) =>
+  `${new Date(ms).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })} ${clock(ms, ms)}`;
 
 /** "From #12 Checkout v2 · acme/shop ↗ · started 12 Nov 09:40 · 2 at once · by dependencies". */
 export function viewSubline(p, { where = '', rootTitle = '' } = {}) {
@@ -668,8 +612,7 @@ export function viewState(f, p, { liveCap = null } = {}) {
 /** The Actual cell: "5.2 pp", "2.1 pp so far" (running), "—". */
 export function actualText(f) {
   if (f.actual_pp == null) return '—';
-  const v = `${Number(f.actual_pp).toFixed(1)} pp`;
-  return ['running', 'pr'].includes(f.state) ? `${v} so far` : v;
+  return `${ppAmount(f.actual_pp)}${['running', 'pr'].includes(f.state) ? ' so far' : ''}`;
 }
 
 /** A feature can be skipped while it has not started (core rule: planned, waiting, queued without a run, failed). */
