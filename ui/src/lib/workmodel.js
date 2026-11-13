@@ -772,6 +772,10 @@ export const depLines = (list) =>
 
 /** A team-task fold line: "#70 Postcode API client · in progress · back-1" (the task's status in words, its assignee node). */
 export const taskLineOf = (n) =>
-  [`${n.ref} ${n.title}`, String(n.upstream?.state ?? '').replaceAll('_', ' '), n.upstream?.assignees?.[0]]
+  [
+    `${n.ref} ${n.title}`,
+    String(n.upstream?.board_status ?? n.upstream?.state ?? '').replaceAll('_', ' '),
+    n.upstream?.assignees?.[0],
+  ]
     .filter(Boolean)
     .join(' · ');

@@ -49,10 +49,14 @@
   const feats = $derived(p?.features ?? []);
   const cur = $derived(feats[sel] ?? null);
 
+  let loadSeq = 0;
   async function load() {
     if (!id) return;
+    const n = ++loadSeq;
     try {
-      p = await invoke('program', { id });
+      const r = await invoke('program', { id });
+      if (n !== loadSeq) return; // a newer load answers
+      p = r;
       loadError = null;
       // A tab opened from a card or an outcome knew only the id: it takes the program's title.
       const s = app.panes[paneId];
@@ -265,7 +269,7 @@
             </div>
           {:else}
             <div class="newrow" data-new-item={item}>
-              <span>+ New in {tracker}: <b>{P.refOfId(item)}{n?.title ? ` ${n.title}` : ''}</b> <span class="muted">({n?.parent ? `sub-issue of ${P.refOfId(n.parent)}` : `under ${p.root_ref}`}{P.addedText(p.new_items_added?.[item]) ? ` · ${P.addedText(p.new_items_added[item])}` : ''})</span></span>
+              <span>+ New in {tracker}: <b>{P.refOfId(item)}{n?.title ? ` ${n.title}` : ''}</b> <span class="muted">({n?.parent ? `sub-issue of ${P.refOfId(n.parent)}` : `under ${p.root_ref}`}{P.addedText(p.new_items_added?.[item]) ? `, ${P.addedText(p.new_items_added[item])}` : ''})</span></span>
               <span class="grow"></span>
               <button type="button" class="btn primary" use:tooltip={{ label: 'Add to program', key: 'a' }} onclick={() => openAdd(item)}>Add to program</button>
               <button type="button" class="btn" onclick={() => ignore(item)}>Ignore</button>

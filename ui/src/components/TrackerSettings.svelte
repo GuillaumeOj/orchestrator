@@ -4,7 +4,7 @@
   // fields of the kind, the Ready filter, Write back, Refresh, Preview (a dry run), the migration
   // notices and the errors per code. ⌘⏎ saves. Replaces the Intake and Task backend sections.
   import { onMount, tick, untrack } from 'svelte';
-  import { openSettings, projects, toast } from '../lib/app.svelte.js';
+  import { app, openSettings, projects, toast } from '../lib/app.svelte.js';
   import { GH_SCOPE_COMMAND, integrationsRow } from '../lib/intake.js';
   import { errText, invoke } from '../lib/ipc.js';
   import { BOARD_COLUMNS } from '../lib/options.js';
@@ -46,8 +46,8 @@
   // A write-back card's Open settings: the Write back block comes into view once the form is there.
   let blockSeen = null;
   $effect(() => {
-    if (block !== 'write_back' || !form || blockSeen === block) return;
-    blockSeen = block;
+    if (block !== 'write_back' || !form || blockSeen === app.window) return;
+    blockSeen = app.window;
     tick().then(() => {
       const el = /** @type {HTMLElement | null} */ (document.querySelector('[data-wb-switch]'));
       el?.scrollIntoView?.({ block: 'center' });

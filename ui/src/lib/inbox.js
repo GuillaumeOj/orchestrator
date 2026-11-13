@@ -177,7 +177,7 @@ export function pendingVerb(d, action) {
     case 'brief':
       return 'Dismissing';
     case 'writeback_failing':
-      return 'Turning off write-back';
+      return action === 'turn_off' ? 'Turning off write-back' : 'Opening';
     case 'program_new_item':
       return action === 'ignore' ? 'Ignoring' : 'Adding';
     case 'program_item_closed':

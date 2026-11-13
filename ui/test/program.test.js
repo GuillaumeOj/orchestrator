@@ -862,9 +862,7 @@ describe('Program view', () => {
     const at = new Date(2026, 10, 13, 12).getTime();
     const { c, pv } = await mount(running({ new_items: [N(19)], new_items_added: { [N(19)]: at } }));
     await settle();
-    expect(text(c.querySelector('[data-new-item]'))).toContain(
-      'under #12 · added 13 Nov)'.replace('under #12', 'sub-issue of #12'),
-    );
+    expect(text(c.querySelector('[data-new-item]'))).toContain('sub-issue of #12, added 13 Nov)');
     key(pv, 'a');
     await settle();
     const ed = c.querySelector('[data-add-editor]');
