@@ -104,7 +104,7 @@ One Work tab per scope: opening Work with the same scope focuses the existing ta
 | Feature pane `b` and its `⋯` item "Board" | `b` scrolls to and focuses the **Tasks** section of the same pane (§9); `⋯` item renamed "Show source in Work" (`w`) |
 | Run inspector button "Open board" | "Show tasks" (opens the Feature pane at Tasks); second button "Show in Work" when the run has a source item |
 | Palette "Open the Board of the focused project" / "Board: <project>" | "Open Work (shop-api)" / "Work: shop-api" |
-| Mission control `sync_conflict` outcome → Board on the task | Feature pane of the task's run, Tasks section, task focused and flashed (§9.4) |
+| Mission control `sync_conflict` outcome → Board on the task | Feature pane of the task's run, Tasks section, task focused and flashed (§9.3) |
 | Waiting chip `T-12` → Board on the task | same as above |
 | Chat link to a task (`o.task`) | same as above |
 | Shortcut sheet group "Board" | removed; group "Work browser" (§12) added; Feature group `b` relabelled "Tasks" |
@@ -152,10 +152,10 @@ Slots left → right:
 | Upstream state (Linear; GitHub only with a board) | "Todo" · "In Progress" · "Backlog"; GitHub with a Projects v2 board: its Status (`board_status`, "Todo") | `text.muted`, 12 px. GitHub open / closed is in the glyph shape only. |
 | Labels | ≤ 2 neutral chips then "+n" | `orch*` and `size:*` never shown (P4.5 §2) |
 | Dependency mark | `⛓ blocked by #13` (open blocker) · `⛓ blocked by 2` (several) · nothing when every blocker is closed | `text.muted`; tooltip lists blockers with state; `blocking` is only in details |
-| Children progress | `1/2` (upstream done / total, direct children, team tasks excluded: F31) | mono 12, `text.muted`; for milestones / Linear projects "2 of 6" in the same slot |
+| Children progress | `1/2` (upstream done / total, direct children; team tasks excluded, §2.7) | mono 12, `text.muted`; for milestones / Linear projects "2 of 6" in the same slot |
 | App-state chip | §2.5 | right-aligned, fixed column 200 px (1512), 160 (1280) |
 
-Row states: rest · hover · focused (focus ring) · open in details (subtle fill) · selected (`x`: check box replaces the disclosure column's left 16 px, row tint `surface.selected`) · loading children ("Loading…" child line) · hidden (always in the tree, no "ready" chip; with "Show hidden items" on: 60 % text, tag "Hidden") · deleted upstream (§11).
+Row states: rest · hover · focused (focus ring) · open in details (subtle fill) · selected (`x`: check box replaces the disclosure column's left 16 px, row tint `surface.selected`) · loading children ("Loading…" child line) · hidden (§5.3) · deleted upstream (§11).
 
 **1280**: labels drop; the dependency mark becomes the glyph `⛓` only (tooltip keeps the text); issue type stays; app-state chip text shortens (§2.5 "short").
 
@@ -199,16 +199,17 @@ The issue type is text (2.2), never a different glyph: types are org-defined and
 The chip is clickable (feature → Feature pane; program → Program view; PR → browser). Not a separate Tab stop.
 
 ### 2.6 Roll-up on parents
-- Parents with app activity below show a **roll-up** instead of an app-state chip when they have no state of their own: text in the chip column, `text.muted`, no fill: "1 running · 1 waiting · 1 merged" (order: running, pr, queued+waiting as "waiting", done as "merged"; zero counts omitted; > 3 parts: "1 running · 3 more"). Tooltip lists every count with its noun.
+- Parents with app activity below show a **roll-up** instead of an app-state chip when they have no state of their own: text in the chip column, `text.muted`, no fill: "1 running · 1 waiting · 1 merged" (zero counts omitted; > 3 parts: "1 running · 3 more"). Tooltip lists every count with its noun.
+- **One word list and order for app states**, shared by the chip (§2.5), this roll-up and the program row counts (§7.1): running · PR open · waiting · queued · merged · failed · skipped. "Waiting" = queued with `waiting_on` (a dependency), "queued" = held by the Governor. The roll-up and the program row use the same split.
 - Children progress (2.2, upstream) and roll-up (app) are always separate slots: "1/2" vs "1 running".
 - A parent with its own state (e.g. #13 running) shows its chip; the roll-up of its children goes to the details panel.
 - Collapsed parents keep the roll-up (that is the point of it).
-- Roll-up counts **descendants** (not only direct children), never team tasks (F2).
+- Roll-up counts **descendants** (not only direct children; team tasks excluded, §2.7; F2).
 
 ### 2.7 "Team tasks" fold
 - Under the source item of a feature whose team wrote tasks back (`team_task: true` children), **one** line, last among the children, collapsed by default: `▸ ⧉ Team tasks · 4 · feature checkout-address` (`text.muted`, 28 px, no app-state chip, no progress).
-- Expanded: one compact line per task, indented one level: `#70 Postcode API client · in progress · back-1` (ref, title, task status in words, assignee node). No glyph of the tracker, no labels, no actions except `⏎` = open the Feature pane on that task (§9.4) and `o` = open upstream.
-- Never selectable with `x`, never matched by "Only ready" / "Only not started", never counted in children progress or roll-ups. Search can find them only with the filter "Include team tasks" (off).
+- Expanded: one compact line per task, indented one level: `#70 Postcode API client · in progress · back-1` (ref, title, task status in words, assignee node). No glyph of the tracker, no labels, no actions except `⏎` = open the Feature pane on that task (§9.3) and `o` = open upstream.
+- **This section owns the exclusion rule**: team tasks are not tree children for any count or action. They are never selectable with `x`, never matched by "Only ready" / "Only not started", never counted in children progress or roll-ups, never make a node eligible for Run as program. Search finds them only with the filter "Include team tasks" (off). The model proposal (F31) is that they hang off their item as one `team_tasks` attachment, so no surface needs its own exclusion.
 - Tooltip on the fold: "Tasks the team of checkout-address wrote to GitHub. Manage them in the feature."
 
 ### 2.8 Board view: not drawn
@@ -218,7 +219,7 @@ Decision: **no board view** in this feature. Reasons: (1) GitHub upstream status
 
 ## 3. Details panel (point 3)
 
-Right side, scrolls on its own. Content for the focused node; updates on focus after 120 ms (no flicker on `j` repeat). First paint from the tree's `WorkNode`; body, children and history after `work_node(id)` ("Loading…" muted under the title).
+Right side, scrolls on its own. Content for the focused node; updates when focus rests 300 ms (no fetch while `j` is held). First paint from the tree's `WorkNode`; children come from the tree when it already loaded them; body and history from `work_node(id)` ("Loading…" muted under the title), cached by `id` + `updated_at_ms` so going back to a row does not fetch again (F36).
 
 ```
 shop-api › v2 › #12 Checkout v2                          (breadcrumb, clickable)
@@ -244,12 +245,12 @@ Estimate
   Team run  ≈ 4.1–6.8 pp of the week   from 7 runs in shop-api
   Solo      ≈ 0.9–1.6 pp of the week   from 12 sessions across projects
   Room      12.0 pp left this week for shop-api
-[Show feature g] [Open in GitHub ↗ o] [⋯ Hide from Ready ⌫ · Focus here z · Copy link]   (#13 runs: no start actions, §5.1)
+[Show feature g] [Open in GitHub ↗ o] [⋯ Hide from Ready ⌫ · Focus here z · Copy link]
 ```
 
 | Part | Rules / copy |
 |---|---|
-| Breadcrumb | ancestors from the project, `›` separated, ≤ 3 then `…`; each opens that node in the tree |
+| Breadcrumb | **One Breadcrumb rule** for every place (details, search results, Focus here bar, Ready rows, dialog origin chip, Feature header): ancestors root first, `›` separated; always keep the root and the parent, collapse the middle to `…` to fit the width; each segment opens that node in the tree |
 | Title line | glyph, ref, title (wraps to 2 lines), app-state chip |
 | Facts line | `<type> · <state> · <board status> · <labels> · assignee <a, b> · milestone v2` (GitHub; board status only with a board) / `<state> · <priority> · estimate 3 · cycle 14 · <labels> · <assignee>` (Linear) / `target 1 Dec 2026 · In progress` (Linear project). Only facts present |
 | Body | P4.5 §3 rules (plain text, 12 lines, Show more, "Shortened…" line, load failure line). Milestones / Linear projects: their description; none → nothing |
@@ -258,7 +259,7 @@ Estimate
 | Linked PRs | `#58 Postcode lookup · merged` — opens in browser. Absent when none. |
 | In Orchestrator (history) | newest last, ≤ 8 lines then "Show all". `what` copy per kind in F6. Empty: "Nothing yet. Start it here." |
 | Estimate | P4.5 §3 copy for both modes. Parents with open children add "Program ≈ 10–17 pp of the week (3 features, per child)" computed by the plan; shown as "Run as program to see the plan's estimate" until a plan exists (F9) |
-| Actions | Buttons only for the actions the node allows (§5.1); `⋯` holds Hide from Ready, Focus here, Copy link |
+| Actions | Buttons only for the actions the node allows (§5.1; #13 runs, so no start actions); `⋯` holds Hide from Ready, Focus here, Copy link |
 | Kinds | Milestone / Linear project / Linear milestone: breadcrumb, title, facts (due / target, status), description, children summary ("6 issues · 2 done · 1 running"), actions Run as program, Open in…; no Start solo / team run (F12). Project row: tracker line "GitHub acme/shop · Ready filter label ready", status, link "Tracker settings". |
 | Multi-selection | when ≥ 2 selected: "3 selected under #12 Checkout v2" (as the selection bar, §5.4) + their list + Run selected as program / Clear |
 
@@ -270,8 +271,8 @@ Estimate
 - Field in the toolbar, placeholder "Search work… (title, #12, ENG-42, text)". `/` focuses it; typing filters live (debounce 250 ms, `work_search`); `Esc` clears and returns to the tree (second `Esc` blurs).
 - While a query is set, the tree is **replaced** by results: flat rows with the **breadcrumb** as a muted second line (row 44 px): `#17 Address validation errors` / `acme/shop › v2 › #12 Checkout v2 › #13 Address step`. Ref match ranks first (`#17`, `ENG-42` exact), then title, then body.
 - Header line of results: "12 results for "address"" · "100+ results: refine the search" (cap 100) · "No results for "adress" in shop-api, mobile · Clear search". Filters apply to results; when filters hide some: "3 more hidden by filters · Show".
-- `⏎` on a result reveals it in the tree (clears search, expands ancestors, focuses the row). `t` `a` `p` `o` act directly on the result.
-- Searching cached data only; when the cache is older than 60 s a refresh runs in the background (header status shows "refreshing…").
+- `⏎` on a result reveals it in the tree (clears search, expands ancestors in one load from the breadcrumb ids, F5/F37, focuses the row). `t` `a` `p` `o` act directly on the result.
+- Search reads the cache only and never starts a refresh by itself (the scope's normal refresh rule applies, §10.1).
 
 ### 4.2 Filters (`f`)
 Popover under the button, two columns, applied live; footer "Reset" and "Done (Esc)".
@@ -299,7 +300,7 @@ Popover under the button, two columns, applied live; footer "Reset" and "Done (E
 ### 5.1 Action availability
 | Action | Key | Offered on | Disabled / hidden when (tooltip) |
 |---|---|---|---|
-| Start team run | `t` | issue / Linear issue / local item, open, app none or ready | project has no team → disabled "shop-api has no team yet"; running / queued / pr / solo → hidden, the chip says why; done (merged, item still open) → offered, the dialog adds a muted line "Ran before as checkout-address · merged 12 Nov"; closed → disabled "Closed in GitHub. Reopen it there to start it." |
+| Start team run | `t` | issue / Linear issue / local item, open, app none or ready | project has no team → disabled (P4.5 §2.2 tooltip); running / queued / pr / solo → hidden, the chip says why; done (merged, item still open) → offered, the dialog adds a muted line "Ran before as checkout-address · merged 12 Nov"; closed → disabled "Closed in GitHub. Reopen it there to start it." |
 | Start solo | `a` | same | same (minus the team rule) |
 | Run as program | `p` | node with ≥ 1 **open** child that is not a team task (issue with sub-issues, milestone, Linear project / milestone; not on project rows) | leaf → hidden; node itself running / pr → hidden (its sub-issues are that run's scope); every child closed → disabled "No open sub-issues"; node already a program root → replaced by "Open program Checkout v2" (`p`) |
 | Run selected as program | `p` with selection | ≥ 2 selected siblings | non-siblings → selection refused (§5.4) |
@@ -326,11 +327,11 @@ Every start opens a dialog; nothing starts on a key or click alone.
   ```
 - Under the brief, one muted line when the item has open sub-issues: "2 sub-issues are part of this run's scope. To run them as separate features, use Run as program." with a link "Run as program instead" (opens the plan dialog for this node, closes this one after confirm if the brief was edited: "Discard your edits to the brief?").
 - When the item is **blocked by** an open item: muted warning line above the buttons (fixture #14): "Blocked by #13 in GitHub (open). Starting now ignores that." Never disables.
-- Write-back line (when on, §10.4), muted, above the buttons: "On start: #13 gets the label orch:running and a comment in GitHub." (acme/shop has no board; with a board: "#13 is moved to In progress…"; assign me on: "…assigned to you, labelled…").
+- Write-back line (when on), muted, above the buttons: "On start: " + the §10.4 start sentence for this item (fixture: "#13 gets the label orch:running and a comment in GitHub.").
 
 ### 5.3 Open in / Hide from Ready
 - Open: browser for GitHub / Linear; nvim for local files. Toast only on failure: "Could not open the link: <reason>".
-- Hide from Ready (`⌫`): as P4.5 §2.2, toast "Hidden #9 from Ready to start. It comes back if it changes in GitHub." with **Undo u** (5 s). The node stays in the tree with tag "Hidden" only when "Show hidden items" is on; otherwise its "ready" chip disappears (the node itself stays: hiding is from Ready, not from Work).
+- Hide from Ready (`⌫`): P4.5 §2.2 toast and Undo, with the tracker name in place of "the source" ("…if it changes in GitHub"; supersedes). **This section owns hidden**: hiding only clears the item from Ready; the node always stays in the tree and loses its "ready" chip; with "Show hidden items" on it also gets the P4.5 §4.1 hidden style (60 % text, tag "Hidden", Unhide).
 
 ### 5.4 Multi-select
 - `x` toggles selection on the focused row; `⇧j` / `⇧k` extend; `Esc` clears. Only **siblings** (same parent) can be selected together: `x` on a non-sibling shows a toast "Select items under the same parent to run them as one program." and does nothing. Team-task lines, project rows and closed items are not selectable (closed: toast "#20 is closed.").
@@ -383,7 +384,7 @@ Skipped: none · Left out: none                                         [Cancel]
 | Graph strip | 80 px, nodes numbered circles by order, arrows for edges, skipped dashed; read-only; hidden when no edges. Hover a node highlights its row |
 | Totals | "Total ≈ 10–17 pp of the week" + room: "12 pp left this week for shop-api" + "· over at the high end" (high > room) / "· over this week's room" (low > room). Muted warning text, never blocks (P4.5 §2.1) |
 | Gates line | "Each feature still asks you to approve its spec and its PR." (always) |
-| Write-back line | when on: "As features start, GitHub items get the label orch:running (with a board: move to In progress); team tasks become sub-issues; merged PRs close their items, and #12 closes when all are done." |
+| Write-back line | when on: the §10.4 sentences joined as one line, start sentence first, with "#12 closes when all are done" for the program parent |
 | Left out line | "Closed sub-issues left out: #16" · "Already running, left out: #13 (checkout-address)" — muted |
 | Start program | primary, accent fill, `⌘⏎`. Disabled while blocking issues remain (6.4), tooltip "Fix 1 thing first". Label with count: "Start program · 3 features" |
 
@@ -475,9 +476,9 @@ With max 2 at once and dependency order, at most 2 specs are pending together; a
 
 ## 8. Ready to start lane (point 8; amends P4.5 §1–§4)
 
-- Row line 2 gains the **breadcrumb** (from `breadcrumb`, ≤ 3, root first, parent only when narrow): "in #12 Checkout v2 › #13 Address step" (`text.muted`, ellipsis from the left). Order on line 2: warning · breadcrumb · project · labels. At 1280: breadcrumb shows the parent only: "in #13 Address step".
+- Row line 2 gains the **breadcrumb** (Breadcrumb rule, §3): "in #12 Checkout v2 › #13 Address step" (`text.muted`, ellipsis from the left). Order on line 2: warning · breadcrumb · project · labels. At 1280: breadcrumb shows the parent only: "in #13 Address step".
 - **Browse all**: header button, left of Refresh: "Browse all" (`w` on the lane header or with no Ready row focused: the lane's scope, i.e. the filter's projects; with a Ready row focused `w` reveals that item in Work, §12.2). With one project shown: tooltip "Open Work for shop-api".
-- **Program-queued items**: items whose app state is queued / waiting in a program **leave** the Ready lane (they are in Programs). Items that are a program root also leave. No "queued" variant of the Ready row.
+- **One rule for the lane**: it lists exactly the nodes with `ready: true`, `hidden: false` and app state none (hiding only clears them from Ready, §5.3). So program-queued items, program roots and running items leave it without a special case. No "queued" variant of the Ready row.
 - Ready rows of a parent with open children gain a third action in `⋯`: "Run as program" (`p`).
 - No-source line (P4.5 §4.1) copy: "shop-api has no tracker · Plan with the Overwatch · Set up tracker" (`e` opens Project settings › Tracker). Error lines and Fix targets point to Tracker.
 
@@ -502,10 +503,7 @@ in acme/shop › v2 › #12 Checkout v2 · program Checkout v2 (1 of 3)   · Wri
 - Task card: `T-4 · #70` (local id and upstream ref when written back), title, model chip, assignee chip, "blocked by T-2" mark (existing).
 - Sync state per task: tiny mark "not synced" (`text.muted`) with tooltip when write-back is pending; "conflict" (warning) when a sync conflict exists, menu item "Resolve conflict…" (existing conflict flow).
 
-### 9.3 Pane keys change
-`b` = focus Tasks (was Board). `w` = Show source in Work. Others unchanged (§12).
-
-### 9.4 Landing from links
+### 9.3 Landing from links
 A sync-conflict outcome, a `T-n` waiting chip or a chat task link: opens (or focuses) the Feature pane of the task's run, scrolls Tasks into view, focuses the task, flashes it once (200 ms, not under reduced motion), and for a conflict opens its menu at "Resolve conflict…". Task whose run is gone: toast "T-12 belongs to checkout (deleted). Open #70 in GitHub?" with **Open o**.
 
 ---
@@ -520,7 +518,7 @@ Sections: General · Files · **Tracker** · Allocation · Notion · MCP. Headin
 3. Fields per kind (10.2).
 4. **Ready filter** (10.3).
 5. **Write back** (10.4).
-6. **Refresh**: select "Every 5 min · 10 min · 30 min · 1 h", hint "Work also refreshes when you open it and on r." (`refresh_secs`).
+6. **Refresh**: select "Every 5 min · 10 min · 30 min · 1 h", hint "Work also refreshes when you open it and on r." (`refresh_secs`). One refresh per project at a time: Work tabs, the Ready lane, the timer and `r` join the one in flight; opening Work refreshes only when the cache is older than `refresh_secs` (F38).
 7. **Preview** (10.5).
 8. Footer: Save `⌘⏎` · Revert; unsaved marker (P4.5 §7.1).
 
@@ -544,7 +542,7 @@ Heading "Ready to start shows", hint "Mission control lists these items. Work sh
 Block with a switch **"Update GitHub as work runs"** / **"Update Linear as work runs"** (default on, Q1); not shown for Local.
 
 Under it, what it does, as a list (muted, updates with the options):
-- "When you start an item, it moves to **In progress** and gets a comment "Started in Orchestrator"." (GitHub without board: "…gets the label `orch:running`…")
+- Start sentence, one variant per target (this list owns the write-back copy; §5.2, §6.2 and history lines reuse it): GitHub without board "When you start an item, it gets the label `orch:running` and a comment "Started in Orchestrator"." · GitHub with a board "…it moves to **In progress** on the board and gets a comment…" · Linear "…it moves to **In progress** and gets a comment…". Assign me on: "…it is assigned to you, …".
 - "Team tasks are created as sub-issues of the item, labelled `orch`."
 - "Pull requests say `Closes #13`, so merging closes the item." (Linear: "Pull requests link the issue; merging moves it to Done.")
 - "A program's parent closes when all its items are done."
@@ -571,7 +569,7 @@ P4.5 §4.2 table stands with Fix targets → Tracker. Additions:
 |---|---|---|
 | `linear_complexity` | "Linear said the request was too large. Work shows what is cached." | **Fix** (`settings`): "Limit the tracker to fewer projects" (opens Projects field). Also in Work: "Some items may be missing." |
 | `gh_sub_issues` | "GitHub didn't return sub-issues for acme/shop. Work shows issues without hierarchy." | none; **Retry** |
-| `gh_scope` (board) | "GitHub needs the read:project scope to read the board." | **Copy command** `gh auth refresh -s read:project` |
+| `gh_scope` (board) | P4.5 §4.2 `gh_scope` line and Copy command, plus "to read the board" | as P4.5 |
 | write-back `gh_write` (F27; Linear `linear_write`) | "GitHub refused the change: your login can't write to acme/shop." | **Turn off write-back** (in settings) |
 | field `teams` | "Pick at least one team." | |
 
@@ -582,28 +580,24 @@ P4.5 §4.2 table stands with Fix targets → Tracker. Additions:
 | # | State | Where | Copy / form |
 |---|---|---|---|
 | S1 | **First load** (no cache) | Work | header "Loading acme/shop…"; tree: 6 skeleton rows (static under reduced motion); per project row "Reading GitHub…" / "Reading Linear…" |
-| S2 | **Refreshing** (cache shown) | Work header, Ready lane | "refreshing…" (spinner 12 px); rows stay; Refresh disabled "Refreshing…" |
+| S2 | **Refreshing** (cache shown) | Work header, Ready lane | as P4.5 §1.1 (status text and Refresh); rows stay |
 | S3 | **Offline / source unreachable, cache** | Work header + banner line | "Offline · updated 2 h ago" (header, muted); line under toolbar "Showing what was cached at 13:02. Starting still works; write-back waits." ; Refresh → retries |
-| S4 | **Source error** (per code §10.7, P4.5 §4.2) | Work: project row tail + line under it | `shop-api · GitHub: not logged in · Fix`; cache rows kept below with header time |
-| S5 | **Rate limited** | Work, lane | "GitHub rate limit reached · retry at 14:20"; Refresh disabled till then, tooltip "Retry at 14:20" |
+| S4 | **Source error** (per code §10.7, P4.5 §4.2) | Work: project row tail + line under it | `shop-api · GitHub: not logged in · Fix`; cached rows kept as P4.5 §4.1 "Source error, items kept" |
+| S5 | **Rate limited** | Work, lane | as P4.5 §4.1 "Rate limited" and §1.1 Refresh |
 | S6 | **Linear complexity** | Work | §10.7 + rows partially loaded; a parent that failed to load: child line "Could not load sub-issues: request too large · Retry" |
 | S7 | **Empty tracker** | Work | "No open issues in acme/shop. Create them in GitHub ↗; Work picks them up at the next refresh (r)." Linear: "No issues in ENG." Local: "No backlog files in .orchestrator/backlog/. Add a .md file there." |
 | S8 | **No match for filters** | Work | "Nothing matches 3 filters in shop-api · Reset filters" (`⏎`) |
-| S9 | **No match for search** | Work | §4.1 |
 | S10 | **Huge tree** (500+ roots) | Work | roots paged 100 at a time: last line "Showing 100 of 512 · Load 100 more" (`⏎`); header "512 at the top". Virtualised list (no visible change). Search recommended in the line: "or search with /" |
 | S11 | **Parent with 100 children** | Work | first 50 shown, "+ 50 more sub-issues · Load" line; GitHub limit note at 100: "GitHub shows at most 100 sub-issues per issue." |
-| S12 | **Deep tree** | Work | §2.4 with the deep fixture, Focus here board |
 | S13 | **Closed parent with open children** | Work | parent glyph closed + children open shown normally; the parent row's tail "closed · 2 open sub-issues" (muted); Run as program still offered on it ("2 open sub-issues") |
 | S14 | **Item deleted upstream while running** | Work, Feature header, MC run row | node stays (from cache) with tag "Deleted in GitHub" (warning text), glyph dimmed; actions only Show feature; Feature header "#13 was deleted in GitHub. The run continues." ; origin chip unchanged, tooltip "Deleted in GitHub" |
 | S15 | **Write-back failed** | Work row, Feature header, toast once | row tail "write-back failed" (warning); details history line "13 Nov 09:41 Could not label #13 orch:running: <reason> · Retry"; Feature header line with **Retry**; one toast per failure kind per feature: "Could not update #13 in GitHub. The run continues. Retry from the feature." Repeated failures (3+) → card level 3 "Write-back is failing for shop-api" · **Open settings** · **Turn off write-back** |
 | S16 | **Loading children** | Work | "Loading…" child line under the expanded node; failure "Could not load: <reason> · Retry" |
-| S17 | **Hidden items shown** | Work | hidden nodes are always in the tree (hiding is from Ready); with "Show hidden items" on they get tag "Hidden", 60 % text, action Unhide |
+| S17 | **Hidden items shown** | Work | §5.3 |
 | S18 | **Scope with Local + GitHub + Linear** | Work | three project rows, each with its own status |
-| S19 | **gh_scope** | Settings preview, Work line | §10.7 with Copy command |
-| S20 | **Program states** | MC, Program view | running, paused, flagged child, failed feature, done, cancelled (7.1–7.3) |
-| S21 | **Plan dialog states** | dialog | 6.5 + every issue kind of 6.4 |
-| S22 | **Migration notices** | settings | four cases 10.6 |
-| S23 | **Selection** | Work | 1, 3 selected; non-sibling refusal toast |
+| S19 | **Selection** | Work | 1, 3 selected; non-sibling refusal toast |
+
+Also in the matrix, drawn from their own sections: no match for search (§4.1), deep tree (§2.4), `gh_scope` (§10.7), program states (§7.1–7.3: running, paused, flagged child, failed feature, done, cancelled), plan dialog states (§6.4–6.5), migration notices (§10.6).
 
 ---
 
@@ -636,10 +630,9 @@ P4.5 §4.2 table stands with Fix targets → Tracker. Additions:
 | Key | Action | On |
 |---|---|---|
 | `w` | Open Work (filter's projects); on a Ready row: Work revealed at that item | pane |
-| `p` | Run as program | Ready row with open children (the agent `p` = pause applies to agent rows only) |
+| `p` | Run as program (Ready row with open children) · Pause / resume program (program row); agent rows keep Pause | Ready row · program row |
 | `⏎` | Open Program view | program row |
 | `space` | Expand / collapse sub-rows | program row |
-| `p` | Pause / resume program | program row |
 | `⇧K` | Cancel program (confirms) | program row |
 | `o` | Open the source item | program row |
 
@@ -652,23 +645,20 @@ P4.5 §4.2 table stands with Fix targets → Tracker. Additions:
 ### 12.5 Feature pane
 `b` focus Tasks (was Board) · `w` show source in Work · Tasks focused: `j k h l`, `⏎` menu, `a` assign, `m` move to, `1–5` column, `e` edit, `n` new task, `o` open upstream, `⇧H ⇧L` move card, `Esc` back to the pane. **Changes**: the pane's own `e` (open doc in nvim) and `m` (message) and `p` (pause team) apply only when Tasks is **not** focused.
 
-### 12.6 Global
-Leader `⌘; b` = Work browser (context project or all). No ⌘ chord added.
-
 ### 12.7 Conflict check
 | Against | Result |
 |---|---|
-| **Mission control map** (`j k h l ⏎ space i p s r ⇧K d n f o ⌫ Esc` + P4.5 `t a x e ⇧R ⇧H u`) | `w` new, unbound → OK. `p` on a **Ready row** = Run as program; `p` on agent / run rows stays Pause: different row kinds, the hint row says which (same split as `⌫`). Program row reuses `p` (pause) and `⇧K` (cancel/kill) with the same meaning family. `o` on program row = open source, consistent. |
+| **Mission control map** (P4.2 §3.1 + P4.5 §10.1) | `w` new, unbound → OK. `p` on a **Ready row** = Run as program; `p` on agent / run rows stays Pause: different row kinds, the hint row says which (same split as `⌫`). Program row reuses `p` (pause) and `⇧K` (cancel/kill) with the same meaning family. `o` on program row = open source, consistent. |
 | **Contract §5 proposal** | `s` for solo **dropped** → `a` (P4.5 §10.3: `s` is Suspend). `⏎` = details as proposed; start keys stay letters. `x` = select (proposal) — differs from Ready rows where `x` hides; Work uses `⌫` for hide (both panes accept `⌫` for hide, so `⌫` is the portable key). Contract §5 to update (F20). |
 | **Work vs Mission control `r`** | `r` = Refresh in Work (no agents there); Resume in Mission control; the Ready lane keeps `⇧R`. Different panes. |
 | **Feature pane** | `a` (assign), `m` (move), `e` (edit), `n` (new) inside Tasks shadow the pane's `e` (doc) / `m` (message) only while Tasks has focus; `Esc` leaves. `b` relabelled. `w` new. |
 | **Board map** | removed with the Board (`g` remote → `o`; `r` sync → Refresh in Work; `⇧O` off-hours dropped: a launch option, not a task action). |
-| **Leader** (`j k t ] [ e w p o g`) | `b` free → Work. |
-| **Global ⌘ chords** (⌘K P B I N T W J L , / ⇧T ⇧I) | none added. ⌘B stays sidebar. |
+| **Leader** (`LEADER` in `ui/src/lib/keyboard.js`; P4.2 §3.2) | `b` is free → `⌘; b` = Work browser (context project or all). |
+| **Global ⌘ chords** (`CHORDS` in `ui/src/lib/keyboard.js`; P4.2 §3.2) | none added. ⌘B stays sidebar. |
 | **Chat / Inbox** (`a r ⏎ o x u e t`) | separate focus target; program cards use `⏎` / `r` / `x` as cards do. |
 | **Text fields** | search field and dialog fields swallow single keys; `Esc` leaves the field first. |
 
-Result: **no binding collision**; meaning splits by row kind: `p` (Run as program on Ready rows, Pause program on program rows), `space` (Details elsewhere, expand / collapse sub-rows on a program row: its sub-rows are its details), same style as the accepted `⌫` split; one contract change (`s` → `a`). Page 05 gets 12.1–12.6 and the note "`s` = Suspend; solo is `a` everywhere".
+Result: no binding collision; two splits by row kind (`p`, and `space` on program rows, whose sub-rows are their details); one contract change (`s` → `a`, F20). Page 05 gets 12.1–12.5 and the note "`s` = Suspend; solo is `a` everywhere".
 
 Palette entries: "Open Work (all projects)", "Work: shop-api", "Find work item…", "Start team run: #13 Address step", "Run as program: #12 Checkout v2", "Program: Checkout v2", "Pause program Checkout v2", "Refresh Work".
 
@@ -680,14 +670,14 @@ Every board at **1512 and 1280** (spec §5), including the rows below that name 
 
 | # | Board | Page | Notes |
 |---|---|---|---|
-| 1 | Mission control with Work button, Programs lane (Checkout v2 running), Ready lane with breadcrumbs and Browse all — 1512 and 1280 | 04.2 | §1.2, §7.1, §8 |
-| 2 | Work · GitHub fixture, details on #13 — 1512, 1280 | 04.8 Work (new) | §2, §3 |
+| 1 | Mission control with Work button, Programs lane (Checkout v2 running), Ready lane with breadcrumbs and Browse all | 04.2 | §1.2, §7.1, §8 |
+| 2 | Work · GitHub fixture, details on #13 | 04.8 Work (new) | §2, §3 |
 | 3 | Work · Linear fixture, details on ENG-101; and multi-project scope (shop-api, mobile, blog) | 04.8 | §2.1 project rows |
 | 4 | Tree row anatomy + every app-state chip + kind glyphs + roll-up + team tasks fold expanded | 02 | components Tree row, App-state chip, Kind glyph |
 | 5 | Search results, filters popover, no match | 04.8 | §4 |
 | 6 | Deep fixture: L5/L6 tags, Focus here breadcrumb | 04.8 | §2.4 |
 | 7 | Multi-select bar, refusal toast | 04.8 | §5.4 |
-| 8 | States S1–S19 (one board per row of §11, grouped 4 per frame) | 04.8 | §11 |
+| 8 | States S1–S19 and the extra list under §11 (one board per row, grouped 4 per frame) | 04.8 | §11 |
 | 9 | Launch / New-session prefilled with breadcrumb, sub-issues brief, blocked line, write-back line | 04.4 | §5.2 |
 | 10 | Program plan dialog: planned (fixture), each issue kind, re-plan confirm, nothing to plan, sequential | 04.4 | §6 |
 | 11 | Program view: running, paused, new upstream item, done | 04.4 | §7.2 |
@@ -741,3 +731,8 @@ No change made to spec or contract. ui draws the proposal unless lead decides ot
 | F33 | **`linked_prs` have no title** (details show "#58 Postcode lookup · merged"). | Add `title` to `linked_prs[]`. |
 | F34 | **`AppState` solo has only `agent`**; the chip shows the session's name ("solo · fix-feed"). | Add `name` to the `solo` state. |
 | F35 | **Write-back target with a board / in Linear is unnamed.** "Moved to In progress" needs a board Status option (names vary: "In Progress", "Doing") and a Linear `started` state (a team may have several). | `write_back.board_status?: "<option>"` (default: first option named like "In progress") and `write_back.linear_state?: "<state id>"` (default: first `started` state); picker in §10.4 under the switch. |
+| F36 | **Details fetch per focus**: `work_node` repeats the children the tree has and the body on every visit. | `work_node(id, {children: false})`; UI cache by `id` + `updated_at_ms`; GitHub body stored at refresh time in `work_nodes` (it comes with the issue query). |
+| F37 | **Restoring expanded nodes and revealing a search result** need one `work_tree` call per parent (up to 500 / 8 in a row). | `work_tree(scope, parents: [ids])` answered from the cache in one call, and `work_reveal(id)` returning the ancestor chain with their siblings. |
+| F38 | **Refreshes stack** (open, timer, `r`, Ready lane, several Work tabs). | Core keeps one in-flight refresh per project that callers join; `work_refresh` returns at once when one runs. |
+| F39 | **`now.programs` replaced whole** on every phase change, and F32 makes it larger. | Delta per program id (`programs: {upsert: [..], remove: [ids]}`). |
+| F40 | **Action availability** (closed, running, no team, team tasks) is restated per surface. | Core adds `actions: { team, solo, program, hide }` each `"ok" | {disabled: reason} | "hidden"` to `WorkNode`; every surface renders it the same way (§5.1 is the rule set). |
