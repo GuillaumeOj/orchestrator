@@ -1067,11 +1067,10 @@ export function openDelivery(rec) {
 
 /** Landing on a task (notes §9.3): the Feature pane of the task's run, Tasks scrolled in, the task
  *  focused and flashed (`conflict`: its menu open at "Resolve conflict…"). `hint` carries what the
- *  caller knows (`run`, `feature` slug or id, `remote_url`, `ref`); without a run the project's features
- *  are asked for the task. A run that is gone: a toast offering the upstream issue. */
-export async function openTask(projectId, taskId, hint = {}) {
+ *  caller knows (`run`, `feature` slug or id, `remote_url`, `ref`, `tracker`). A run that is gone: a toast offering the upstream issue. */
+export function openTask(projectId, taskId, hint = {}) {
   const id = String(taskId ?? '').replace(/^T-/, '');
-  const f = await taskFeature(projectId, id, hint);
+  const f = taskFeature(projectId, hint);
   if (f) return openFeature(f.id, null, null, null, { task: id, conflict: !!hint.conflict });
   const name = `T-${id}`;
   const url = hint.remote_url ?? null;
@@ -1081,17 +1080,13 @@ export async function openTask(projectId, taskId, hint = {}) {
   );
 }
 
-async function taskFeature(projectId, id, hint) {
+/** The feature of a task link: its run (task links carry `run`, F24), else the feature named by the hint. */
+function taskFeature(projectId, hint) {
   const all = features();
   const byRun = hint.run ? all.find((f) => f.run?.id === hint.run) : null;
   if (byRun) return byRun;
-  const named =
-    hint.feature && all.find((f) => f.id === hint.feature || (f.project_id === projectId && f.slug === hint.feature));
-  if (named) return named;
-  if (hint.run) return null;
-  const cands = all.filter((x) => x.project_id === projectId && x.run);
-  const views = await Promise.all(cands.map((f) => invoke('feature_view', { feature: f.id }).catch(() => null)));
-  return cands.find((_, i) => views[i]?.tasks?.some((t) => String(t.id) === id)) ?? null;
+  if (!hint.feature) return null;
+  return all.find((f) => f.id === hint.feature || (f.project_id === projectId && f.slug === hint.feature)) ?? null;
 }
 
 /** The first time an old Board path is used (Feature `b`, the inspector): one toast, then never (notes §1.3). */

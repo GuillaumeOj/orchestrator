@@ -3,8 +3,7 @@
 // calls behind each key. The pane renders it; rules and copy live in workmodel.js.
 
 import { UNDO_MS } from './inbox.js';
-import { staleOf, staleToast } from './intake.js';
-import { openPrefilled } from './intake.svelte.js';
+import { startNode } from './intake.svelte.js';
 import { errText, invoke } from './ipc.js';
 import { originRemote, readySummary, repoOfRemote, trackerTarget } from './tracker.js';
 import {
@@ -590,26 +589,8 @@ export class WorkView {
   // ---------------------------------------------------------------- actions (notes §5)
 
   /** Start team run / Start solo (t / a): the prefilled dialog through `work_prefill`, never a start. */
-  async start(node, mode) {
-    try {
-      const r = await invoke('work_prefill', { id: node.id, mode });
-      const tracker = trackerOf(node) ?? 'local';
-      openPrefilled(r, {
-        intake: { source: node.id },
-        origin: {
-          kind: 'intake',
-          item: node.id,
-          source: tracker,
-          ref: node.ref,
-          url: node.url ?? null,
-          breadcrumb: r?.origin?.breadcrumb ?? null,
-        },
-        item: { ...node, ...(r?.item ?? {}), estimate: r?.estimate ?? node.estimate },
-      });
-    } catch (e) {
-      const stale = staleOf(e);
-      this.toast?.(stale ? staleToast(stale, node.ref) : `Could not open the dialog: ${errText(e)}`, { kind: 'error' });
-    }
+  start(node, mode) {
+    return startNode(node.id, mode, { item: { ...node, tracker: trackerOf(node) ?? 'local' }, ref: node.ref });
   }
 
   /** ⌫ Hide from Ready: P4.5 §2.2 toast with Undo (5 s), tracker named (notes §5.3). */
