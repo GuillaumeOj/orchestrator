@@ -754,6 +754,22 @@ mod tests {
     }
 
     #[test]
+    fn a_hidden_node_starts() {
+        let (_d, s) = store();
+        s.intake_apply("p1", "github", vec![item("#1", "a")], true, 1).unwrap();
+        let one = s.work_nodes(Some("p1")).unwrap()[0].id;
+        s.intake_hide(one, 2).unwrap();
+        // Hiding only clears the Ready lane: Work starts it by its node id.
+        assert!(s.intake_mark_started(one, "agent", "solo-1").unwrap());
+        let r = s.intake_item(one).unwrap().unwrap();
+        assert_eq!((r.state, r.started_ref.as_deref(), r.hidden_at_ms), (IntakeState::Started, Some("solo-1"), None));
+        // A node that ran before starts again through `intake_restart` only.
+        assert!(!s.intake_mark_started(one, "run", "run-2").unwrap());
+        assert!(s.intake_restart(one, "run", "run-2").unwrap());
+        assert_eq!(s.intake_item(one).unwrap().unwrap().started_ref.as_deref(), Some("run-2"));
+    }
+
+    #[test]
     fn started_items_and_briefs_return_or_drop() {
         let (_d, s) = store();
         s.intake_apply("p1", "github", vec![item("#1", "a"), item("#2", "a")], true, 1).unwrap();
@@ -762,7 +778,7 @@ mod tests {
         assert!(s.intake_mark_started(one, "run", "run-1").unwrap());
         assert!(!s.intake_mark_started(one, "agent", "x").unwrap(), "only a ready item starts");
         s.intake_hide(two, 2).unwrap();
-        // (a hidden node starts too: hiding only clears the Ready lane; Work starts it by its node id)
+        // (a hidden node starts too: see `a_hidden_node_starts`)
         let b = s.intake_add_brief_start("p1", "brief-4", "Plan", "agent", "solo-1", 3).unwrap();
         let started: Vec<(String, Option<String>)> =
             s.intake_started().unwrap().into_iter().map(|r| (r.source, r.started_ref)).collect();

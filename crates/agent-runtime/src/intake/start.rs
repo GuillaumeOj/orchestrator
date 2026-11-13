@@ -376,10 +376,9 @@ impl Runtime {
                     Ok(false) => self.db.intake_restart(r.id, kind, reference),
                     other => other,
                 };
-                self.work_log(r, "started", (kind == "run").then_some(name), None);
                 match started {
-                    Ok(true) => {}
-                    // Gone upstream (or hidden) while the start ran: no origin to keep.
+                    Ok(true) => self.work_log(r, "started", (kind == "run").then_some(name), None),
+                    // Gone upstream while the start ran: no origin to keep.
                     Ok(false) => {
                         eprintln!("warn: intake item it_{} was no longer ready when {kind} {reference} started", r.id)
                     }

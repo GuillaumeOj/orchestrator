@@ -428,20 +428,17 @@ impl Ctx {
     fn keep(&self, f: &WorkFilter) -> (Vec<bool>, Vec<bool>) {
         let pass: Vec<bool> = (0..self.rows.len()).map(|i| self.passes(i, f)).collect();
         let mut keep = pass.clone();
-        // A node's keep flag climbs to its ancestors.
-        for i in 0..self.rows.len() {
-            if !pass[i] {
-                continue;
-            }
+        // A node's keep flag climbs to its ancestors; a climb stops at one already climbed
+        // (everything above it is kept), which also ends a loop in the parents.
+        let mut climbed = vec![false; self.rows.len()];
+        for (i, _) in pass.iter().enumerate().filter(|(_, p)| **p) {
             let mut at = i;
             while let Some(p) = self.rows[at].parent_id.as_deref().and_then(|p| self.by_id.get(p)).copied() {
-                if keep[p] && p != at && !pass[p] && !keep_is_new(&keep, p) {
+                if p == at || climbed[p] {
                     break;
                 }
                 keep[p] = true;
-                if p == at {
-                    break;
-                }
+                climbed[p] = true;
                 at = p;
             }
         }
@@ -477,11 +474,6 @@ impl Ctx {
             })
             .collect()
     }
-}
-
-/// A node already marked by a climb that only revisits (kept for the loop's early exit).
-fn keep_is_new(keep: &[bool], p: usize) -> bool {
-    !keep[p]
 }
 
 /// `run.source` of a start from `r` (contract §2, F23): where the run or session came from.
@@ -562,8 +554,23 @@ impl Runtime {
         ctxs.iter().enumerate().find_map(|(c, ctx)| ctx.index(id).map(|i| (c, i)))
     }
 
+    /// The tree of the one project that holds node `id`, and the node's index in it
+    /// (not every project's tree: one read per call).
+    fn work_ctx_of(&self, id: &str) -> Result<(Ctx, usize)> {
+        let holders = self.db.work_node_rows(id)?;
+        let project = self
+            .work_projects(&json!({}))?
+            .into_iter()
+            .find(|p| holders.iter().any(|r| r.project_id == p.id))
+            .ok_or_else(|| anyhow!(not_found(id)))?;
+        let ctx = Ctx::new(self, &project)?;
+        let i = ctx.index(id).ok_or_else(|| anyhow!(not_found(id)))?;
+        Ok((ctx, i))
+    }
+
     /// Fetches the sub-issues of node `i` when the cache lacks some (once per revision of the parent).
-    /// `Some(error)` when the fetch failed; the cache is rebuilt after a fetch.
+    /// `Some(error)` when the fetch failed; the cache is rebuilt after a fetch, so a node's
+    /// index is asked again (`Ctx::index`) afterwards: the rows are in another order.
     fn work_fill_children(&self, ctx: &mut Ctx, i: usize) -> Option<Value> {
         if !ctx.missing_children(i) {
             return None;
@@ -649,10 +656,11 @@ impl Runtime {
                 }
             }
             Some(ids) => {
-                for (k, id) in ids.iter().enumerate() {
+                for id in &ids {
                     let Some((c, i)) = self.find_node(&ctxs, id) else { continue };
                     let err = self.work_fill_children(&mut ctxs[c], i);
                     let ctx = &ctxs[c];
+                    let i = ctx.index(id).unwrap_or(i);
                     let (pass, keep) = ctx.keep(&f);
                     let kids: Vec<usize> =
                         ctx.kids.get(&Some(i)).into_iter().flatten().copied().filter(|k| keep[*k]).collect();
@@ -676,13 +684,9 @@ impl Runtime {
                     if let Some(e) = err {
                         m.insert("error".into(), e);
                     }
-                    if ctx.missing_children(i) && !m.contains_key("error") && m.is_empty() {
-                        // (still unfetched: the marker says it was asked for already)
-                    }
                     if !m.is_empty() {
                         more.insert(id.clone(), Value::Object(m));
                     }
-                    let _ = k;
                 }
             }
         }
@@ -695,10 +699,10 @@ impl Runtime {
     pub fn work_search(&self, scope: &Value, query: &str, filter: &Value) -> Result<Value> {
         let f = WorkFilter::parse(filter)?;
         let q = query.trim().to_lowercase();
-        let ctxs = self.work_ctxs(scope)?;
         if q.is_empty() {
             return Ok(json!({"nodes": [], "total": 0, "hidden_by_filters": 0}));
         }
+        let ctxs = self.work_ctxs(scope)?;
         let root = scope["root"].as_str();
         let bare = |s: &str| s.trim_start_matches('#').to_lowercase();
         let tokens: Vec<&str> = q.split_whitespace().collect();
@@ -761,13 +765,13 @@ impl Runtime {
 
     /// `work_node`: the node with its breadcrumb, body, history and estimate; `children`: the first page.
     pub fn work_node(&self, id: &str, opts: &Value) -> Result<Value> {
-        let mut ctxs = self.work_ctxs(&json!({}))?;
-        let (c, i) = self.find_node(&ctxs, id).ok_or_else(|| anyhow!(not_found(id)))?;
+        let (mut ctx, i) = self.work_ctx_of(id)?;
         let mut err = None;
         if opts["children"].as_bool() == Some(true) {
-            err = self.work_fill_children(&mut ctxs[c], i);
+            err = self.work_fill_children(&mut ctx, i);
         }
-        let ctx = &ctxs[c];
+        let ctx = &ctx;
+        let i = ctx.index(id).unwrap_or(i);
         let full = self.db.work_node_rows(id)?.into_iter().find(|r| r.project_id == ctx.project.id);
         let mut n = ctx.node(i);
         n["breadcrumb"] = json!(ctx.breadcrumb(i));
@@ -790,9 +794,8 @@ impl Runtime {
 
     /// `work_reveal`: the chain root → node and the ancestors' siblings, in one answer.
     pub fn work_reveal(&self, id: &str) -> Result<Value> {
-        let ctxs = self.work_ctxs(&json!({}))?;
-        let (c, i) = self.find_node(&ctxs, id).ok_or_else(|| anyhow!(not_found(id)))?;
-        let ctx = &ctxs[c];
+        let (ctx, i) = self.work_ctx_of(id)?;
+        let ctx = &ctx;
         let mut chain = vec![i];
         while let Some(p) =
             ctx.rows[*chain.last().unwrap()].parent_id.as_deref().and_then(|p| ctx.by_id.get(p)).copied()

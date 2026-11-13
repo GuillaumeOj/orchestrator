@@ -705,10 +705,16 @@ fn linear_issue_node(
     Some((node, team_task))
 }
 
-/// The sub-issues of one Linear issue (`parent`: its id) as nodes, every state
-/// (the lazy children of Work). Team tasks are not nodes.
+/// The sub-issues of one Linear issue as nodes, every state (the lazy children
+/// of Work). `parent` is its identifier (`ENG-12`, what a node carries: the
+/// filter's `id` wants the uuid, which the cache does not keep) or its id.
+/// Team tasks are not nodes.
 pub fn linear_children(gql: &dyn Graphql, backoff: &Backoff, now_ms: u64, parent: &str) -> R<Vec<Node>> {
-    let filter = json!({"parent": {"id": {"eq": parent}}});
+    let filter = match parent.rsplit_once('-').filter(|(k, n)| !k.is_empty() && n.parse::<u64>().is_ok()) {
+        Some((key, n)) if parent.len() != 36 => json!({"parent": {
+            "team": {"key": {"eq": key}}, "number": {"eq": n.parse::<u64>().unwrap_or(0)}}}),
+        _ => json!({"parent": {"id": {"eq": parent}}}),
+    };
     let (raw, _) = linear_pages(gql, backoff, now_ms, &linear_issues_query(), &filter, "issues")?;
     let none = std::collections::HashMap::new();
     Ok(raw
