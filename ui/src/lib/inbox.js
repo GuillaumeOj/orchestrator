@@ -182,7 +182,8 @@ export function pendingVerb(d, action) {
       return action === 'ignore' ? 'Ignoring' : 'Adding';
     case 'program_item_closed':
     case 'program_feature_failed':
-      return action === 'skip' ? 'Skipping' : action === 'keep' ? 'Keeping' : 'Opening';
+      // A dependent of a failed run outside the program: Start anyway (⏎) or Skip it (x).
+      return { skip: 'Skipping', keep: 'Keeping', start_anyway: 'Starting anyway' }[action] ?? 'Opening';
     case 'permission':
       return { approve: 'Allowing once', always: 'Always allowing' }[action] ?? 'Denying';
     case 'startup':
@@ -206,7 +207,14 @@ export function pendingVerb(d, action) {
   return action === 'dismiss' || action === 'reject' ? 'Dismissing' : 'Sending your answer';
 }
 
-const PROGRAM_EFFECT = { ignored: 'Ignored', kept: 'Kept', resolved: 'Done in the program' };
+const PROGRAM_EFFECT = {
+  ignored: 'Ignored',
+  kept: 'Kept',
+  resolved: 'Done in the program',
+  'started anyway': 'Started anyway',
+  opened: 'Opened',
+  'turned off': 'Write-back turned off',
+};
 
 /** The undo toast: what will be sent, not what happened (the core has not answered yet). */
 export function pendingToast(d, action) {
@@ -310,13 +318,17 @@ export function effectText(d, mine = {}) {
     case 'applied':
       return d.kind === 'ask' ? `Running now · ${agent}` : `Applied · ${d.title}`;
     case 'skipped':
-      return d.kind === 'ask' ? `Kept queued · ${agent}${eta}` : `Skipped · ${d.title}`;
+      if (d.kind === 'ask') return `Kept queued · ${agent}${eta}`;
+      return `Skipped · ${isProgramCard(d) ? cut(d.title, 40) : d.title}`;
     case 'deleted':
       return `Deleted · ${agent}`;
     // Program cards (improve-intake notes §7.3): the program was edited, or the card was settled by an edit.
     case 'ignored':
     case 'kept':
+    case 'started anyway':
     case 'resolved':
+    case 'opened':
+    case 'turned off':
       return `${PROGRAM_EFFECT[lc.effect]} · ${cut(d.title, 40)}`;
     default:
       return null;

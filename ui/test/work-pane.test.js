@@ -28,6 +28,7 @@ vi.mock('../src/lib/ipc.js', () => ({
 const listeners = {};
 
 const { default: WorkPane } = await import('../src/panes/WorkPane.svelte');
+const { default: WorkDetails } = await import('../src/components/work/WorkDetails.svelte');
 const { openWork } = await import('../src/lib/work.js');
 
 const called = (cmd) => calls.filter(([c]) => c === cmd).map(([, a]) => a);
@@ -454,6 +455,74 @@ describe('details (§3, F36)', () => {
   });
 });
 
+describe('deleted upstream keys (S14)', () => {
+  it('o, x, z, t, a do nothing; g shows the feature', async () => {
+    const gone = wn('gh:acme/shop#13', {
+      app: { state: 'running', feature: 'checkout-address', phase: 'executing' },
+      upstream: { deleted: true },
+      children: { total: 2, open: 1, done: 1 },
+    });
+    const { container, pane } = await mount(['shop-api'], { nodes: [gone], prefs: { focused: gone.id } });
+    await waitFor(() => expect(container.querySelector(`[data-key="${gone.id}"]`)).toBeTruthy());
+    for (const k of ['o', 'x', 'z', 't', 'a']) await press(pane, k);
+    expect(called('open_url')).toEqual([]);
+    expect(container.querySelector('[data-selbar]')).toBeNull();
+    expect(app.overlay).toBeNull();
+    expect(text(container.querySelector('.hints'))).toBe('g show feature');
+  });
+});
+
+describe('details panel rules (U1 visual QA)', () => {
+  const acts = (c) => [...c.querySelectorAll('.details [data-act]')].map((b) => b.getAttribute('data-act'));
+  const details = (props) =>
+    render(WorkDetails, { act: () => {}, detail: { body: '', history: [] }, ...props }).container;
+
+  it('deleted upstream (S14): Show feature only, no menu', () => {
+    const n = wn('gh:acme/shop#13', {
+      app: { state: 'running', feature: 'checkout-address', phase: 'executing' },
+      upstream: { deleted: true },
+    });
+    const c = details({ node: n });
+    expect(acts(c)).toEqual(['feature']);
+    expect(c.querySelector('.details [aria-label="More actions"]')).toBeNull();
+  });
+
+  it('the suggested mode leads: Start solo first without a team', () => {
+    expect(acts(details({ node: wn('gh:acme/shop#9') }))).toEqual(['team', 'solo', 'open']);
+    cleanup();
+    const solo = wn('gh:acme/shop#9', {
+      actions: { team: { disabled: 'This project has no team yet' }, solo: 'ok', program: 'hidden', hide: 'hidden' },
+    });
+    expect(acts(details({ node: solo }))).toEqual(['solo', 'team', 'open']);
+  });
+
+  it('children without an app state: Linear state, container progress; dependency chips long at 1512', () => {
+    const kids = [
+      wn('lin:ENG-104', { ref: 'ENG-104', title: 'Verify', upstream: { state: 'Done', state_type: 'completed' } }),
+      wn('gh-milestone:acme/shop/4', {
+        kind: 'milestone',
+        ref: 'v3',
+        title: 'v3',
+        children: { total: 6, done: 2, open: 4 },
+      }),
+    ];
+    const parent = wn('gh:acme/shop#12', { children: { total: 2, done: 1, open: 1 } });
+    const c = details({ node: parent, kids });
+    const lines = [...c.querySelectorAll('.kid')].map(text);
+    expect(lines[0]).toMatch(/ENG-104 Verify Done$/);
+    expect(lines[1]).toMatch(/v3 2 of 6$/);
+    cleanup();
+    const blocker = wn('gh:acme/shop#13', {
+      app: { state: 'running', feature: 'checkout-address', phase: 'executing' },
+    });
+    const n = wn('gh:acme/shop#14', {
+      upstream: { blocked_by: [{ id: blocker.id, ref: '#13', title: 'x', open: true }] },
+    });
+    const d = details({ node: n, lookup: (id) => (id === blocker.id ? blocker : null) });
+    expect(text(d.querySelector('[data-chip]'))).toBe('running · checkout-address · executing');
+  });
+});
+
 describe('states (§11)', () => {
   it('S1 first load: Loading header and skeleton', async () => {
     setup({ nodes: [], status: { 'shop-api': { status: 'refreshing', refreshed_at_ms: null } } });
@@ -489,14 +558,23 @@ describe('states (§11)', () => {
     const { container } = render(WorkPane, { paneId: 'w1' });
     await waitFor(() => expect(container.querySelector('[data-empty]')).toBeTruthy());
     expect(text(container.querySelector('[data-empty]'))).toBe(
-      'No open issues in acme/shop. Create them in GitHub; Work picks them up at the next refresh (r).',
+      'No open issues in acme/shop. Create them in GitHub ↗; Work picks them up at the next refresh (r).',
     );
+    // "GitHub ↗" opens the repository's issues.
+    await fireEvent.click(container.querySelector('[data-empty] button'));
+    expect(called('open_url').at(-1)).toMatchObject({ url: 'https://github.com/acme/shop/issues' });
     cleanup();
     setup({ nodes: [], prefs: { filter: { only_ready: true } } });
     const r2 = render(WorkPane, { paneId: 'w1' });
     await waitFor(() => expect(r2.container.querySelector('[data-empty]')).toBeTruthy());
     expect(text(r2.container.querySelector('[data-empty]'))).toBe(
       'Nothing matches 1 filter in shop-api · Reset filters',
+    );
+    expect(text(r2.container.querySelector('[data-status]'))).toMatch(/^0 items match · 1 filter/);
+    // ⏎ with no rows is Reset filters (S8).
+    await fireEvent.keyDown(r2.container.querySelector('.work'), { key: 'Enter' });
+    await waitFor(() =>
+      expect(r2.container.querySelector('[data-empty]')?.textContent).not.toContain('Nothing matches'),
     );
   });
 

@@ -11,6 +11,7 @@
   let { row, name = '', tracker = 'GitHub', open = true, liveCap = null, ontoggle = () => {}, onopen = () => {}, onpause = () => {}, oncancel = () => {}, onsource = () => {}, onfeature = () => {} } = $props();
 
   const parts = $derived(countParts(row));
+  const shortParts = $derived(countParts(row, { short: true }));
   const bars = $derived(progressOf(row));
   const paused = $derived(row.status === 'paused');
   const menuItems = $derived([
@@ -21,6 +22,10 @@
   ]);
 </script>
 
+{#snippet counts(list)}
+  {#each list as p, i (p.key)}{#if i}<span class="muted">{' · '}</span>{/if}<span class:err={p.error}>{p.text}</span>{/each}
+{/snippet}
+
 <div class="pr" data-program={row.id}>
   <div class="l1">
     <button type="button" class="chev" tabindex="-1" aria-expanded={open} aria-label={open ? 'Hide features' : 'Show features'} use:tooltip={{ label: open ? 'Hide features' : 'Show features', key: 'space' }} onclick={(e) => (e.stopPropagation(), ontoggle())}>{open ? '⌄' : '›'}</button>
@@ -28,9 +33,8 @@
     <b class="title" title={row.title}>{row.title}</b>
     {#if paused}<span data-paused><AppChip chip={{ tone: 'paused', text: 'paused' }} /></span>{/if}
     <span class="from muted">from {row.root_ref}{name ? ` · ${name}` : ''}</span>
-    <span class="counts" data-counts>
-      {#each parts as p, i (p.key)}{#if i}<span class="muted">{' · '}</span>{/if}<span class:err={p.error}>{p.text}</span>{/each}
-    </span>
+    <span class="counts wide" data-counts>{@render counts(parts)}</span>
+    <span class="counts narrow">{@render counts(shortParts)}</span>
     <span class="grow"></span>
     <button type="button" class="btn open" tabindex="-1" use:tooltip={{ label: 'Open program', key: '⏎' }} onclick={(e) => (e.stopPropagation(), onopen())}>Open</button>
     <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
@@ -69,6 +73,19 @@
   .pr {
     min-width: 0;
     flex: 1;
+    container-type: inline-size;
+  }
+  .narrow {
+    display: none;
+  }
+  /* The 1280 board (rows under 880 px, as Ready rows): "0/3 merged · 1 running · 2 more". */
+  @container (max-width: 879px) {
+    .wide {
+      display: none;
+    }
+    .narrow {
+      display: inline;
+    }
   }
   .l1,
   .l2 {

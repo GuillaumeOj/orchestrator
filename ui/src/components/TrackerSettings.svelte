@@ -8,7 +8,7 @@
   import { GH_SCOPE_COMMAND, integrationsRow } from '../lib/intake.js';
   import { errText, invoke } from '../lib/ipc.js';
   import { BOARD_COLUMNS } from '../lib/options.js';
-  import { tooltip } from '../lib/tooltip.js';
+  import { ifCut, tooltip } from '../lib/tooltip.js';
   import {
     CYCLES,
     DEFAULT_GLOB,
@@ -31,6 +31,7 @@
     toggleType,
     trackerError,
     trackerName,
+    trackerTarget,
     writeBackLines,
   } from '../lib/tracker.js';
   import Select from './Select.svelte';
@@ -268,6 +269,20 @@
       previewJson = JSON.stringify(settings);
       previewing = false;
     }
+    if (preview?.error) settingsError(trackerError(preview.error, kind, trkName));
+  }
+
+  /** The field a `fix: "settings"` error (not_found, bad_glob, branch_missing) is about, and its control. */
+  const ERR_FIELD = { github: ['repo', '#trk-repo'], local: ['backlog_glob', '#trk-glob'], linear: ['teams', '[aria-label="Add a team"]'] };
+
+  /** A `fix: "settings"` error is a field error (notes §10.7): message under the field, red border, focus; no Preview line. */
+  async function settingsError(e) {
+    if (e.fix !== 'settings' || !ERR_FIELD[kind]) return;
+    const [field, sel] = ERR_FIELD[kind];
+    preview = null;
+    fieldErrors = { [field]: e.text };
+    await tick();
+    /** @type {HTMLElement | null | undefined} */ (root?.querySelector(sel))?.focus();
   }
 
   /**
@@ -389,7 +404,10 @@
   /** The Fix of a Preview error (notes §10.7). */
   function fix(e) {
     if (e.fix === 'limit_projects') {
-      if (kind === 'linear' && !form.tracker.projects) form.tracker.projects = [];
+      if (kind === 'linear' && !form.tracker.projects) {
+        form.tracker.projects = [];
+        edit();
+      }
       root?.querySelector('[data-projects]')?.scrollIntoView?.({ block: 'center' });
       /** @type {HTMLElement | null | undefined} */ (root?.querySelector('[data-projects] input[type="radio"]'))?.focus();
     } else if (e.fix === 'turn_off_write_back') form.write_back.enabled = false;
@@ -654,23 +672,24 @@
               <p class="ferr" role="alert" title={previewErr.tip}><span aria-hidden="true">{'\u{F0026}'}</span> {previewErr.text}
                 {#if previewErr.fix === 'gh_scope'}<button class="link" onclick={() => fix(previewErr)}>Copy command</button>
                 {:else if previewErr.fix === 'integrations'}<button class="link" onclick={() => fix(previewErr)}>Settings › Integrations ↗</button>
-                {:else if previewErr.fix}<button class="link" onclick={() => fix(previewErr)}>{previewErr.fixLabel ?? 'Retry'}</button>{/if}
+                {:else if previewErr.fix && previewErr.fix !== 'settings'}<button class="link" onclick={() => fix(previewErr)}>{previewErr.fixLabel ?? 'Retry'}</button>{/if}
               </p>
             {:else if !preview.items}
               <p class="muted">Nothing matches this tracker right now. It may still be right: Ready to start will show items when they appear.</p>
             {:else}
-              <p data-preview-count><b>{preview.items} {preview.items === 1 ? 'item' : 'items'}</b>{#if kind !== 'local'}, {preview.roots} at the top{/if} · <b>{preview.ready} ready</b> in {kind === 'local' ? (form.tracker.backlog_glob ?? '').replace(/\/[^/]*$/, '') || '.' : trackerName(form.tracker, known)}</p>
+              <p data-preview-count><b>{preview.items} {preview.items === 1 ? 'item' : 'items'}</b>{#if kind !== 'local'}, {preview.roots} at the top{/if} · <b>{preview.ready} ready</b> in {trackerTarget(form.tracker, known)}</p>
               {#each (preview.sample ?? []).slice(0, 5) as n (n.id)}
                 {#if kind === 'local'}
                   <div class="srow local">
                     <span class="mono muted">{n.ref}</span>
-                    <span>{n.title}</span>
+                    <span use:tooltip={ifCut(n.title)}>{n.title}</span>
                   </div>
                 {:else}
+                  {@const where = sampleWhere(n, kind)}
                   <div class="srow">
                     <span class="mono muted">{n.ref}</span>
-                    <span>{n.title}</span>
-                    <span class="muted">{sampleWhere(n, kind)}</span>
+                    <span use:tooltip={ifCut(n.title)}>{n.title}</span>
+                    <span class="muted where" use:tooltip={ifCut(where)}>{where}</span>
                   </div>
                 {/if}
               {/each}
@@ -731,9 +750,14 @@
     border: 0;
     border-top: var(--border-width-default) solid var(--color-border-subtle);
   }
-  .lead,
-  .hint {
+  .lead {
     font: var(--text-caption);
+  }
+  /* Beats the global `.hint` (app.css): muted, one line of its own. */
+  .hint {
+    display: block;
+    font: var(--text-caption);
+    color: var(--color-text-muted);
   }
   .dot {
     color: var(--color-accent-default);
@@ -970,6 +994,7 @@
     gap: var(--space-sm);
   }
   .result {
+    container-type: inline-size;
     padding: var(--space-sm) var(--space-md);
     background: var(--color-surface-raised);
     border: var(--border-width-default) solid var(--color-border-subtle);
@@ -983,6 +1008,22 @@
     grid-template-columns: 100px 1fr 1fr;
     gap: var(--space-sm);
     padding-top: var(--space-xs);
+  }
+  /* One line per sample: cut with an ellipsis (the tooltip has the full text). */
+  .srow > span {
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+  /* The 1280 board: ref and title only. */
+  @container (max-width: 560px) {
+    .srow:not(.local) {
+      grid-template-columns: 100px 1fr;
+    }
+    .srow .where {
+      display: none;
+    }
   }
   .foot {
     display: flex;

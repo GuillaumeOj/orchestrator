@@ -4,7 +4,9 @@
   // children progress · app-state chip (fixed column). Lines (loading, error, more, source status) share the
   // indent. Buttons inside are not Tab stops: the pane's keys reach them.
   import { app } from '../../lib/app.svelte.js';
+  import { isShownLabel } from '../../lib/intake.js';
   import { liveCapText } from '../../lib/program.js';
+  import { titleFit } from '../../lib/titlefit.js';
   import { tooltip } from '../../lib/tooltip.js';
   import { closedMark, depMark, GLYPH, isClosed, isContainer, labelsOf, loadErrorText, progressText, refOf, rightOf, selectable, tailOf, taskLineOf, titleOf, trackerName, upstreamText } from '../../lib/workmodel.js';
   import AppChip from './AppChip.svelte';
@@ -34,6 +36,9 @@
 
   const liveCap = $derived(liveCapText(app.now.counts?.global));
   const n = $derived(row.node);
+  // The 1280 rule per row at 1512: a title that would keep under 24 characters folds the labels and the dependency text.
+  let fit = $state(false);
+  const compact = $derived(narrow || fit);
   /** The slots of a tree item, each computed once (other row kinds have none). */
   const slots = $derived.by(() => {
     if (row.kind !== 'node' || !n) return null;
@@ -43,7 +48,7 @@
       dep: depMark(n),
       tail: tailOf(n),
       mark: closedMark(n),
-      labels: narrow ? { chips: [], more: 0 } : labelsOf(n),
+      labels: foldLabels(narrow ? null : labelsOf(n), fit),
       closed,
       strong: !closed && (isContainer(n) || ['Epic', 'Feature'].includes(n.upstream?.issue_type)),
       canSel: selectable(n).ok,
@@ -53,6 +58,12 @@
     };
   });
   const lineLevel = $derived(row.level + ariaBase);
+
+  /** 1280: no labels; a compact row at 1512: their count only ("+2"). */
+  function foldLabels(l, folded) {
+    if (!l) return { chips: [], more: 0 };
+    return folded ? { chips: [], more: l.chips.length + l.more } : l;
+  }
 </script>
 
 {#snippet guides(k)}
@@ -83,6 +94,7 @@
     aria-selected={focused}
     data-key={row.key}
     onclick={onrow}
+    use:titleFit={{ on: !narrow && (slots.labels.chips.length + slots.labels.more > 0 || !!slots.dep), compact: fit, set: (v) => (fit = v), key: n }}
   >
     {@render guides(row.indent)}
     {#if selecting}<span class="selbox" aria-hidden="true">{slots.canSel ? (selected ? '\u{F0135}' : '\u{F0131}') : ''}</span>{/if}
@@ -95,9 +107,9 @@
     {#if n.hidden}<span class="type">Hidden</span>{/if}
     <span class="grow"></span>
     {#if slots.up}<span class="up">{slots.up}</span>{/if}
-    {#each slots.labels.chips as l (l)}<span class="label">{l}</span>{/each}
-    {#if slots.labels.more}<span class="up">+{slots.labels.more}</span>{/if}
-    {#if slots.dep}<span class="dep" use:tooltip={slots.dep.tip}><span aria-hidden="true">{'\u{F0337}'}</span>{#if !narrow} {slots.dep.text}{:else}<span class="sr">{slots.dep.text}</span>{/if}</span>{/if}
+    {#each slots.labels.chips as l (l)}<span class="label" data-fold>{l}</span>{/each}
+    {#if slots.labels.more}<span class="up" data-fold use:tooltip={fit ? (n.upstream?.labels ?? []).filter(isShownLabel).join(', ') : ''}>+{slots.labels.more}</span>{/if}
+    {#if slots.dep}<span class="dep" data-fold use:tooltip={slots.dep.tip}><span aria-hidden="true">{'\u{F0337}'}</span>{#if !compact} {slots.dep.text}{:else}<span class="sr">{slots.dep.text}</span>{/if}</span>{/if}
     {#if slots.prog}<span class="prog">{slots.prog}</span>{/if}
     {#if slots.tail}<span class="tail" class:warn={slots.tail.warn}>{slots.tail.text}</span>{/if}
     {#if slots.mark}<span class="mark" use:tooltip={slots.mark.tip}>⚠ {slots.mark.text}</span>{/if}
@@ -279,13 +291,12 @@
     font: var(--text-label);
     color: var(--color-text-muted);
   }
-  .tail.warn,
-  .mark {
+  .tail.warn {
     color: var(--color-pacing-amber);
   }
   .right {
     flex: none;
-    width: 200px;
+    width: 270px;
     display: flex;
     justify-content: flex-end;
     min-width: 0;

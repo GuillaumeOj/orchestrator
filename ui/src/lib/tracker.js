@@ -225,25 +225,27 @@ export function statesToSave(rows) {
   return Object.keys(out).length ? out : null;
 }
 
-/** One preview row's right-hand text: "in #12 Checkout v2" / "in v2 · ready" / "no milestone". */
+/** One preview row's right-hand text: "in #12 Checkout v2" / "in v2 · ready" / "no milestone" / Linear "Mobile onboarding › M1". */
 export function sampleWhere(node, kind) {
   const crumbs = node.breadcrumb ?? [];
   let where = '';
   if (crumbs.length) {
     const last = crumbs.at(-1);
+    // Linear: the project › milestone path alone ("Mobile onboarding › M1 · Sign-up").
     where =
       kind === 'github' && !node.upstream?.milestone
         ? `in ${last.ref} ${last.title}`
-        : `in ${crumbs.map((c) => c.title).join(' › ')}`;
+        : `${kind === 'linear' ? '' : 'in '}${crumbs.map((c) => c.title).join(' › ')}`;
   } else if (node.upstream?.milestone) where = `in ${node.upstream.milestone}`;
   else if (kind === 'github') where = 'no milestone';
   return [where, node.ready ? 'ready' : ''].filter(Boolean).join(' · ');
 }
 
 /** A source error in words, with the Tracker fixes of notes §10.7 on top of the shared table. */
-export function trackerError(error, kind, name = null) {
+export function trackerError(error, kind, name = null, now = Date.now()) {
   const code = error?.code;
-  const info = errorInfo(error, { type: kind });
+  // The name fills the shared copy too: "acme/shop not found, or you have no access".
+  const info = errorInfo(error, { type: kind, label: name ?? undefined }, now);
   switch (code) {
     case 'linear_complexity':
       return {

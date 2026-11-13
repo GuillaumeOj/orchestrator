@@ -64,11 +64,12 @@
   const wbLine = $derived(P.writeBackLine(tracker, single ? rootRef : null));
   const totals = $derived(P.totalsParts(draft, pname));
   const teamOptions = $derived((teams ?? []).map((t) => ({ value: t.id, label: t.name })));
-  /** "From #12 Checkout v2 · in v2 · acme/shop · GitHub" · "From 3 selected under #12 · …". */
+  /** "From #13 Address step · in #12 Checkout v2 · acme/shop · GitHub" · "From 3 selected under #12 · …". "in …" only under an issue (not a milestone or project). */
   const fromLine = $derived.by(() => {
     const parent = root?.breadcrumb?.at(-1);
     const head = single ? `From ${[rootRef, root?.title].filter(Boolean).join(' ')}` : `From ${roots.length} selected under ${rootRef}`;
-    const inPart = single && parent && !container ? `in ${[...new Set([parent.ref, parent.title].filter(Boolean))].join(' ')}` : '';
+    const underIssue = /^(gh|lin):/.test(parent?.id ?? '');
+    const inPart = single && underIssue && !container ? `in ${[...new Set([parent.ref, parent.title].filter(Boolean))].join(' ')}` : '';
     return [head, inPart, tracker?.tracker?.repo ?? '', trackerWord].filter(Boolean).join(' · ');
   });
   const width = $derived((app.width ?? window.innerWidth) < 1512 ? 800 : 880);
@@ -209,7 +210,7 @@
     { id: 'skip', label: f.skip ? 'Unskip' : 'Skip', key: 'x', run: () => skip(f.key) },
     { id: 'merge', label: 'Merge into previous', key: '⇧M', disabled: !canMerge(draft, f.key), reason: P.numberOf(draft, f.key) > 1 && !f.skip ? 'The previous feature is skipped' : undefined, run: () => merge(f.key) },
     { id: 'brief', label: 'Edit brief', key: 'e', run: () => openBrief(f) },
-    ...P.depsOf(draft, f.key).map((d) => ({ id: `cut-${d.key}`, label: `Remove dependency on ${d.n}`, run: () => edit((p) => P.cutEdge(p, d.key, f.key)) })),
+    ...P.depsOf(draft, f.key).map((d) => ({ id: `cut-${d.key}`, label: `Remove dependency on ${d.external ? d.ref || 'the running item' : d.n}`, run: () => edit((p) => P.cutEdge(p, d.key, f.key)) })),
   ];
 
   // ---- issue fixes (§6.4)
@@ -447,7 +448,7 @@
       {#if phase === 'nothing'}
         <button type="button" class="btn primary" onclick={close}>Close</button>
       {:else}
-        <button type="button" class="btn primary" data-start disabled={!canStart} use:tooltip={blocking ? `Fix ${plural(blocking, 'thing')} first` : { label: 'Start program', key: '⌘⏎' }} onclick={start}>{starting ? 'Starting…' : P.startLabel(draft)}</button>
+        <button type="button" class="btn primary" data-start disabled={!canStart} use:tooltip={blocking ? `Fix ${plural(blocking, 'thing')} first` : { label: 'Start program', key: '⌘⏎' }} onclick={start}>{starting ? 'Starting…' : draft ? P.startLabel(draft) : 'Start program'}</button>
       {/if}
     </div>
   </div>

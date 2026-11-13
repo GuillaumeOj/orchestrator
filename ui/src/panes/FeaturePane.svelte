@@ -16,6 +16,7 @@
   import PrLine from '../components/PrLine.svelte';
   import Select from '../components/Select.svelte';
   import StatusBadge from '../components/StatusBadge.svelte';
+  import HintRow from '../components/work/HintRow.svelte';
   import { app, boardNotice, confirm, openAgent, openCanvas, openEditor, openUrl, refresh, toast } from '../lib/app.svelte.js';
   import { deliveryMark } from '../lib/delivery.js';
   import { isDesign } from '../lib/ecosystem.js';
@@ -24,7 +25,7 @@
   import { isTypingTarget } from '../lib/keyboard.js';
   import { onTopics, runAttention, runPhase, statusOf } from '../lib/now.svelte.js';
   import { docRepoPath, runFinished, runStateColor, runStateLabel, TL_FILTERS, timelineFilter, timelineText } from '../lib/teams.js';
-  import { tooltip } from '../lib/tooltip.js';
+  import { ifCut, tooltip } from '../lib/tooltip.js';
   import { openWork } from '../lib/work.js';
 
   let { paneId } = $props();
@@ -72,8 +73,6 @@
           .join(' · ')
       : '',
   );
-  /** A tooltip param read when the tooltip shows: the full text, only when the element is cut (ellipsis). */
-  const ifCut = (text) => (node) => (node.scrollWidth > node.clientWidth ? text : null);
 
   const events = $derived((v?.timeline ?? []).filter(timelineFilter(tl)).slice(0, 60));
   const lead = $derived(v?.team?.nodes?.find((n) => n.is_lead)?.id ?? 'lead');
@@ -236,6 +235,18 @@
   });
 
   const canShowInWork = $derived(!!run?.source && !run.source.deleted);
+
+  // The hint row (notes §9, board ii-feature-*): the Tasks keys while Tasks has focus, else the pane's.
+  let taskHints = $state([]);
+  let tasksFocused = $state(false);
+  const trackFocus = () => queueMicrotask(() => (tasksFocused = !!root?.querySelector('[data-tasks]')?.contains(document.activeElement)));
+  const paneHints = $derived([
+    ['b', 'tasks'],
+    ...(canShowInWork ? [['w', 'show in Work']] : []),
+    ...(docPath && v?.feature?.integration_worktree ? [['e', 'edit doc']] : []),
+    ['m', 'message'],
+    ...(run && !runFinished(run.status) ? [['p', paused ? 'resume' : 'pause']] : []),
+  ]);
   const showInWork = () => openWork({ projects: [v.feature.project_id], reveal: run?.source?.node ?? null });
 
   /** `b`: Tasks takes the focus (the first time after the update, the Board's removal toast too). */
@@ -301,7 +312,8 @@
 </script>
 
 <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
-<div class="feature" tabindex="0" data-pane-focus bind:this={root} onkeydown={onKey} role="region" aria-label="Feature">
+<div class="feature" tabindex="0" data-pane-focus bind:this={root} onkeydown={onKey} onfocusin={trackFocus} onfocusout={trackFocus} role="region" aria-label="Feature">
+  <div class="fscroll">
   {#if error}
     <p class="muted pad">Could not load the feature: {error}</p>
   {:else if !v}
@@ -409,8 +421,10 @@
       </div>
     </div>
 
-    <TasksSection bind:this={tasksSec} {v} reload={load} {land} onleave={() => root?.focus()} />
+    <TasksSection bind:this={tasksSec} bind:hints={taskHints} {v} reload={load} {land} onleave={() => root?.focus()} />
   {/if}
+  </div>
+  {#if v}<HintRow hints={tasksFocused ? taskHints : paneHints} />{/if}
 </div>
 
 <style>
@@ -451,13 +465,21 @@
   .feature {
     flex: 1;
     min-height: 0;
+    display: flex;
+    flex-direction: column;
+    outline: none;
+    font: var(--text-label);
+  }
+  /* The content scrolls above the hint row; its width is the container of the narrow rules (here and in Tasks). */
+  .fscroll {
+    flex: 1;
+    min-height: 0;
     overflow: auto;
     display: flex;
     flex-direction: column;
     gap: var(--space-md);
     padding: var(--space-lg);
-    outline: none;
-    font: var(--text-label);
+    container-type: inline-size;
   }
   .cardh,
   .ev,
@@ -643,7 +665,8 @@
   .pad {
     padding: var(--space-xl);
   }
-  @container (max-width: 900px) {
+  /* Docs and Team side by side down to the 1280 board (≈ 860 px), stacked below. */
+  @container (max-width: 720px) {
     .cols {
       flex-direction: column;
     }

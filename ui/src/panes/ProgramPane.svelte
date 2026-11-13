@@ -44,6 +44,7 @@
   const chip = $derived(p ? P.statusChip(p) : null);
   const root = $derived(p ? nodes[p.root?.[0]] : null);
   const tracker = $derived(p?.root?.[0] ? P.trackerOfId(p.root[0]) : 'the tracker');
+  const repo = $derived(P.repoOfId(p?.root?.[0]));
   const liveCap = $derived(P.liveCapText(app.now.counts?.global));
   const project = $derived(p?.project ?? null);
   const feats = $derived(p?.features ?? []);
@@ -79,17 +80,14 @@
 
   // Loads on mount and on window focus; later only when a `programs` delta upserts or removes THIS program.
   onMount(() => onTopics(() => false, load));
-  let seenRow = /** @type {any} */ (undefined);
-  let rowSeen = false;
+  const NONE = Symbol('unseen');
+  let seenRow = /** @type {any} */ (NONE);
   $effect(() => {
     const row = id ? app.now.programs?.[id] : undefined;
-    if (!rowSeen) {
-      rowSeen = true;
-      seenRow = row;
-      return;
-    }
-    if (row === seenRow) return;
+    const first = seenRow === NONE;
+    const same = row === seenRow;
     seenRow = row;
+    if (first || same) return;
     untrack(load);
   });
 
@@ -223,7 +221,8 @@
         {/if}
       </div>
       <p class="sub muted" data-subline>
-        {#each P.viewSubline(p, { rootTitle: root?.title ?? '', where: '' }) as part, i (i)}{#if i}{' · '}{/if}{part}{#if i === 0 && root?.url}{' '}<button type="button" class="link" aria-label="Open {p.root_ref} in {tracker}" onclick={() => openUrl(root.url)}>↗</button>{/if}{/each}
+        <!-- "From #12 Checkout v2 · acme/shop ↗ · started …": ↗ after the repository (after the title without one). -->
+        {#each P.viewSubline(p, { rootTitle: root?.title ?? '', where: repo }) as part, i (i)}{#if i}{' · '}{/if}{part}{#if i === (repo ? 1 : 0) && root?.url}{' '}<button type="button" class="link" aria-label="Open {p.root_ref} in {tracker}" onclick={() => openUrl(root.url)}>↗</button>{/if}{/each}
       </p>
     </header>
 

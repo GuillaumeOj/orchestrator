@@ -52,11 +52,12 @@
   {:else if m.kind === 'source'}
     <div class="l2 muted">
       {#if m.trail}<span>{m.trail}</span>{/if}
-      {#if m.closed}<span class="warn" use:tooltip={'The run continues. Stop it from the feature if needed.'}>· {m.closed}</span>{/if}
       {#if m.writeBack?.state === 'failed'}
         <span class="warn" data-writeback="failed">· {m.writeBack.text} ·</span>
         <button type="button" class="link" disabled={retrying} onclick={retry}>Retry</button>
       {:else if m.writeBack}<span data-writeback={m.writeBack.state}>· {m.writeBack.text}</span>{/if}
+      <!-- "· closed in GitHub" is the tail, after the write-back text. -->
+      {#if m.closed}<span class="warn" use:tooltip={'The run continues. Stop it from the feature if needed.'}>· {m.closed}</span>{/if}
     </div>
   {/if}
 </div>

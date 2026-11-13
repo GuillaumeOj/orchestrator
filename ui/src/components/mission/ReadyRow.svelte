@@ -2,7 +2,7 @@
   // A Ready to start row (P4.5 notes §2, Penpot 04.2 "Ready row"): source glyph, ref,
   // title, project, labels, the estimate for the suggested mode, the over-room
   // warning, Start team run / Start solo (neutral, opening the prefilled dialogs) and
-  // the ⋯ menu (Hide, Open source, Details). Not attention: neutral surface, dashed rule.
+  // the ⋯ menu (Hide from Ready, Open source, Details). Not attention: neutral surface, dashed rule.
   // Under 880 px of row width the project and labels drop to line 2 and the buttons shorten.
   import { crumbLine, crumbTip, estimateText, estimateTip, MODE_LABEL, modeOf, roomWarning, SOURCE_NAME, shownLabels, startLabel } from '../../lib/intake.js';
   import { tooltip } from '../../lib/tooltip.js';
@@ -28,7 +28,7 @@
     ...(item.node ? [{ id: 'work', label: 'Show in Work', key: 'w', run: () => onwork() }] : []),
     { id: 'details', label: 'Details', key: 'space', run: () => ondetails() },
     { id: 'source', label: 'Open source', key: 'o', run: () => onsource() },
-    ...(row.hidden ? [] : [{ id: 'hide', label: 'Hide', key: 'x', run: () => onhide() }]),
+    ...(row.hidden ? [] : [{ id: 'hide', label: 'Hide from Ready', key: '⌫', run: () => onhide() }]),
   ]);
 </script>
 

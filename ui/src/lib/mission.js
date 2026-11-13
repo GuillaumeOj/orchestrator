@@ -256,12 +256,12 @@ export function rowCount(rows) {
     .join(' · ');
 }
 
-/** The lanes, top to bottom (spec §3.2); `level` gives the header's icon. */
+/** The lanes, top to bottom (spec §3.2); `level` gives the header's colour and icon (`icon` overrides the icon). */
 const LANES = [
   { id: 'needs_you', label: 'Needs you', level: 'needs_you' },
   { id: 'running', label: 'Running', level: 'running' },
   // Programs (improve-intake notes §7.1): between Running and Waiting on; not attention (no badge).
-  { id: 'programs', label: 'Programs', level: 'running' },
+  { id: 'programs', label: 'Programs', level: 'running', icon: '\u{F0328}' },
   { id: 'waiting', label: 'Waiting on', level: 'waiting' },
   { id: 'queued', label: 'Queued', level: 'queued' },
   { id: 'ready', label: 'Ready to start', level: 'ready' },

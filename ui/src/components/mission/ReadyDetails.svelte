@@ -80,7 +80,7 @@
     {:else}
       {#if item.can_team !== false}<button class="btn" tabindex="-1" use:tooltip={{ label: 'Start team run', key: 't' }} onclick={(e) => (e.stopPropagation(), onstart('team'))}>Start team run</button>{/if}
       <button class="btn" tabindex="-1" use:tooltip={{ label: 'Start solo', key: 'a' }} onclick={(e) => (e.stopPropagation(), onstart('solo'))}>Start solo</button>
-      <button class="btn ghost" tabindex="-1" use:tooltip={{ label: 'Hide', key: 'x' }} onclick={(e) => (e.stopPropagation(), onhide())}>Hide</button>
+      <button class="btn ghost" tabindex="-1" use:tooltip={{ label: 'Hide from Ready', key: '⌫' }} onclick={(e) => (e.stopPropagation(), onhide())}>Hide</button>
     {/if}
   </div>
 </div>

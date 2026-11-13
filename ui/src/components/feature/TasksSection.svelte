@@ -9,14 +9,17 @@
   import { remoteName } from '../../lib/linear.js';
   import { taskMarks, tasksSummary } from '../../lib/source.js';
   import { blockedBy, COLUMNS, editPatch, handle, moveCursor, remoteLinkLabel, runFinished, shiftStatus } from '../../lib/teams.js';
-  import { tooltip } from '../../lib/tooltip.js';
+  import { ifCut, tooltip } from '../../lib/tooltip.js';
   import AgentChip from '../AgentChip.svelte';
   import Menu from '../Menu.svelte';
   import Select from '../Select.svelte';
   import TaskModelChip from '../TaskModelChip.svelte';
 
-  /** `v` = feature_view; `land` = { task, conflict, tasks, seq } (one-shot, by `seq`); `onleave` gives the focus back to the pane. */
-  let { v, reload, land = null, onleave = () => {} } = $props();
+  /**
+   * `v` = feature_view; `land` = { task, conflict, tasks, seq } (one-shot, by `seq`); `onleave` gives the focus back to the pane;
+   * `hints` (bindable): the keys of the focused card, for the pane's hint row.
+   */
+  let { v, reload, land = null, onleave = () => {}, hints = $bindable([]) } = $props();
 
   let root = $state();
   let cur = $state({ col: 1, row: 0 });
@@ -99,6 +102,12 @@
     }
   }
 
+  /** ⇧H / ⇧L: the card one column left or right. */
+  function shift(t, d) {
+    const s = t && shiftStatus(t.status, d);
+    if (s) moveTo(t, COLUMNS.findIndex((c) => c.id === s));
+  }
+
   const menuItems = (t) => {
     const marks = taskMarks(t);
     const link = remoteLinkLabel(t);
@@ -112,6 +121,15 @@
       },
       { id: 'edit', label: 'Edit title and body', key: 'e', run: () => startEdit(t) },
       ...(link ? [{ id: 'remote', label: `Open ${handle(t)} in ${remoteName(t.backend)}`, key: 'o', run: () => openRemote(t) }] : []),
+      {
+        id: 'shift',
+        label: 'Move left / right',
+        key: '⇧H ⇧L',
+        items: [
+          { id: 'left', label: 'Move left', key: '⇧H', disabled: !shiftStatus(t.status, -1), reason: 'Already in the first column', run: () => shift(t, -1) },
+          { id: 'right', label: 'Move right', key: '⇧L', disabled: !shiftStatus(t.status, 1), reason: 'Already in the last column', run: () => shift(t, 1) },
+        ],
+      },
       ...(marks.conflict ? [{ separator: true }, { id: 'resolve', label: 'Resolve conflict…', key: '⏎', run: () => resolveConflict(t) }] : []),
     ];
   };
@@ -136,10 +154,8 @@
     const arrows = { ArrowLeft: 'h', ArrowRight: 'l', ArrowUp: 'k', ArrowDown: 'j' };
     const k = arrows[e.key] ?? (e.key.length === 1 ? e.key.toLowerCase() : e.key);
     const t = selected;
-    if (e.shiftKey && (k === 'h' || k === 'l')) {
-      const s = t && shiftStatus(t.status, k === 'h' ? -1 : 1);
-      if (s) moveTo(t, COLUMNS.findIndex((c) => c.id === s));
-    } else if (['h', 'j', 'k', 'l'].includes(k)) cur = moveCursor(cols, cur, k);
+    if (e.shiftKey && (k === 'h' || k === 'l')) shift(t, k === 'h' ? -1 : 1);
+    else if (['h', 'j', 'k', 'l'].includes(k)) cur = moveCursor(cols, cur, k);
     else if (k === 'Enter') {
       if (t) cardMenu?.show();
     } else if (/^[1-5]$/.test(k)) moveTo(t, Number(k) - 1);
@@ -156,6 +172,23 @@
     e.stopPropagation();
     queueMicrotask(() => root?.querySelector('.task.sel')?.scrollIntoView?.({ block: 'nearest' }));
   }
+
+  // The pane's hint row while Tasks has focus (notes §9.2, board ii-feature-*).
+  $effect(() => {
+    const t = selected;
+    hints = [
+      ['j k h l', 'move'],
+      ['⏎', 'menu'],
+      ...(run ? [['a', 'assign']] : []),
+      ['m', 'move to'],
+      ['1–5', 'column'],
+      ['e', 'edit'],
+      ...(run ? [['n', 'new']] : []),
+      ...(t && remoteLinkLabel(t) ? [['o', `open ${handle(t)}`]] : []),
+      ['⇧H ⇧L', 'move card'],
+      ['Esc', 'back to pane'],
+    ];
+  });
 
   // Landing (§9.3): scroll Tasks in, focus the task, flash it once (not under reduced motion); a conflict opens its menu.
   $effect(() => {
@@ -227,10 +260,10 @@
               {:else if marks.notSynced}<span class="muted" use:tooltip={'Write-back is waiting: the change reaches the tracker at the next sync.'}>not synced</span>{/if}
               {#if sel}
                 <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-                <span class="cmenu" onclick={(e) => e.stopPropagation()}><Menu bind:this={cardMenu} items={menuItems(t)} label="Task menu" /></span>
+                <span class="cmenu" onclick={(e) => e.stopPropagation()}><Menu bind:this={cardMenu} items={menuItems(t)} label="Task menu" bounds={root} /></span>
               {/if}
             </div>
-            <div class="title">{t.title}</div>
+            <div class="title" use:tooltip={ifCut(t.title)}>{t.title}</div>
             <div class="chipsrow">
               <TaskModelChip task={t} />
               {#if t.node}<AgentChip id={t.node} role={roleOf(t)} />{/if}
@@ -310,6 +343,9 @@
   .title {
     font: var(--text-body);
     color: var(--color-text-primary);
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
   }
   .chipsrow {
     display: flex;
@@ -327,7 +363,8 @@
   .cmenu {
     display: contents;
   }
-  @container (max-width: 900px) {
+  /* The Feature pane's content is the container: five columns down to the 1280 board (≈ 860 px), two-by-two below. */
+  @container (max-width: 720px) {
     .taskcols {
       flex-wrap: wrap;
     }

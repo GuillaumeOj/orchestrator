@@ -412,7 +412,7 @@
             <h3 class="lh" class:sel={selKey === `lane:${lane.id}`} data-key="lane:{lane.id}">
               <button class="lbtn" tabindex="-1" aria-expanded={!shut} onclick={() => (collapsed = toggle(collapsed, lane.id))}>
                 <span class="chev" aria-hidden="true">{shut ? '›' : '⌄'}</span>
-                <span style:color={LEVEL[lane.level].color} aria-hidden="true">{LEVEL[lane.level].icon}</span>
+                <span style:color={LEVEL[lane.level].color} aria-hidden="true">{lane.icon ?? LEVEL[lane.level].icon}</span>
                 <b class:quiet={lane.id === 'ready'}>{lane.rows.length || lane.id !== 'needs_you' ? lane.label : 'Nothing needs you'}</b>
                 {#if lane.count}<span class="muted">· {lane.count}</span>{/if}
               </button>

@@ -291,7 +291,13 @@ export function featureOf(node) {
 }
 
 /** Keys the focused row allows, for the hint row (P4.2 §1.9): [key, words]. */
-export function hintsFor(row, { selection = 0, focusMode = false, searching = false, details = true } = {}) {
+export function hintsFor(row, { selection = 0, focusMode = false, searching = false } = {}) {
+  // One selected: nothing to run yet (Run selected needs 2).
+  if (selection === 1)
+    return [
+      ['x', 'select'],
+      ['Esc', 'clear'],
+    ];
   if (selection)
     return [
       ['x', 'select'],
@@ -299,7 +305,7 @@ export function hintsFor(row, { selection = 0, focusMode = false, searching = fa
       ['p', 'run selected as program'],
       ['Esc', 'clear'],
     ];
-  if (!row) return [['/', 'search']];
+  if (!row) return searching ? [['Esc', 'clear search']] : [['/', 'search']];
   if (row.kind === 'project')
     return [
       ['⏎', 'details'],
@@ -322,9 +328,10 @@ export function hintsFor(row, { selection = 0, focusMode = false, searching = fa
       : [['/', 'search']];
   const n = row.node;
   if (!n) return [];
+  // Deleted upstream (S14): only Show feature is left.
+  if (n.upstream?.deleted) return featureOf(n) ? [['g', 'show feature']] : [];
   const out = [];
-  if (searching) out.push(['⏎', 'reveal in tree']);
-  else if (!details || !focusMode) out.push(['⏎', 'details']);
+  out.push(['⏎', searching ? 'reveal in tree' : 'details']);
   if (featureOf(n)) out.push(['g', 'show feature']);
   if (usable(actionOf(n, 'team'))) out.push(['t', 'team run']);
   if (usable(actionOf(n, 'solo'))) out.push(['a', 'solo']);
@@ -346,7 +353,7 @@ export function hintsFor(row, { selection = 0, focusMode = false, searching = fa
   if (!searching && selectable(n).ok) out.push(['x', 'select']);
   if (!searching && n.children?.total > 0) out.push(['z', 'focus here']);
   if (focusMode) out.push(['⇧Z', 'up one level'], ['Esc', 'leave focus']);
-  if (searching) out.push(['Esc', 'clear']);
+  if (searching) out.push(['Esc', 'clear search']);
   else out.push(['/', 'search']);
   return out;
 }
@@ -580,9 +587,13 @@ export function ancestors(nodes, id) {
 
 /**
  * The header's status text (right): { text, tone: 'muted'|'error', refreshDisabled }.
- * `status`: { project: SourceStatus }; `names`: project id → tracker words ("acme/shop").
+ * `status`: { project: SourceStatus }; `names`: project id → tracker words ("acme/shop");
+ * `match`: { items, filters } when filters narrow the tree.
  */
-export function headerStatus(status, { now = Date.now(), firstLoad = false, names = {}, rootsTotal = 0 } = {}) {
+export function headerStatus(
+  status,
+  { now = Date.now(), firstLoad = false, names = {}, rootsTotal = 0, match = null } = {},
+) {
   const list = Object.entries(status ?? {});
   if (firstLoad) {
     const first = list.find(([, s]) => s.status === 'refreshing')?.[0] ?? list[0]?.[0];
@@ -596,7 +607,11 @@ export function headerStatus(status, { now = Date.now(), firstLoad = false, name
   const updated = Number.isFinite(oldest) ? `updated ${ageText(oldest, now)}` : '';
   const limited = list.some(([, s]) => s.error?.code === 'rate_limited' && (s.error.retry_at_ms ?? 0) > now);
   const prefix = list.some(([, s]) => s.offline) ? 'Offline' : rootsTotal > 100 ? `${rootsTotal} at the top` : '';
-  return { text: [prefix, updated].filter(Boolean).join(' · '), tone: 'muted', refreshDisabled: limited };
+  // A filtered tree (§4.2): "8 items match · 2 filters".
+  const matched = match
+    ? `${plural(match.items, 'item')} ${match.items === 1 ? 'matches' : 'match'} · ${plural(Math.max(1, match.filters), 'filter')}`
+    : '';
+  return { text: [matched, prefix, updated].filter(Boolean).join(' · '), tone: 'muted', refreshDisabled: limited };
 }
 
 /**
@@ -661,12 +676,20 @@ export const loadErrorText = (message) =>
     ? 'Could not load sub-issues: request too large'
     : `Could not load: ${message}`;
 
-/** The empty-tracker line (S7) of one project. */
+/**
+ * The empty-tracker line (S7) of one project: { text, link?: { label, url }, after? }. GitHub's "GitHub ↗"
+ * opens the repository's issues (no link while the repository is unknown).
+ */
 export function emptyText(p) {
   const t = p?.tracker;
-  if (t?.kind === 'linear') return `No issues in ${(t.teams ?? []).join(', ') || 'Linear'}.`;
-  if (t?.kind === 'local') return `No backlog files in ${backlogDir(t.backlog_glob)}/. Add a .md file there.`;
-  return `No open issues in ${p?.label ?? 'this repository'}. Create them in GitHub; Work picks them up at the next refresh (r).`;
+  if (t?.kind === 'linear') return { text: `No issues in ${(t.teams ?? []).join(', ') || 'Linear'}.` };
+  if (t?.kind === 'local') return { text: `No backlog files in ${backlogDir(t.backlog_glob)}/. Add a .md file there.` };
+  const repo = /^[^/\s]+\/[^/\s]+$/.test(p?.label ?? '') ? p.label : null;
+  const after = '; Work picks them up at the next refresh (r).';
+  const text = `No open issues in ${p?.label ?? 'this repository'}. Create them in `;
+  return repo
+    ? { text, link: { label: 'GitHub ↗', url: `https://github.com/${repo}/issues` }, after }
+    : { text: `${text}GitHub${after}` };
 }
 
 /** No match for filters (S8): "Nothing matches 3 filters in shop-api". */
@@ -720,11 +743,16 @@ export function factsOf(node) {
     .join(' · ');
 }
 
-/** The children heading: "Sub-issues · 1 of 2 done" (GitHub) / "Issues · 2 of 6 done" (containers) / "Sub-issues" (Linear). */
+/** The children heading: "Sub-issues · 1 of 2 done" (GitHub) / "Issues · 2 issues · 0 done · 1 running" (containers) / "Sub-issues" (Linear). */
 export function childrenHeading(node) {
   const c = node?.children ?? {};
   const done = `${c.done ?? 0} of ${c.total ?? 0} done`;
-  if (isContainer(node)) return `Issues · ${done}`;
+  if (isContainer(node)) {
+    const running = node.rollup?.running ?? 0;
+    return [`Issues · ${plural(c.total ?? 0, 'issue')}`, `${c.done ?? 0} done`, running ? `${running} running` : '']
+      .filter(Boolean)
+      .join(' · ');
+  }
   if (trackerOf(node) === 'linear') return 'Sub-issues';
   return `Sub-issues · ${done}`;
 }

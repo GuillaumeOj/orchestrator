@@ -287,6 +287,39 @@ describe('Feature pane: Tasks', () => {
     expect(container.querySelector('input[placeholder="Task title"]')).toBeTruthy();
   });
 
+  it('the hint row follows the focus: the pane keys, then the Tasks keys of the focused card', async () => {
+    const { container } = await pane();
+    const root = /** @type {HTMLElement} */ (container.querySelector('.feature'));
+    const hints = () => container.querySelector('.hints').textContent.replace(/\s+/g, ' ').trim();
+    root.focus();
+    await tick();
+    expect(hints()).toMatch(/^b tasks/);
+    expect(hints()).toContain('w show in Work');
+    expect(hints()).toContain('p pause');
+    await key(root, 'b');
+    await waitFor(() => expect(hints()).toContain('j k h l move'));
+    expect(hints()).toContain('o open #72');
+    expect(hints()).toContain('⇧H ⇧L move card');
+    expect(hints()).toContain('Esc back to pane');
+  });
+
+  it('the task menu has Move left / right (⇧H ⇧L) and flips against the Tasks band', async () => {
+    const v = view();
+    replies.task_update = (a) => {
+      v.tasks.find((t) => t.id === a.id).status = a.status;
+    };
+    const { container } = await pane(v);
+    replies.feature_view = () => structuredClone(v);
+    const root = container.querySelector('.feature');
+    const tasks = container.querySelector('[data-tasks]');
+    await key(root, 'b');
+    await key(tasks, 'Enter');
+    await tick();
+    const menu = document.body.querySelector('[role="menu"][aria-label="Task menu"]');
+    const row = [...menu.querySelectorAll('[data-i]')].find((r) => r.textContent.includes('Move left / right'));
+    expect(row?.textContent).toContain('⇧H ⇧L');
+  });
+
   it('o opens the upstream task; a assigns through the node picker', async () => {
     const opened = [];
     replies.open_url = (a) => opened.push(a);
