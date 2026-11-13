@@ -24,7 +24,11 @@ struct FakeGh(Answers);
 
 impl orch_tasks::github::Gh for FakeGh {
     fn run(&self, args: &[String]) -> anyhow::Result<String> {
-        assert!(!args.iter().any(|a| a == "-X" || a.contains("mutation")), "intake writes nothing: {args:?}");
+        // Reading writes nothing; the write-back's own writes (`-X POST …`) are accepted and ignored.
+        if args.iter().any(|a| a == "-X") {
+            return Ok("{}".into());
+        }
+        assert!(!args.iter().any(|a| a.contains("mutation")), "intake reads only: {args:?}");
         // The tree's GraphQL queries: the REST-shaped issues below, as GraphQL returns them.
         if let Some(q) = args.iter().find_map(|a| a.strip_prefix("query=")) {
             let a = self.0.lock().unwrap();
@@ -64,7 +68,14 @@ struct FakeLinear;
 
 impl Graphql for FakeLinear {
     fn call(&self, query: &str, _vars: &Value) -> Result<Value, GqlError> {
-        assert!(!query.trim_start().starts_with("mutation"), "read-only");
+        // The write-back's own calls are answered; reading is all else the intake does.
+        if query.contains("OrchWbIssue") {
+            return Ok(json!({"issue": {"id": "u1", "state": {"type": "unstarted"}, "team": {"states": {"nodes": [
+                {"id": "s1", "type": "started", "position": 1.0}]}}}}));
+        }
+        if query.trim_start().starts_with("mutation") {
+            return Ok(json!({"issueUpdate": {"success": true}, "commentCreate": {"success": true}}));
+        }
         Ok(json!({"issues": {"nodes": [
             {"id": "u1", "identifier": "ENG-42", "title": "Refunds", "description": "Refund partial orders.",
              "priority": 2, "estimate": 2, "sortOrder": 1.0, "url": "https://linear.app/acme/issue/ENG-42/refunds",

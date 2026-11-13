@@ -54,6 +54,7 @@ pub mod stuck;
 pub mod supervise;
 pub mod team;
 pub mod team_admin;
+pub mod tracker_issue;
 pub mod transcript;
 pub mod usage;
 pub mod worktree;

@@ -285,7 +285,9 @@ mod tests {
 
     use super::*;
 
-    struct Rec(Mutex<Vec<Vec<String>>>, Box<dyn Fn(&[String]) -> Result<String, String> + Send + Sync>);
+    type Answer = Box<dyn Fn(&[String]) -> Result<String, String> + Send + Sync>;
+
+    struct Rec(Mutex<Vec<Vec<String>>>, Answer);
 
     impl Gh for Rec {
         fn run(&self, args: &[String]) -> anyhow::Result<String> {

@@ -686,8 +686,15 @@ impl Runtime {
         let all = self.db.work_index().unwrap_or_default();
         let by_node: std::collections::HashMap<(&str, &str), &orch_store::WorkIndex> =
             all.iter().map(|r| ((r.project_id.as_str(), r.node_id.as_str()), r)).collect();
-        let parents: std::collections::HashSet<(&str, &str)> =
-            all.iter().filter_map(|r| Some((r.project_id.as_str(), r.parent_id.as_deref()?))).collect();
+        // (children, open children) by node.
+        let mut kids: std::collections::HashMap<(&str, &str), (usize, usize)> = Default::default();
+        for r in &all {
+            if let Some(p) = r.parent_id.as_deref() {
+                let e = kids.entry((r.project_id.as_str(), p)).or_default();
+                e.0 += 1;
+                e.1 += usize::from(r.open);
+            }
+        }
         // Items of a program in progress are its features', not Ready.
         let in_program: std::collections::HashSet<(String, String)> = self
             .db
@@ -735,7 +742,7 @@ impl Runtime {
                 v["breadcrumb"] = json!(work::crumbs(&by_node, &r.project_id, r.parent_id.as_deref()));
                 v["actions"] = tracker::actions_json(
                     facts.can_team,
-                    parents.contains(&(r.project_id.as_str(), r.node_id.as_str())),
+                    kids.get(&(r.project_id.as_str(), r.node_id.as_str())).copied().unwrap_or_default(),
                 );
                 items.push(v);
             }

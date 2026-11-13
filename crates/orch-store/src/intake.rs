@@ -98,6 +98,8 @@ pub struct WorkIndex {
     pub parent_id: Option<String>,
     pub reference: String,
     pub title: String,
+    /// Open upstream (the lane's "run as program" needs an open child).
+    pub open: bool,
 }
 
 /// What a refresh writes for one item, in the source's order.
@@ -365,7 +367,12 @@ impl Store {
     pub fn work_index(&self) -> Result<Vec<WorkIndex>> {
         self.read(|c| {
             let mut st = c.prepare(
-                "SELECT project_id, node_id, parent_id, ref, title FROM work_nodes WHERE source!=?1 AND deleted=0",
+                "SELECT project_id, node_id, parent_id, ref, title,
+                   CASE WHEN json_extract(meta,'$.state_type') IN ('completed','canceled') THEN 0
+                        WHEN json_extract(meta,'$.state_type') IS NULL
+                             AND lower(coalesce(json_extract(meta,'$.state'),'open')) != 'open' THEN 0
+                        ELSE 1 END
+                 FROM work_nodes WHERE source!=?1 AND deleted=0",
             )?;
             let rows = st.query_map([BRIEF_SOURCE], |r| {
                 Ok(WorkIndex {
@@ -374,6 +381,7 @@ impl Store {
                     parent_id: r.get(2)?,
                     reference: r.get(3)?,
                     title: r.get(4)?,
+                    open: r.get::<_, i64>(5)? != 0,
                 })
             })?;
             Ok(rows.collect::<rusqlite::Result<_>>()?)

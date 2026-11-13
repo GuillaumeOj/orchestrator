@@ -377,7 +377,15 @@ impl Runtime {
                     other => other,
                 };
                 match started {
-                    Ok(true) => self.work_log(r, "started", (kind == "run").then_some(name), None),
+                    Ok(true) => {
+                        self.work_log(r, "started", (kind == "run").then_some(name), None);
+                        // Written back to the tracker item (label or Status, comment, assignee).
+                        self.wb_spawn(
+                            project,
+                            &r.node_id,
+                            crate::writeback::WbOp::Started { feature: name.to_string() },
+                        );
+                    }
                     // Gone upstream while the start ran: no origin to keep.
                     Ok(false) => {
                         eprintln!("warn: intake item it_{} was no longer ready when {kind} {reference} started", r.id)
