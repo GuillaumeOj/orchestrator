@@ -273,8 +273,11 @@ export function issueText(i, p, ctx = {}) {
     }
     case 'closed': {
       const refs = (i.items ?? []).map(refOfId);
-      if (refs.length === 1) return `${refs[0]} is closed in ${tracker}. It is left out.`;
-      return `${refs.join(', ')} are closed in ${tracker}. They are left out.`;
+      const inc = new Set(p?.include ?? []);
+      const kept = (i.items ?? []).length > 0 && (i.items ?? []).every((x) => inc.has(x));
+      if (refs.length === 1)
+        return `${refs[0]} is closed in ${tracker}. ${kept ? 'It stays in its feature.' : 'It is left out.'}`;
+      return `${refs.join(', ')} are closed in ${tracker}. ${kept ? 'They stay in their features.' : 'They are left out.'}`;
     }
     case 'no_team':
       return `${i.feature ?? slug(i.features?.[0])} needs a team: ${ctx.project ?? 'the project'} has no team.`;
@@ -289,8 +292,12 @@ export function issueText(i, p, ctx = {}) {
 }
 
 /** The fixes offered on an issue line (§6.4). */
-export function issueFixes(i) {
+export function issueFixes(i, p = null) {
   switch (i.kind) {
+    case 'closed': {
+      const inc = new Set(p?.include ?? []);
+      return (i.items ?? []).every((x) => inc.has(x)) ? [] : [{ id: 'include', label: 'Include anyway' }];
+    }
     case 'cycle':
       return [
         { id: 'cut', label: 'Remove a dependency…' },
@@ -650,3 +657,12 @@ export function nextSpec(decisions, d) {
 
 /** "Next: checkout-summary's spec". */
 export const nextSpecText = (d) => `Next: ${d.subject?.feature ?? d.title}'s spec`;
+
+/** "Include anyway": the closed items of an issue join `program.include` (kept in their feature at start). */
+export function includeItems(p, ids) {
+  return { ...p, include: [...new Set([...(p.include ?? []), ...ids])] };
+}
+
+/** "added 13 Nov": when a new item appeared upstream ('' while unknown). */
+export const addedText = (ms) =>
+  ms ? `added ${new Date(ms).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}` : '';

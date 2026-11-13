@@ -66,7 +66,7 @@ export function subjectLine(d) {
 }
 
 // The core answers these at once (no undo window): where to go, or a reconnect.
-const AT_ONCE = new Set(['open', 'reconnect', 'open_settings', 'edit']);
+const AT_ONCE = new Set(['open', 'reconnect', 'open_settings', 'edit', 'settings']);
 
 /** `Bash(pnpm add:*)` as `pnpm add`: the rule's call the way a person says it. */
 const readableMatch = (m) => (m ? m.replace(/^\w+\((.*?)(?::\*)?\)$/, '$1') : 'this');
@@ -176,6 +176,8 @@ export function pendingVerb(d, action) {
       return action === 'add' ? 'Adding rule' : 'Not now';
     case 'brief':
       return 'Dismissing';
+    case 'writeback_failing':
+      return action === 'turn_off' ? 'Turning off write-back' : 'Opening';
     case 'program_new_item':
       return action === 'ignore' ? 'Ignoring' : 'Adding';
     case 'program_item_closed':

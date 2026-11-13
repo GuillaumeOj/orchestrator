@@ -397,3 +397,7 @@ export const reportTip = (intake) =>
   intake?.untracked_items?.length
     ? `Not from intake: ${intake.untracked_items.map((x) => `${x.kind} ${x.ref}`).join(', ')}`
     : '';
+
+/** The path a repo-doc item opens: from its `local:<path>` node id when it has one, else its ref. */
+export const docPath = (rec) =>
+  typeof rec?.node === 'string' && rec.node.startsWith('local:') ? rec.node.slice(6) : rec?.ref;

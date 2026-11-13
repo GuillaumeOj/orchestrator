@@ -53,7 +53,7 @@
       </span>
     {:else}
       <span class="grow"></span>
-      <button class="btn" tabindex="-1" aria-label="Unhide {item.ref} {item.title}" use:tooltip={{ label: 'Unhide', key: 'x' }} onclick={(e) => (e.stopPropagation(), onunhide())}>Unhide</button>
+      <button class="btn" tabindex="-1" aria-label="Unhide {item.ref} {item.title}" use:tooltip={{ label: 'Unhide', key: '⌫' }} onclick={(e) => (e.stopPropagation(), onunhide())}>Unhide</button>
     {/if}
     <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
     <span class="menuwrap" onclick={(e) => e.stopPropagation()}><Menu items={menuItems} tabindex={-1} label="More for {item.ref}" /></span>

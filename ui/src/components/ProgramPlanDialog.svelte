@@ -175,11 +175,15 @@
     startError = null;
   };
   const skip = (key) => edit((p) => P.toggleSkip(p, key));
+  /** A row merges into the one above unless it, or that one, is skipped (their items would run inside a skipped row, or not at all). */
+  const canMerge = (p, key) => {
+    const n = P.numberOf(p, key);
+    return n > 1 && !p.features[n - 1].skip && !p.features[n - 2].skip;
+  };
   const toggleMode = (f) => edit((p) => P.setMode(p, f.key, f.mode === 'team' ? 'solo' : 'team', teams ?? []));
   function merge(key) {
     const n = P.numberOf(draft, key);
-    // A skipped row is not merged: its items would run inside the row above (unskip it first).
-    if (n <= 1 || draft.features[n - 1].skip) return;
+    if (!canMerge(draft, key)) return;
     edit((p) => P.mergeIntoPrevious(p, key));
     sel = n - 2; // the row it joined
   }
@@ -203,7 +207,7 @@
   }
   const rowMenu = (f) => [
     { id: 'skip', label: f.skip ? 'Unskip' : 'Skip', key: 'x', run: () => skip(f.key) },
-    { id: 'merge', label: 'Merge into previous', key: '⇧M', disabled: P.numberOf(draft, f.key) <= 1 || f.skip, run: () => merge(f.key) },
+    { id: 'merge', label: 'Merge into previous', key: '⇧M', disabled: !canMerge(draft, f.key), reason: P.numberOf(draft, f.key) > 1 && !f.skip ? 'The previous feature is skipped' : undefined, run: () => merge(f.key) },
     { id: 'brief', label: 'Edit brief', key: 'e', run: () => openBrief(f) },
     ...P.depsOf(draft, f.key).map((d) => ({ id: `cut-${d.key}`, label: `Remove dependency on ${d.n}`, run: () => edit((p) => P.cutEdge(p, d.key, f.key)) })),
   ];
@@ -218,6 +222,8 @@
         return;
       case 'sequential':
         return setSequential(true);
+      case 'include':
+        return edit((p) => P.includeItems(p, i.items ?? []));
       case 'feature': {
         const f = featureBySlug(project, i.feature);
         close();
@@ -369,7 +375,7 @@
             <div class="issue" class:blocking={i.blocking} data-issue={i.kind}>
               <span class="itext"><span aria-hidden="true">{'\u{F0026}'}</span> {P.issueText(i, draft, { tracker: trackerWord, project: pname })}</span>
               <span class="fixes">
-                {#each P.issueFixes(i) as x (x.id)}
+                {#each P.issueFixes(i, draft) as x (x.id)}
                   <button type="button" class="btn small" data-fix={x.id} use:tooltip={x.key ? { label: x.label, key: x.key } : null} onclick={() => fix(i, x.id)}>{x.label}</button>
                 {/each}
               </span>

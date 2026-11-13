@@ -3,8 +3,8 @@
   // the one place that says where this project's work lives. Kind (Local · GitHub · Linear), the
   // fields of the kind, the Ready filter, Write back, Refresh, Preview (a dry run), the migration
   // notices and the errors per code. ⌘⏎ saves. Replaces the Intake and Task backend sections.
-  import { onMount, untrack } from 'svelte';
-  import { openSettings, projects, toast } from '../lib/app.svelte.js';
+  import { onMount, tick, untrack } from 'svelte';
+  import { app, openSettings, projects, toast } from '../lib/app.svelte.js';
   import { GH_SCOPE_COMMAND, integrationsRow } from '../lib/intake.js';
   import { errText, invoke } from '../lib/ipc.js';
   import { BOARD_COLUMNS } from '../lib/options.js';
@@ -35,7 +35,7 @@
   } from '../lib/tracker.js';
   import Select from './Select.svelte';
 
-  let { project, name = project } = $props();
+  let { project, name = project, block = null } = $props();
 
   const known = $derived.by(() => {
     const p = projects().find((x) => x.id === project);
@@ -43,6 +43,17 @@
     return repoOfRemote(r?.url);
   });
 
+  // A write-back card's Open settings: the Write back block comes into view once the form is there.
+  let blockSeen = null;
+  $effect(() => {
+    if (block !== 'write_back' || !form || blockSeen === app.window) return;
+    blockSeen = app.window;
+    tick().then(() => {
+      const el = /** @type {HTMLElement | null} */ (document.querySelector('[data-wb-switch]'));
+      el?.scrollIntoView?.({ block: 'center' });
+      el?.querySelector('input')?.focus();
+    });
+  });
   let form = $state(/** @type {any} */ (null)); // the TrackerSettings being edited
   let baseline = $state('null'); // JSON of the saved settings
   let notice = $state(/** @type {any} */ (null));
@@ -590,7 +601,7 @@
 
     {#if kind !== 'local'}
       <hr />
-      <label class="switch"><input type="checkbox" role="switch" class="pill" aria-checked={form.write_back.enabled} bind:checked={form.write_back.enabled} onchange={edit} /> <b>Update {wbName} as work runs</b></label>
+      <label class="switch" data-wb-switch><input type="checkbox" role="switch" class="pill" aria-checked={form.write_back.enabled} bind:checked={form.write_back.enabled} onchange={edit} /> <b>Update {wbName} as work runs</b></label>
       {#if form.write_back.enabled}
         <ul class="wb" data-write-back>
           {#each lines as l (l)}<li>{l}</li>{/each}

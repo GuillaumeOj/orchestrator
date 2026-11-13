@@ -3,7 +3,7 @@
   // Muted, mono, no border; hover underlines; not a focus stop. A click opens the source (the
   // browser, the editor for a repo doc) or, for a brief, its line in the chat.
   import { focusCard, openEditor, openUrl, projects } from '../../lib/app.svelte.js';
-  import { originText, originTip } from '../../lib/intake.js';
+  import { docPath, originText, originTip } from '../../lib/intake.js';
 
   /** @type {{ origin: any, project?: string | null, suffix?: string, label?: string | null }} */
   let { origin, project = null, suffix = '', label = null } = $props();
@@ -13,7 +13,7 @@
     if (origin.kind === 'brief') return focusCard(origin.decision);
     if (origin.url) return openUrl(origin.url);
     const p = projects().find((x) => x.id === project || x.name === project);
-    if (p && origin.ref) openEditor(origin.ref, null, { projectId: p.id });
+    if (p && origin.ref) openEditor(docPath(origin), null, { projectId: p.id });
   }
 </script>
 

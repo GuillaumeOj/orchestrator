@@ -49,10 +49,14 @@
   const feats = $derived(p?.features ?? []);
   const cur = $derived(feats[sel] ?? null);
 
+  let loadSeq = 0;
   async function load() {
     if (!id) return;
+    const n = ++loadSeq;
     try {
-      p = await invoke('program', { id });
+      const r = await invoke('program', { id });
+      if (n !== loadSeq) return; // a newer load answers
+      p = r;
       loadError = null;
       // A tab opened from a card or an outcome knew only the id: it takes the program's title.
       const s = app.panes[paneId];
@@ -73,7 +77,21 @@
           .catch(() => {});
   }
 
-  onMount(() => onTopics(['programs'], load));
+  // Loads on mount and on window focus; later only when a `programs` delta upserts or removes THIS program.
+  onMount(() => onTopics(() => false, load));
+  let seenRow = /** @type {any} */ (undefined);
+  let rowSeen = false;
+  $effect(() => {
+    const row = id ? app.now.programs?.[id] : undefined;
+    if (!rowSeen) {
+      rowSeen = true;
+      seenRow = row;
+      return;
+    }
+    if (row === seenRow) return;
+    seenRow = row;
+    untrack(load);
+  });
 
   // Teams of the program's project, for the row editor (once per project, not per reload).
   $effect(() => {
@@ -121,7 +139,7 @@
     await teamsLoad;
     const blockers = new Set((n?.upstream?.blocked_by ?? []).map((b) => b.id).filter(Boolean));
     const deps = p.features.filter((f) => !f.skip && f.items.some((x) => blockers.has(x))).map((f) => f.key);
-    adding = { item, mode: teams.length ? 'team' : 'solo', team: teams[0]?.id ?? null, after: deps };
+    adding = { item, slug: '', mode: teams.length ? 'team' : 'solo', team: teams[0]?.id ?? null, after: deps };
     await tick();
     /** @type {HTMLElement | null} */ (document.querySelector(`[data-pane="${paneId}"] [data-add-editor] button`))?.focus();
   }
@@ -129,7 +147,7 @@
     if (!adding || busy) return;
     busy = true;
     const a = adding;
-    const r = await updateProgram(p.id, { add_item: a.item, mode: a.mode, team: a.mode === 'team' ? a.team : null, after: a.after });
+    const r = await updateProgram(p.id, { add_item: a.item, mode: a.mode, team: a.mode === 'team' ? a.team : null, after: a.after, ...(a.slug.trim() && { slug: a.slug.trim() }) });
     busy = false;
     if (r) {
       after(r);
@@ -240,6 +258,7 @@
             <div class="editor" data-add-editor>
               <div class="eh"><b>Add {P.refOfId(item)}{n?.title ? ` ${n.title}` : ''}</b> <span class="muted">as feature {feats.length + 1}</span></div>
               <div class="fields">
+                <div class="f"><span>Slug</span><input class="field mono" bind:value={adding.slug} placeholder="from the title" aria-label="Slug" /></div>
                 <div class="f"><span>Mode</span><Select value={adding.mode} options={P.MODES} aria-label="Mode" onchange={(v) => (adding.mode = v)} /></div>
                 <div class="f"><span>Team</span>{#if adding.mode === 'team'}<Select value={adding.team} options={teamOptions} placeholder="— none" noun="team" aria-label="Team" onchange={(v) => (adding.team = v)} />{:else}<span class="muted">—</span>{/if}</div>
                 <div class="f"><span>After</span><Select value={adding.after[0] ?? ''} options={[{ value: '', label: 'first' }, ...featOptions]} aria-label="After" onchange={(v) => (adding.after = v ? [v] : [])} /></div>
@@ -250,7 +269,7 @@
             </div>
           {:else}
             <div class="newrow" data-new-item={item}>
-              <span>+ New in {tracker}: <b>{P.refOfId(item)}{n?.title ? ` ${n.title}` : ''}</b> <span class="muted">({n?.parent ? `sub-issue of ${P.refOfId(n.parent)}` : `under ${p.root_ref}`})</span></span>
+              <span>+ New in {tracker}: <b>{P.refOfId(item)}{n?.title ? ` ${n.title}` : ''}</b> <span class="muted">({n?.parent ? `sub-issue of ${P.refOfId(n.parent)}` : `under ${p.root_ref}`}{P.addedText(p.new_items_added?.[item]) ? `, ${P.addedText(p.new_items_added[item])}` : ''})</span></span>
               <span class="grow"></span>
               <button type="button" class="btn primary" use:tooltip={{ label: 'Add to program', key: 'a' }} onclick={() => openAdd(item)}>Add to program</button>
               <button type="button" class="btn" onclick={() => ignore(item)}>Ignore</button>

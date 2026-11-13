@@ -10,7 +10,7 @@ import { checkToast, claudeToast, paletteActions } from './claude.js';
 import { deliveryRef } from './delivery.js';
 import { clock as clockOf, expandHome } from './format.js';
 import { decisionToast, due, FILTERS, isOpen, older, pendingToast, UNDO_MS, version } from './inbox.js';
-import { openPrefilled, planWithOverwatchIn, refreshIntake, setUpIntake } from './intake.svelte.js';
+import { openPrefilled, planWithOverwatchIn, refreshIntake, setUpIntake, startItem } from './intake.svelte.js';
 import { errText, invoke } from './ipc.js';
 import { hint } from './keyboard.js';
 import { deriveKittyTheme } from './kittytheme.js';
@@ -82,7 +82,7 @@ export const app = $state({
   // The floating window (design-notes §3): Settings, Project settings, Week
   // planner or Keyboard shortcuts, one at a time, never saved.
   window:
-    /** @type {{ kind: 'settings' | 'project-settings' | 'planner' | 'shortcuts', section?: string | null, server?: string | null, projectId?: string } | null} */ (
+    /** @type {{ kind: 'settings' | 'project-settings' | 'planner' | 'shortcuts', section?: string | null, server?: string | null, projectId?: string, block?: string } | null} */ (
       null
     ),
   // What had the focus before the first window opened (an element, never saved);
@@ -901,12 +901,12 @@ export function openSettings(section = null, server = null, projectId = null) {
 }
 
 /** A project's settings, one window for any project (opening another project's replaces it). */
-export function openProjectSettings(projectId, section = null, server = null) {
+export function openProjectSettings(projectId, section = null, server = null, block = null) {
   if (!projectId) return toast('No project in focus');
   const w = app.window;
   if (w?.kind === 'project-settings' && w.projectId === projectId)
-    return setWindow({ ...w, section: section ?? w.section, server });
-  setWindow({ kind: 'project-settings', projectId, section: section ?? 'tracker', server });
+    return setWindow({ ...w, section: section ?? w.section, server, block: block ?? undefined });
+  setWindow({ kind: 'project-settings', projectId, section: section ?? 'tracker', server, ...(block && { block }) });
 }
 
 /** The Week planner window (pacing indicator, banners, leader g, the palette). */
@@ -954,7 +954,10 @@ export async function openUrl(url) {
  */
 export function routeOpen(r, projectId = null) {
   if (!r || typeof r !== 'object') return false;
-  if (r.open === 'settings')
+  // The write-back card's settings: Project settings › Tracker, at the Write back block.
+  if (r.open === 'settings' && (r.section === 'tracker' || r.block === 'write_back'))
+    projectId ? openProjectSettings(projectId, 'tracker', null, r.block ?? 'write_back') : toast('No project in focus');
+  else if (r.open === 'settings')
     projectId ? openProjectSettings(projectId, 'mcp', r.server ?? null) : openSettings('mcp', r.server ?? null);
   else if (r.open === 'pane' && r.run) runInPane(r.run, `${r.run}${r.server ? ` · ${r.server}` : ''}`, projectId);
   else if (r.open === 'url' && r.url) openUrl(r.url);
@@ -974,7 +977,9 @@ export function routeOpen(r, projectId = null) {
   else if (r.open === 'program' && r.program) openProgram(r.program);
   else if (r.open === 'program_add' && r.program) openProgram(r.program, '', { add: r.item ?? true });
   else if (r.open === 'feature' && r.feature) {
-    const f = projectId ? featureBySlug(projectId, r.feature) : features().find((x) => x.slug === r.feature);
+    // The reply names its project (I1); an older core does not: the card's project, else the slug alone.
+    const pid = r.project ?? projectId;
+    const f = pid ? featureBySlug(pid, r.feature) : features().find((x) => x.slug === r.feature);
     if (f) openFeature(f.id);
     else if (r.program) openProgram(r.program);
   } else return false;
@@ -1012,7 +1017,14 @@ export async function undoLine(entry, text = null) {
  *  report…), an MCP Reconnect or Open Settings; then routed where it says. */
 export async function coreAct(d, action) {
   try {
-    routeOpen(await invoke('inbox_act', { item: d.id, action, message: null }), d.subject?.project ?? null);
+    const r = await invoke('inbox_act', { item: d.id, action, message: null });
+    // The write-back card's Open settings may come back bare: it still means the Tracker section's Write back block.
+    routeOpen(
+      d.kind === 'writeback_failing' && r?.open === 'settings' && !r.section
+        ? { ...r, section: 'tracker', block: 'write_back' }
+        : r,
+      d.subject?.project ?? d.project ?? null,
+    );
   } catch (e) {
     toast(errText(e), { kind: 'error' });
   }
@@ -1595,8 +1607,9 @@ export function mountTerm(paneId, host, hooks) {
   };
 }
 
-export function confirm(text, detail, onYes, yes = 'Confirm', no = 'Cancel') {
-  app.overlay = { kind: 'confirm', text, detail, onYes, yes, no };
+/** `onNo` runs when the dialog is declined (Cancel button or Esc): e.g. back to the dialog it replaced. */
+export function confirm(text, detail, onYes, yes = 'Confirm', no = 'Cancel', onNo = null) {
+  app.overlay = { kind: 'confirm', text, detail, onYes, yes, no, onNo };
 }
 
 // ---------------------------------------------------------------- persistence
@@ -2171,13 +2184,16 @@ export function commands() {
   }
   // Ready parents (notes §12.7): "Run as program: #12 Checkout v2".
   for (const it of app.now.intake?.items ?? []) {
-    if (!it.node || it.actions?.program !== 'ok' || it.hidden) continue;
+    if (!it.node || it.hidden) continue;
     const name = `${it.ref ? `${it.ref} ` : ''}${it.title ?? ''}`.trim();
-    list.push({
-      id: `program.plan.${it.node}`,
-      label: `Run as program: ${name}`,
-      run: () => openProgramPlan([it.node], { title: name }),
-    });
+    if (it.actions?.team === 'ok')
+      list.push({ id: `work.team.${it.node}`, label: `Start team run: ${name}`, run: () => startItem(it, 'team') });
+    if (it.actions?.program === 'ok')
+      list.push({
+        id: `program.plan.${it.node}`,
+        label: `Run as program: ${name}`,
+        run: () => openProgramPlan([it.node], { title: name }),
+      });
   }
   // Programs in progress (notes §12.7): "Program: Checkout v2", "Pause program Checkout v2".
   for (const p of Object.values(app.now.programs ?? {})) {

@@ -123,7 +123,7 @@
     {:else if section.id === 'files'}
       <FilesSettings bind:this={files} project={pid} {name} />
     {:else if section.id === 'tracker'}
-      <TrackerSettings bind:this={tracker} project={pid} {name} />
+      <TrackerSettings bind:this={tracker} project={pid} {name} block={spec?.block ?? null} />
     {:else if error}
       <p class="err">Could not read {name}'s settings: {error}</p>
     {:else if !saved}

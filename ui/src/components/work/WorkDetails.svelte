@@ -1,9 +1,11 @@
 <script>
+  import { app } from '../../lib/app.svelte.js';
   import { dayHm, ppAmount } from '../../lib/format.js';
   // Work › details panel (notes §3): the focused node, first painted from the tree's WorkNode; body and history
   // from `work_node` (cached by id + updated_at_ms, F36). Kinds: issue, container, project row, multi-selection.
   // Item text is untrusted: plain text only; only "Open in GitHub ↗" / "Open in Linear ↗" navigates.
   import { basisText, exactRange } from '../../lib/intake.js';
+  import { liveCapText } from '../../lib/program.js';
   import { tooltip } from '../../lib/tooltip.js';
   import {
     actionOf,
@@ -43,8 +45,9 @@
     historyAll = false;
   });
 
+  const liveCap = $derived(liveCapText(app.now.counts?.global));
   const tracker = $derived(node ? (TRACKER_NAME[trackerOf(node)] ?? '') : '');
-  const chip = $derived(node ? chipOf(node, { short: narrow, readyTip }) : null);
+  const chip = $derived(node ? chipOf(node, { short: narrow, readyTip, liveCap }) : null);
   const body = $derived(bodyLines(detail?.body, bodyAll));
   // `work_node(id, {children: true})` lists the first page in `child_nodes` (F36); `children` stays the counts.
   const children = $derived(kids ?? detail?.child_nodes ?? null);
@@ -95,7 +98,7 @@
 </script>
 
 {#snippet line(n)}
-  {@const c = chipOf(n, { short: true })}
+  {@const c = chipOf(n, { short: true, liveCap })}
   <div class="kid">
     <KindGlyph node={n} />
     {#if refOf(n)}<span class="ref">{refOf(n)}</span>{/if}

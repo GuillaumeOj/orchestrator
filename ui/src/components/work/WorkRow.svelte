@@ -3,8 +3,10 @@
   // indent · disclosure · kind glyph · ref · issue type · title · upstream state · labels · dependency ·
   // children progress · app-state chip (fixed column). Lines (loading, error, more, source status) share the
   // indent. Buttons inside are not Tab stops: the pane's keys reach them.
+  import { app } from '../../lib/app.svelte.js';
+  import { liveCapText } from '../../lib/program.js';
   import { tooltip } from '../../lib/tooltip.js';
-  import { closedMark, depMark, GLYPH, isClosed, isContainer, labelsOf, loadErrorText, progressText, refOf, rightOf, selectable, tailOf, titleOf, trackerName, upstreamText } from '../../lib/workmodel.js';
+  import { closedMark, depMark, GLYPH, isClosed, isContainer, labelsOf, loadErrorText, progressText, refOf, rightOf, selectable, tailOf, taskLineOf, titleOf, trackerName, upstreamText } from '../../lib/workmodel.js';
   import AppChip from './AppChip.svelte';
   import KindGlyph from './KindGlyph.svelte';
 
@@ -30,13 +32,14 @@
     onaction = () => {},
   } = $props();
 
+  const liveCap = $derived(liveCapText(app.now.counts?.global));
   const n = $derived(row.node);
   /** The slots of a tree item, each computed once (other row kinds have none). */
   const slots = $derived.by(() => {
     if (row.kind !== 'node' || !n) return null;
     const closed = isClosed(n);
     return {
-      right: rightOf(n, { short: narrow, readyTip }),
+      right: rightOf(n, { short: narrow, readyTip, liveCap }),
       dep: depMark(n),
       tail: tailOf(n),
       mark: closedMark(n),
@@ -128,7 +131,7 @@
   <div class="row task" class:focused role="treeitem" tabindex="-1" aria-level={lineLevel} aria-selected={focused} data-key={row.key} onclick={onrow}>
     {@render guides(row.indent)}
     <span class="disc" aria-hidden="true"></span>
-    <span class="up">{[`${n.ref} ${n.title}`, n.upstream?.board_status ?? n.upstream?.state, n.upstream?.assignees?.[0]].filter(Boolean).join(' · ')}</span>
+    <span class="up">{taskLineOf(n)}</span>
   </div>
 {:else}
   <!-- svelte-ignore a11y_click_events_have_key_events -->
