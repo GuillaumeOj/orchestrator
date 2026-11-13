@@ -65,7 +65,8 @@ fn a_typed_slash_command_is_the_apps_turn() {
         return;
     }
     let answer_trust = std::env::var("ORCH_LIVE_ANSWER_TRUST").as_deref() == Ok("1");
-    let repo = PathBuf::from("/tmp/orch-live/demo");
+    let repo =
+        std::env::var_os("ORCH_LIVE_REPO").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/tmp/orch-live/demo"));
     if !repo.join(".git").exists() {
         std::fs::create_dir_all(&repo).unwrap();
         git(&repo, &["init", "-q", "-b", "main"]);
@@ -82,7 +83,11 @@ fn a_typed_slash_command_is_the_apps_turn() {
     let root = tempfile::Builder::new().prefix("orchcmd").tempdir_in(orch_protocol::test_tmp()).unwrap();
     let paths = AppPaths::new(root.path().join("app"));
     agent_runtime::preflight::install_helpers(&helper_bins(), &paths.bin_dir()).unwrap();
-    let rt = Runtime::new(RuntimeConfig::new(paths.clone())).unwrap();
+    let mut cfg = RuntimeConfig::new(paths.clone());
+    if let Ok(c) = std::env::var("ORCH_LIVE_CLAUDE_BIN") {
+        cfg.claude = PathBuf::from(c);
+    }
+    let rt = Runtime::new(cfg).unwrap();
     let listener = bus::bind_listener(&paths.socket()).unwrap();
     let stop = Arc::new(AtomicBool::new(false));
     let srv = {

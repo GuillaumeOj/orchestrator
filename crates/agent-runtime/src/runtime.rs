@@ -524,7 +524,7 @@ impl Runtime {
         warnings.extend(crate::env::parent_env_warnings());
         match version {
             Ok(VersionCheck::Untested(v)) => {
-                warnings.push(format!("claude {v} is newer than the last tested version: run the contract tests (R2)"))
+                warnings.push(preflight::untested_warning(v, cfg.version_range.tested_max))
             }
             Ok(VersionCheck::Supported(_)) => {}
             Err(e) => warnings.push(format!("claude: {e}")),

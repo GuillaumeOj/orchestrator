@@ -1,6 +1,6 @@
 # Orchestrator: common targets. See docs/app/RUNNING.md.
 # CI runs these same targets (.github/workflows/ci.yml), so local and CI checks match.
-.PHONY: app install test clippy fmt fmt-check lint ci rust-test ui-deps ui-lint ui-test ui-build
+.PHONY: app install test clippy fmt fmt-check lint ci rust-test ui-deps ui-lint ui-test ui-build contract contract-accept
 
 app:            ## Build Orchestrator.app (release)
 	scripts/app.sh build
@@ -40,3 +40,9 @@ ui-test: ui-deps
 
 ui-build: ui-deps
 	cd ui && bun run build
+
+contract:       ## Check the installed Claude Code against what the app relies on (docs/app/CONTRACT-TESTS.md); ARGS=--no-live skips the quota-using checks
+	scripts/contract.sh $(ARGS)
+
+contract-accept: ## contract, then record the installed Claude Code version as tested (after a full pass)
+	scripts/contract.sh --accept $(ARGS)
