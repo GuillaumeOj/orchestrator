@@ -500,6 +500,15 @@ describe('plan dialog (§6)', () => {
     expect(app.toasts.at(-1).text).toBe('Started Checkout v2 · 2 features');
   });
 
+  it('a skipped row is not merged into the row above', async () => {
+    const { dlg } = await openPlan();
+    key(dlg, 'j');
+    key(dlg, 'x'); // row 2 skipped
+    key(dlg, 'M', { shiftKey: true });
+    await settle();
+    expect(rows()).toHaveLength(3);
+  });
+
   it('a loop blocks Start; Remove a dependency… cuts one edge and Start comes back', async () => {
     const loop = checkout({
       edges: [

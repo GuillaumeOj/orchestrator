@@ -60,6 +60,13 @@ export function openProgram(id, title = '', { add = null } = {}) {
   });
 }
 
+/** The teams a program feature can take in `project` (the ones without issues), as `{id, name}`; [] on an error. */
+export function programTeams(project) {
+  return invoke('teams_view', { project })
+    .then((v) => (v?.teams ?? []).filter((t) => !t.issues?.length).map((t) => ({ id: t.team.id, name: t.team.name })))
+    .catch(() => []);
+}
+
 /** `program_update(id, patch)`: the Program as the core stored it; a refusal toasts and gives null. */
 export async function updateProgram(id, patch) {
   try {

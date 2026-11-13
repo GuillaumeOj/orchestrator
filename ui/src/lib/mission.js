@@ -5,7 +5,7 @@
 import { clock, dayHm, plural, startOfDay, waited } from './format.js';
 import { agentOf, isOpen } from './inbox.js';
 import { modeOf, shortRef } from './intake.js';
-import { programRows, laneHeader as programsHeader } from './program.js';
+import { programRows, laneCount as programsCount } from './program.js';
 import { STATUS } from './status.js';
 
 // ---------------------------------------------------------------- phase stepper
@@ -400,7 +400,8 @@ export function lanes(now, filter = null, at = Date.now(), { projects = [], show
   const byLane = {
     needs_you: needs,
     running: rows.running,
-    programs: programRows(now?.programs, shown),
+    // (kept while the program's row is the same object, like the other rows)
+    programs: programRows(now?.programs, shown).map((r) => rowOf(r.program, 'program', () => r)),
     waiting: rows.waiting,
     queued: rows.queued,
     ready: ready.rows,
@@ -409,8 +410,8 @@ export function lanes(now, filter = null, at = Date.now(), { projects = [], show
   const out = LANES.map((l) => {
     if (l.id === 'ready') return { ...l, ...ready };
     if (l.id === 'programs') {
-      const header = programsHeader(byLane.programs.map((r) => r.program));
-      return { ...l, rows: byLane.programs, count: header.slice(l.label.length + 3), header, status: null };
+      const count = programsCount(byLane.programs.map((r) => r.program));
+      return { ...l, rows: byLane.programs, count, header: count ? `${l.label} · ${count}` : l.label, status: null };
     }
     const count = rowCount(byLane[l.id]);
     return { ...l, rows: byLane[l.id], count, header: count ? `${l.label} · ${count}` : l.label, status: null };

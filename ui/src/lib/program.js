@@ -3,6 +3,7 @@
 // core's `Program`, `PlanIssue` and `ProgramRow`; the components only render them.
 
 import { clock, plural } from './format.js';
+import { isOpen } from './inbox.js';
 import { ppRange } from './intake.js';
 
 // ---------------------------------------------------------------- ids and refs
@@ -472,22 +473,18 @@ export function graphOf(p) {
     skipped: !!f.skip || f.state === 'skipped',
     state: f.state,
   }));
-  // Rows within a level, in plan order.
+  // Features with no edge go after the deepest level, as the boards draw them.
+  const linked = new Set(edges.flatMap((e) => [e.from, e.to]));
+  const maxLevel = Math.max(0, ...nodes.filter((n) => linked.has(n.key)).map((n) => n.level));
+  let free = 0;
+  for (const n of nodes) if (!linked.has(n.key)) n.level = maxLevel + 1 + free++;
+  // Rows within a level, in plan order (after the moves: a moved feature leaves no gap in level 0).
   const rows = new Map();
   for (const n of nodes) {
     const r = rows.get(n.level) ?? 0;
     n.row = r;
     rows.set(n.level, r + 1);
   }
-  // Features with no edge go after the deepest level, as the boards draw them.
-  const linked = new Set(edges.flatMap((e) => [e.from, e.to]));
-  const maxLevel = Math.max(0, ...nodes.filter((n) => linked.has(n.key)).map((n) => n.level));
-  let free = 0;
-  for (const n of nodes)
-    if (!linked.has(n.key)) {
-      n.level = maxLevel + 1 + free++;
-      n.row = 0;
-    }
   return { nodes, edges: edges.map((e) => ({ from: e.from, to: e.to })) };
 }
 
@@ -524,13 +521,15 @@ export function progressOf(row) {
   return live.map((f) => f.state === 'merged');
 }
 
-/** The header of the lane: "Programs · 1 running", "Programs · 1 running · 1 paused". */
-export function laneHeader(rows) {
+/** The lane's count ("Programs · 1 running · 1 paused"): "1 running", "1 running · 1 paused"; '' when none. */
+export function laneCount(rows) {
   const run = rows.filter((r) => r.status === 'running').length;
   const paused = rows.filter((r) => r.status === 'paused').length;
-  const parts = [run && `${run} running`, paused && `${paused} paused`].filter(Boolean);
-  return parts.length ? `Programs · ${parts.join(' · ')}` : 'Programs';
+  return [run && `${run} running`, paused && `${paused} paused`].filter(Boolean).join(' · ');
 }
+
+/** "2/3" (live agents / the Governor's live cap) for "queued · live cap 2/3"; null without a cap. */
+export const liveCapText = (g) => (g?.live_cap != null ? `${g.live ?? 0}/${g.live_cap}` : null);
 
 /** Sub-rows are expanded by default with ≤ 5 features. */
 export const SUBROWS_OPEN_MAX = 5;
@@ -541,12 +540,16 @@ const FLAG_WORDS = {
   new_dependency: () => 'new dependency',
 };
 
-/** A sub-row (§7.1): glyph, text, tone (muted / error / working / gate), flag tail. `tracker`: GitHub / Linear. */
-export function subRowOf(f, tracker = 'GitHub', { liveCap = null } = {}) {
-  const flag = (f.flags ?? [])
+/** A feature's flags in words: "closed in GitHub · new dependency"; '' without any. */
+export const flagText = (f, tracker = 'GitHub') =>
+  (f?.flags ?? [])
     .map((x) => FLAG_WORDS[x]?.(tracker))
     .filter(Boolean)
     .join(' · ');
+
+/** A sub-row (§7.1): glyph, text, tone (muted / error / working / gate), flag tail. `tracker`: GitHub / Linear. */
+export function subRowOf(f, tracker = 'GitHub', { liveCap = null } = {}) {
+  const flag = flagText(f, tracker);
   const pr = f.pr?.number != null ? `#${f.pr.number}` : '';
   switch (f.state) {
     case 'merged':
@@ -632,7 +635,6 @@ export function viewSubline(p, { where = '', rootTitle = '' } = {}) {
 export function viewState(f, p, { liveCap = null } = {}) {
   const pr = f.pr?.number != null ? ` #${f.pr.number}` : '';
   const paused = p?.status === 'paused';
-  const over = p?.status === 'cancelled' || p?.status === 'done';
   switch (f.state) {
     case 'merged':
       return { tone: 'done', text: `merged${pr}${f.merged_at_ms ? ` · ${dateTime(f.merged_at_ms)}` : ''}` };
@@ -655,7 +657,7 @@ export function viewState(f, p, { liveCap = null } = {}) {
       return paused ? { tone: '', text: 'planned · program paused' } : { tone: '', text: 'planned' };
     case 'skipped':
       // (a cancel drops what had not started: the core marks those skipped)
-      return { tone: 'muted', text: over && p.status === 'cancelled' ? 'dropped' : 'skipped' };
+      return { tone: 'muted', text: p?.status === 'cancelled' ? 'dropped' : 'skipped' };
     case 'failed':
       return { tone: 'error', text: f.error ? `failed · ${f.error}` : 'failed' };
     default:
@@ -696,14 +698,7 @@ export function nextSpec(decisions, d) {
   if (!id) return null;
   return (
     Object.values(decisions ?? {})
-      .filter(
-        (x) =>
-          x.id !== d.id &&
-          x.kind === 'gate' &&
-          x.gate === 'spec' &&
-          x.program?.id === id &&
-          (x.lifecycle?.state ?? 'open') === 'open',
-      )
+      .filter((x) => x.id !== d.id && x.kind === 'gate' && x.gate === 'spec' && x.program?.id === id && isOpen(x))
       .sort(
         (a, b) => (a.program?.index ?? 0) - (b.program?.index ?? 0) || (a.created_ms ?? 0) - (b.created_ms ?? 0),
       )[0] ?? null

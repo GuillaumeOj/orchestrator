@@ -44,7 +44,7 @@
   import { isTypingTarget } from '../lib/keyboard.js';
   import { allowed, COUNT_KEYS, DONE_ROWS, decisionOf, defaultTarget, footerText, hiddenText, lanes, looseText, rowIndex, stops, target } from '../lib/mission.js';
   import { attention } from '../lib/now.svelte.js';
-  import { SUBROWS_OPEN_MAX } from '../lib/program.js';
+  import { liveCapText, SUBROWS_OPEN_MAX } from '../lib/program.js';
   import { LEVEL } from '../lib/status.js';
   import { tooltip } from '../lib/tooltip.js';
   import { cancelProgram, openProgram, openProgramPlan, openProgramSource, openWork, togglePause } from '../lib/work.js';
@@ -167,7 +167,7 @@
   const toggleSubs = (p) => (subrows = { ...subrows, [p.id]: !subOpen(p) });
   /** The tracker's name for a project's sub-row flags ("closed in GitHub"). */
   const trackerFor = (project) => ({ github: 'GitHub', linear: 'Linear' })[(app.now.intake?.sources ?? []).find((s) => s.project === project)?.type] ?? 'the tracker';
-  const liveCap = $derived(app.now.counts?.global?.live_cap != null ? `${app.now.counts.global.live ?? 0}/${app.now.counts.global.live_cap}` : null);
+  const liveCap = $derived(liveCapText(app.now.counts?.global));
   /** A sub-row's feature: its Feature pane (by slug in the program's project), else the Program view. */
   function openProgramFeature(p, f) {
     const feat = features().find((x) => x.slug === f.slug && x.project_id === p.project);

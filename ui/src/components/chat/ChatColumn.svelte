@@ -58,7 +58,7 @@
     warnVerb,
   } from '../../lib/chat.js';
   import { clock, plural } from '../../lib/format.js';
-  import { actionByKey, agentOf, answerText, blockOf, FILTERS, intentFor, keyIntent } from '../../lib/inbox.js';
+  import { actionByKey, agentOf, answerText, blockOf, FILTERS, intentFor, isOpen, keyIntent } from '../../lib/inbox.js';
   import { briefEnded } from '../../lib/intake.js';
   import { clearPlan, intakeUi, planContext, plannedEntries, startBrief } from '../../lib/intake.svelte.js';
   import { errText, invoke, listen } from '../../lib/ipc.js';
@@ -880,6 +880,9 @@
     const o = outcome ? outcomes.find((x) => x.id === outcome) : null;
     if (o && key === 'o') return take(), openOutcome(o);
     if (key === 'enter' && cur === 'fold') return take(), (foldOpen = !foldOpen);
+    // The "Next: …'s spec · ⏎" bar: ⏎ on the approved card (or with no ⏎ action) goes to that spec.
+    if (key === 'enter' && nextOf && isOpen(app.now.decisions[nextOf.id]) && (selCard?.id === nextOf.after || !keyIntent(key, selCard?.d ?? null)))
+      return take(), showNext(nextOf.id);
     const intent = keyIntent(key, selCard?.d ?? null);
     if (!intent) return;
     // Not on a card (the fold or digest header, a digest row still listed, a
@@ -1068,7 +1071,7 @@
             onhold={(on) => typed(it.id, on)}
           />
         </article>
-        {#if nextOf?.after === it.id && app.now.decisions[nextOf.id]}
+        {#if nextOf?.after === it.id && isOpen(app.now.decisions[nextOf.id])}
           <button type="button" class="nextspec" data-next-spec use:tooltip={{ label: 'Show the next spec', key: '⏎' }} onclick={() => showNext(nextOf.id)}>{nextOf.text} · ⏎</button>
         {/if}
       {/if}

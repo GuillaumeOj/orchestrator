@@ -518,7 +518,7 @@ function title(spec) {
       if (spec.type === 'feature') return features().find((f) => f.id === spec.featureId)?.slug ?? 'feature';
       if (spec.type === 'canvas') return spec.teamId ? `Team: ${spec.teamId}` : 'Team canvas';
       if (spec.type === 'program')
-        return `${app.now.programs?.[spec.programId]?.title ?? spec.programTitle ?? 'Program'} · program`;
+        return `${app.now.programs?.[spec.programId]?.title || spec.programTitle || 'Program'} · program`;
       if (spec.type === 'work') return scopeTitle(spec.projects ?? null, (spec.projects ?? []).map(projectName));
       if (spec.type === 'diff')
         return `diff · ${

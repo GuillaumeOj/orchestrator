@@ -9,13 +9,14 @@
   import { isTypingTarget } from '../lib/keyboard.js';
   import * as P from '../lib/program.js';
   import { tooltip } from '../lib/tooltip.js';
-  import { openProgram } from '../lib/work.js';
+  import { openProgram, programTeams } from '../lib/work.js';
   import FloatingWindow from './FloatingWindow.svelte';
   import Menu from './Menu.svelte';
   import GraphStrip from './program/GraphStrip.svelte';
   import Select from './Select.svelte';
 
-  const o = $derived(app.overlay);
+  // The overlay this dialog was opened for (it is keyed on it): a late `close` leaves another one alone.
+  const o = app.overlay;
   const roots = $derived(o?.roots ?? []);
 
   /** planning · planned · replanning · failed · stale · nothing */
@@ -85,7 +86,8 @@
       base = r.program;
       draft = P.withTotals(structuredClone(r.program));
       coreIssues = r.issues ?? [];
-      atOnce = r.program.max_parallel ?? atOnce;
+      // (one after the other plans at 1: the chosen At once stays for By dependencies)
+      if (!sequential) atOnce = r.program.max_parallel ?? atOnce;
       sel = 0;
       briefKey = null;
       phase = r.program.features?.length ? 'planned' : 'nothing';
@@ -113,9 +115,7 @@
   });
 
   function loadProject(id) {
-    invoke('teams_view', { project: id })
-      .then((v) => (teams = (v?.teams ?? []).filter((t) => !t.issues?.length).map((t) => ({ id: t.team.id, name: t.team.name }))))
-      .catch(() => (teams = []));
+    programTeams(id).then((t) => (teams = t));
     invoke('tracker_settings', { project: id })
       .then((r) => (tracker = r?.settings ?? null))
       .catch(() => {});
@@ -146,6 +146,11 @@
     go();
   }
 
+  /** A radio's change: its group shows the state again until the re-plan runs (Keep edits leaves it as it was). */
+  function pick(e, current, fn) {
+    for (const r of e.currentTarget.closest('[role="radiogroup"]')?.querySelectorAll('input') ?? []) r.checked = r.value === current;
+    fn();
+  }
   const setGrouping = (v) => v !== grouping && replan(() => (grouping = v));
   const setSequential = (v) => v !== sequential && replan(() => (sequential = v));
   function setAtOnce(v) {
@@ -165,7 +170,8 @@
   const toggleMode = (f) => edit((p) => P.setMode(p, f.key, f.mode === 'team' ? 'solo' : 'team', teams ?? []));
   function merge(key) {
     const n = P.numberOf(draft, key);
-    if (n <= 1) return;
+    // A skipped row is not merged: its items would run inside the row above (unskip it first).
+    if (n <= 1 || draft.features[n - 1].skip) return;
     edit((p) => P.mergeIntoPrevious(p, key));
     sel = n - 2; // the row it joined
   }
@@ -192,7 +198,7 @@
   }
   const rowMenu = (f) => [
     { id: 'skip', label: f.skip ? 'Unskip' : 'Skip', key: 'x', run: () => skip(f.key) },
-    { id: 'merge', label: 'Merge into previous', key: '⇧M', disabled: P.numberOf(draft, f.key) <= 1, run: () => merge(f.key) },
+    { id: 'merge', label: 'Merge into previous', key: '⇧M', disabled: P.numberOf(draft, f.key) <= 1 || f.skip, run: () => merge(f.key) },
     { id: 'brief', label: 'Edit brief', key: 'e', run: () => openBrief(f) },
     ...P.depsOf(draft, f.key).map((d) => ({ id: `cut-${d.key}`, label: `Remove dependency on ${d.n}`, run: () => edit((p) => P.cutEdge(p, d.key, f.key)) })),
   ];
@@ -320,15 +326,15 @@
       <div class="radios" role="radiogroup" aria-label="Split into">
         {#each P.splitChoices(container, hasGrand) as c (c.value)}
           <label class="radio" class:disabled={c.disabled} use:tooltip={c.disabled ? c.reason : null}>
-            <input type="radio" name="grouping" value={c.value} checked={grouping === c.value} disabled={c.disabled || busy || phase === 'stale'} onchange={() => setGrouping(c.value)} />
+            <input type="radio" name="grouping" value={c.value} checked={grouping === c.value} disabled={c.disabled || busy || phase === 'stale'} onchange={(e) => pick(e, grouping, () => setGrouping(c.value))} />
             {c.label}
           </label>
         {/each}
       </div>
       <span class="lab">Order</span>
       <div class="radios" role="radiogroup" aria-label="Order">
-        <label class="radio"><input type="radio" name="order" checked={!sequential} disabled={busy || phase === 'stale'} onchange={() => setSequential(false)} /> By dependencies</label>
-        <label class="radio"><input type="radio" name="order" checked={sequential} disabled={busy || phase === 'stale'} onchange={() => setSequential(true)} /> One after the other, in tree order</label>
+        <label class="radio"><input type="radio" name="order" value="deps" checked={!sequential} disabled={busy || phase === 'stale'} onchange={(e) => pick(e, sequential ? 'seq' : 'deps', () => setSequential(false))} /> By dependencies</label>
+        <label class="radio"><input type="radio" name="order" value="seq" checked={sequential} disabled={busy || phase === 'stale'} onchange={(e) => pick(e, sequential ? 'seq' : 'deps', () => setSequential(true))} /> One after the other, in tree order</label>
       </div>
       <span class="lab">At once</span>
       <div class="atonce">

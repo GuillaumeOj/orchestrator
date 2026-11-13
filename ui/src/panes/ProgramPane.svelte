@@ -14,7 +14,7 @@
   import { onTopics } from '../lib/now.svelte.js';
   import * as P from '../lib/program.js';
   import { tooltip } from '../lib/tooltip.js';
-  import { cancelProgram, skipFeature, togglePause, updateProgram } from '../lib/work.js';
+  import { cancelProgram, programTeams, skipFeature, togglePause, updateProgram } from '../lib/work.js';
 
   let { paneId } = $props();
   const spec = $derived(app.panes[paneId]);
@@ -27,6 +27,7 @@
   let news = $state({}); // new item id → its WorkNode (title, ref, parent, url)
   let roots = $state({}); // root id → its WorkNode
   let teams = $state(/** @type {{ id: string, name: string }[]} */ ([]));
+  let teamsLoad = Promise.resolve(); // the row editor's prefill waits for the teams
   let adding = $state(null); // { item, mode, team, after: [keys] }: the row editor
   let busy = $state(false);
 
@@ -34,7 +35,8 @@
   const chip = $derived(p ? P.statusChip(p) : null);
   const root = $derived(p ? roots[p.root?.[0]] : null);
   const tracker = $derived(p?.root?.[0] ? P.trackerOfId(p.root[0]) : 'the tracker');
-  const liveCap = $derived(app.now.counts?.global?.live_cap != null ? `${app.now.counts.global.live ?? 0}/${app.now.counts.global.live_cap}` : null);
+  const liveCap = $derived(P.liveCapText(app.now.counts?.global));
+  const project = $derived(p?.project ?? null);
   const feats = $derived(p?.features ?? []);
   const cur = $derived(feats[sel] ?? null);
 
@@ -43,6 +45,9 @@
     try {
       p = await invoke('program', { id });
       loadError = null;
+      // A tab opened from a card or an outcome knew only the id: it takes the program's title.
+      const s = app.panes[paneId];
+      if (s && s.programTitle !== p.title) app.panes[paneId] = { ...s, programTitle: p.title, title: `${p.title} · program` };
       if (sel >= p.features.length) sel = Math.max(0, p.features.length - 1);
       untrack(fetchNodes);
     } catch (e) {
@@ -68,13 +73,12 @@
     return onTopics(['programs'], load);
   });
 
-  // Teams of the program's project, for the row editor.
+  // Teams of the program's project, for the row editor (once per project, not per reload).
   $effect(() => {
-    const project = p?.project;
     if (!project) return;
-    invoke('teams_view', { project })
-      .then((v) => (teams = (v?.teams ?? []).filter((t) => !t.issues?.length).map((t) => ({ id: t.team.id, name: t.team.name }))))
-      .catch(() => (teams = []));
+    teamsLoad = programTeams(project).then((t) => {
+      teams = t;
+    });
   });
 
   // A card's Add to program lands here: the row editor of that item (a one-shot request).
@@ -126,6 +130,7 @@
   /** The row editor of a new upstream item, prefilled: team mode with the first team (else solo), after the features its item is blocked by. */
   async function openAdd(item) {
     const n = news[item] ?? (await invoke('work_node', { id: item, opts: { children: false } }).catch(() => null));
+    await teamsLoad;
     const blockers = new Set((n?.upstream?.blocked_by ?? []).map((b) => b.id).filter(Boolean));
     const deps = p.features.filter((f) => !f.skip && f.items.some((x) => blockers.has(x))).map((f) => f.key);
     adding = { item, mode: teams.length ? 'team' : 'solo', team: teams[0]?.id ?? null, after: deps };
@@ -240,7 +245,7 @@
             <b class="mono">{f.slug}</b>
             <span class="mono" use:tooltip={P.fromTip(f) || null}>{P.fromText(f)}</span>
             <span>{f.mode === 'solo' ? 'Solo' : 'Team'}</span>
-            <span class="state {st.tone}">{st.text}{#each f.flags ?? [] as fl (fl)}<span class="flag">{` · ${fl === 'new_dependency' ? 'new dependency' : fl === 'deleted_upstream' ? `deleted in ${tracker}` : `closed in ${tracker}`}`}</span>{/each}</span>
+            <span class="state {st.tone}">{st.text}{#if P.flagText(f, tracker)}<span class="flag">{` · ${P.flagText(f, tracker)}`}</span>{/if}</span>
             <span>{P.estText(f.estimate, { unit: false })}</span>
             <span>{P.actualText(f)}</span>
             <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
