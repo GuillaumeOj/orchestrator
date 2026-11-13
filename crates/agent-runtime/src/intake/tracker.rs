@@ -44,7 +44,7 @@ pub(crate) fn actions_json(can_team: bool, has_children: bool) -> Value {
     json!({
         "team": if can_team { json!("ok") } else { json!({"disabled": "This project has no team yet"}) },
         "solo": "ok",
-        "program": if has_children { json!("ok") } else { json!({"disabled": "No sub-issues to run as a program"}) },
+        "program": if has_children { json!("ok") } else { json!("hidden") },
         "hide": "ok",
     })
 }

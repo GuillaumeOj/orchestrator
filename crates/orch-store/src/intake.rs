@@ -13,6 +13,9 @@ use crate::db::Store;
 use crate::teams::IntakeSource;
 use crate::util::{js, opt_u64};
 
+/// The `now` topic program writes touch.
+pub const PROGRAMS_TOPIC: &str = "programs";
+
 /// The `now` topic intake writes touch.
 pub const TOPIC: &str = "intake";
 
@@ -294,6 +297,42 @@ impl Store {
                 })
             })?;
             Ok(rows.collect::<rusqlite::Result<_>>()?)
+        })
+    }
+
+    /// Stores a program (its whole JSON document); touches the `programs` topic.
+    pub fn upsert_program(&self, id: &str, project: &str, status: &str, data: &Value, now_ms: u64) -> Result<()> {
+        let (id, project, status, data) = (id.to_string(), project.to_string(), status.to_string(), js(data));
+        self.write(move |tx| {
+            tx.execute(
+                "INSERT INTO programs(id, project_id, status, data, created_at_ms, updated_at_ms)
+                 VALUES (?1,?2,?3,?4,?5,?5)
+                 ON CONFLICT(id) DO UPDATE SET status=?3, data=?4, updated_at_ms=?5",
+                params![id, project, status, data, now_ms as i64],
+            )?;
+            Ok(())
+        })?;
+        self.note([PROGRAMS_TOPIC]);
+        Ok(())
+    }
+
+    pub fn program(&self, id: &str) -> Result<Option<Value>> {
+        let id = id.to_string();
+        self.read(move |c| {
+            let s: Option<String> =
+                c.query_row("SELECT data FROM programs WHERE id=?1", [&id], |r| r.get(0)).optional()?;
+            Ok(s.and_then(|s| serde_json::from_str(&s).ok()))
+        })
+    }
+
+    /// The programs of one project (all when `None`), oldest first.
+    pub fn programs(&self, project: Option<&str>) -> Result<Vec<Value>> {
+        let p = project.map(str::to_string);
+        self.read(move |c| {
+            let mut st =
+                c.prepare("SELECT data FROM programs WHERE ?1 IS NULL OR project_id=?1 ORDER BY created_at_ms, id")?;
+            let rows: Vec<String> = st.query_map([p], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
+            Ok(rows.into_iter().filter_map(|s| serde_json::from_str(&s).ok()).collect())
         })
     }
 

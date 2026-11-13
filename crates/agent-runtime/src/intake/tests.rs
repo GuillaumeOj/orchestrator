@@ -1614,3 +1614,479 @@ fn missing_children_are_fetched_once_with_a_per_parent_error_and_no_cap() {
     assert_eq!(n["children"], json!({"total": 3, "open": 2, "done": 1}));
     assert_eq!(asks(&f), asked);
 }
+
+// ------------------------------------------------------------ programs (B4)
+
+fn dep(n: u64) -> Value {
+    json!({"number": n, "title": format!("Issue {n}"), "state": "OPEN", "url": "u",
+           "repository": {"nameWithOwner": "acme/shop"}})
+}
+
+/// Checkout v2 (#12): #13 Address step (+ #17 below it) blocks #14 Payment step; #15 Summary; #16 closed.
+fn program_fixture() -> Fx {
+    let f = fx();
+    github_tracker(&f);
+    program_tree(&f, vec![]);
+    f.refresh();
+    f
+}
+
+fn program_tree(f: &Fx, extra: Vec<Value>) {
+    let t = |n: u64, title: &str, x: Value| {
+        let mut v = tree_issue(n, x);
+        v["title"] = json!(title);
+        v["labels"] = json!({"nodes": []});
+        v
+    };
+    let mut issues = vec![
+        t(12, "Checkout v2", json!({"subIssuesSummary": {"total": 5, "completed": 1}})),
+        t(13, "Address step", json!({"parent": {"number": 12}, "subIssuesSummary": {"total": 1, "completed": 0}})),
+        t(17, "Validation", json!({"parent": {"number": 13}})),
+        t(14, "Payment step", json!({"parent": {"number": 12}, "blockedBy": {"nodes": [dep(13)]}})),
+        t(15, "Order summary", json!({"parent": {"number": 12}})),
+        t(16, "Old", json!({"parent": {"number": 12}, "state": "CLOSED"})),
+    ];
+    issues.extend(extra);
+    answer_tree(f, issues, vec![]);
+}
+
+fn plan(f: &Fx, roots: Value, grouping: &str, opts: Value) -> Value {
+    f.rt.program_plan(&roots, grouping, &opts).unwrap()
+}
+
+fn feats(v: &Value) -> Vec<(String, Vec<String>)> {
+    v["program"]["features"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| {
+            (
+                f["slug"].as_str().unwrap().to_string(),
+                f["items"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|i| i.as_str().unwrap().rsplit('#').next().unwrap().to_string())
+                    .collect(),
+            )
+        })
+        .collect()
+}
+
+const ROOT: &str = "gh:acme/shop#12";
+
+#[test]
+fn the_planner_groups_orders_and_flags() {
+    let f = program_fixture();
+    let v = plan(&f, json!([ROOT]), "child", json!({}));
+    let p = &v["program"];
+    assert_eq!(
+        feats(&v),
+        [
+            ("address-step".to_string(), vec!["13".to_string(), "17".into()]),
+            ("payment-step".into(), vec!["14".into()]),
+            ("order-summary".into(), vec!["15".into()]),
+        ]
+    );
+    assert_eq!(
+        (p["title"].as_str(), p["root_ref"].as_str(), p["status"].as_str()),
+        (Some("Checkout v2"), Some("#12"), Some("draft"))
+    );
+    assert_eq!(
+        (p["max_parallel"].as_u64(), p["grouping"].as_str(), p["sequential"].as_bool()),
+        (Some(2), Some("child"), Some(false))
+    );
+    // #13 blocks #14 in GitHub: 2 waits for 1; the others are first.
+    assert_eq!(
+        p["edges"],
+        json!([{"from": "pf-1", "to": "pf-2", "source": "tracker", "items": ["gh:acme/shop#13", "gh:acme/shop#14"]}])
+    );
+    assert_eq!(p["features"][1]["depends_on"], json!(["pf-1"]));
+    assert_eq!(p["features"][0]["depends_on"], json!([]));
+    // The user's own values: solo (no team), the brief carries the scope, the base is the project's.
+    assert_eq!((p["features"][0]["mode"].as_str(), p["features"][0]["base"].as_str()), (Some("solo"), Some("main")));
+    assert!(p["features"][0]["brief"].as_str().unwrap().contains("- [ ] #17 Validation"));
+    assert!(p["features"][0]["estimate"]["high_pp"].as_f64().unwrap() > 0.0);
+    assert_eq!(p["left_out"]["closed"], json!(["gh:acme/shop#16"]));
+    let kinds: Vec<&str> = v["issues"].as_array().unwrap().iter().map(|i| i["kind"].as_str().unwrap()).collect();
+    assert_eq!(kinds, ["closed"], "advisory only: {v}");
+    assert!(v["issues"].as_array().unwrap().iter().all(|i| i["blocking"] == false));
+    // Other groupings.
+    let g = plan(&f, json!([ROOT]), "grandchild", json!({}));
+    assert_eq!(
+        feats(&g).iter().map(|f| f.1.clone()).collect::<Vec<_>>(),
+        [vec!["17".to_string()], vec!["14".into()], vec!["15".into()]]
+    );
+    let s = plan(&f, json!([ROOT]), "single", json!({}));
+    assert_eq!(feats(&s).len(), 1);
+    assert_eq!(feats(&s)[0].1, ["13", "17", "14", "15"]);
+    // One after the other: a chain in tree order, one at a time.
+    let q = plan(&f, json!([ROOT]), "child", json!({"sequential": true, "max_parallel": 4}));
+    assert_eq!(q["program"]["max_parallel"], 1);
+    assert_eq!(
+        q["program"]["edges"].as_array().unwrap().iter().map(|e| e["source"].as_str().unwrap()).collect::<Vec<_>>(),
+        ["sequential", "sequential"]
+    );
+    assert_eq!(q["program"]["features"][2]["depends_on"], json!(["pf-2"]));
+    // A cut stays.
+    let c = plan(&f, json!([ROOT]), "child", json!({"cut": [["pf-1", "pf-2"]]}));
+    assert_eq!(c["program"]["edges"], json!([]));
+    assert_eq!(c["program"]["cut"], json!([["pf-1", "pf-2"]]));
+    // Several siblings: a title from their parent; non-siblings are refused.
+    let m = plan(&f, json!(["gh:acme/shop#13", "gh:acme/shop#14"]), "child", json!({}));
+    assert_eq!(
+        (m["program"]["title"].as_str(), m["program"]["root_ref"].as_str()),
+        (Some("Checkout v2 · 2 selected"), Some("#12"))
+    );
+    assert!(f.rt.program_plan(&json!(["gh:acme/shop#17", "gh:acme/shop#14"]), "child", &json!({})).is_err());
+    assert!(f.rt.program_plan(&json!([]), "child", &json!({})).is_err());
+    assert!(f.rt.program_plan(&json!([ROOT]), "diagonal", &json!({})).is_err());
+}
+
+#[test]
+fn a_cycle_blocks_and_names_its_edges() {
+    let f = fx();
+    github_tracker(&f);
+    let t = |n: u64, title: &str, x: Value| {
+        let mut v = tree_issue(n, x);
+        v["title"] = json!(title);
+        v
+    };
+    answer_tree(
+        &f,
+        vec![
+            t(1, "Epic", json!({"subIssuesSummary": {"total": 2, "completed": 0}})),
+            t(2, "Two", json!({"parent": {"number": 1}, "blockedBy": {"nodes": [dep(3)]}})),
+            t(3, "Three", json!({"parent": {"number": 1}, "blockedBy": {"nodes": [dep(2)]}})),
+        ],
+        vec![],
+    );
+    f.refresh();
+    let v = plan(&f, json!(["gh:acme/shop#1"]), "child", json!({}));
+    let c = v["issues"].as_array().unwrap().iter().find(|i| i["kind"] == "cycle").unwrap();
+    assert_eq!(c["blocking"], true);
+    assert_eq!(c["features"].as_array().unwrap().len(), 2);
+    assert_eq!(c["edges"].as_array().unwrap().len(), 2);
+    assert!(c["message"].as_str().unwrap().contains("wait on each other"));
+    // It refuses to start; cutting one edge fixes it.
+    let r = f.rt.program_start(&v["program"]).unwrap();
+    assert!(r["issues"].as_array().unwrap().iter().any(|i| i["kind"] == "cycle"));
+    assert!(f.rt.db.programs(None).unwrap().is_empty(), "nothing stored");
+    let mut d = v["program"].clone();
+    d["cut"] = json!([["pf-2", "pf-1"]]);
+    let ok = f.rt.program_start(&d).unwrap();
+    assert!(ok["program"]["id"].is_string(), "{ok}");
+}
+
+/// Starts a feature without a terminal: a run in the store, the first item marked.
+fn fake_start(f: &Fx) {
+    *crate::intake::lock(&f.rt.intake.test_starter) = Some(Box::new(|rt, feat| {
+        if feat.slug == "boom" {
+            anyhow::bail!("no team named boom");
+        }
+        let id = format!("run-{}", feat.slug);
+        let fid = format!("f-{}", feat.slug);
+        rt.db.upsert_feature(&orch_store::Feature {
+            id: fid.clone(),
+            project_id: rt.db.projects(false)?[0].id.clone(),
+            slug: feat.slug.clone(),
+            title: feat.title.clone(),
+            brief: String::new(),
+            base: "main".into(),
+            integration_worktree: None,
+            allocation: None,
+            created_at_ms: 1,
+            archived: false,
+        })?;
+        rt.db.upsert_run(&orch_store::TeamRun {
+            id: id.clone(),
+            team_id: "t".into(),
+            team_scope: Default::default(),
+            team_version: 1,
+            feature_id: fid,
+            status: orch_team::RunState::Executing,
+            resume_status: None,
+            pr_url: None,
+            started_at_ms: 1,
+            ended_at_ms: None,
+            pr_number: None,
+            pr: None,
+        })?;
+        let first = rt.db.work_node_rows(&feat.items[0])?.remove(0);
+        rt.db.intake_mark_started(first.id, "run", &id)?;
+        Ok(("run", id))
+    }));
+}
+
+fn set_run(f: &Fx, slug: &str, status: orch_team::RunState) {
+    let mut run = f.rt.db.run(&format!("run-{slug}")).unwrap().unwrap();
+    run.status = status;
+    run.ended_at_ms = Some(9);
+    f.rt.db.upsert_run(&run).unwrap();
+}
+
+fn state(f: &Fx, id: &str) -> Vec<(String, String)> {
+    let p = f.rt.program(id).unwrap();
+    p["features"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|x| (x["slug"].as_str().unwrap().into(), x["state"].as_str().unwrap().into()))
+        .collect()
+}
+
+fn started(f: &Fx) -> String {
+    let v = plan(f, json!([ROOT]), "child", json!({}));
+    let r = f.rt.program_start(&v["program"]).unwrap();
+    r["program"]["id"].as_str().unwrap().to_string()
+}
+
+fn s(a: &str, b: &str) -> (String, String) {
+    (a.to_string(), b.to_string())
+}
+
+#[test]
+fn start_validates_the_draft_keeps_the_users_edits_and_runs_in_dependency_order() {
+    let f = program_fixture();
+    fake_start(&f);
+    let mut d = plan(&f, json!([ROOT]), "child", json!({}))["program"].clone();
+    // The user's edits: a slug, a brief, a mode / team, a skip.
+    d["features"][0]["slug"] = json!("addr");
+    d["features"][0]["brief"] = json!("my brief");
+    d["features"][2]["skip"] = json!(true);
+    // Invalid values are refused with their field.
+    let mut bad = d.clone();
+    bad["features"][1]["slug"] = json!("addr");
+    assert!(f.rt.program_start(&bad).unwrap_err().to_string().contains("\"field\":\"slug\""));
+    bad["features"][1]["slug"] = json!("Bad Slug");
+    assert!(f.rt.program_start(&bad).is_err());
+    // Team mode with no team is blocking.
+    let mut noteam = d.clone();
+    noteam["features"][1]["mode"] = json!("team");
+    noteam["features"][1]["team"] = Value::Null;
+    let r = f.rt.program_start(&noteam).unwrap();
+    assert!(r["issues"].as_array().unwrap().iter().any(|i| i["kind"] == "no_team" && i["blocking"] == true), "{r}");
+    // A closed item meanwhile is left out of its feature, not an error.
+    let r = f.rt.program_start(&d).unwrap();
+    let p = &r["program"];
+    let id = p["id"].as_str().unwrap().to_string();
+    assert_eq!(p["status"], "running");
+    assert_eq!(p["features"][0]["slug"], "addr", "the user's slug is kept");
+    assert_eq!(p["features"][0]["brief"], "my brief", "and the edited brief");
+    // pf-1 runs at once (no dependency), pf-2 waits for it, pf-3 is skipped.
+    assert_eq!(state(&f, &id), [s("addr", "running"), s("payment-step", "waiting"), s("order-summary", "skipped")]);
+    assert_eq!(f.rt.program(&id).unwrap()["features"][1]["depends_on"], json!(["pf-1"]));
+    // Every item of the first feature is linked to its run; history says the program queued them.
+    for n in [13, 17] {
+        let r = f.rt.db.work_node_rows(&format!("gh:acme/shop#{n}")).unwrap().remove(0);
+        assert_eq!((r.state, r.started_ref.as_deref()), (IntakeState::Started, Some("run-addr")), "#{n}");
+    }
+    let h = f.rt.db.work_history(&f.project.id, "gh:acme/shop#17").unwrap();
+    assert_eq!(h.iter().map(|e| e.what.as_str()).collect::<Vec<_>>(), ["program_queued", "started"]);
+    assert_eq!(h[0].program.as_ref().unwrap()["title"], "Checkout v2");
+    // It merges: the dependent starts, then everything done closes the program with a decision.
+    set_run(&f, "addr", orch_team::RunState::Done);
+    assert_eq!(state(&f, &id), [s("addr", "merged"), s("payment-step", "running"), s("order-summary", "skipped")]);
+    set_run(&f, "payment-step", orch_team::RunState::Done);
+    let done = f.rt.program(&id).unwrap();
+    assert_eq!(done["status"], "done");
+    assert!(done["done_at_ms"].is_u64());
+    let ds: Vec<Value> =
+        f.rt.store.read(|s| s.inbox.iter().filter(|i| i.kind == "program").map(|i| i.payload.clone()).collect());
+    assert_eq!(ds.iter().map(|d| d["kind"].as_str().unwrap()).collect::<Vec<_>>(), ["program_done"]);
+    // Idempotent.
+    f.rt.programs_tick();
+    assert_eq!(f.rt.program(&id).unwrap()["status"], "done");
+    // The same root cannot start again while running: a fresh program is fine once done.
+    assert!(f.rt.program_plan(&json!([ROOT]), "child", &json!({})).is_ok());
+}
+
+#[test]
+fn at_most_max_parallel_run_pause_skip_cancel_and_a_failed_feature_waits_the_others() {
+    let f = program_fixture();
+    fake_start(&f);
+    let mut d = plan(&f, json!([ROOT]), "child", json!({"max_parallel": 1}))["program"].clone();
+    d["features"][1]["depends_on"] = json!([]);
+    d["edges"] = json!([]);
+    d["features"][0]["slug"] = json!("boom");
+    let id = f.rt.program_start(&d).unwrap()["program"]["id"].as_str().unwrap().to_string();
+    // One at once: the first fails to start (its own error), the next one takes its place.
+    let p = f.rt.program(&id).unwrap();
+    assert_eq!(p["features"][0]["state"], "failed");
+    assert_eq!(p["features"][0]["error"], "no team named boom");
+    assert_eq!(state(&f, &id)[1..], [s("payment-step", "running"), s("order-summary", "planned")]);
+    assert_eq!(p["status"], "running", "a failed feature does not stop the program");
+    let failed: Vec<Value> =
+        f.rt.store.read(|s| s.inbox.iter().filter(|i| i.kind == "program").map(|i| i.payload.clone()).collect());
+    assert_eq!(failed.iter().map(|d| d["kind"].as_str().unwrap()).collect::<Vec<_>>(), ["program_feature_failed"]);
+    f.rt.programs_tick();
+    assert_eq!(failed.len(), 1, "posted once");
+    // The decision: open the feature, or skip it (its dependents stop waiting).
+    let n = f.rt.store.read(|s| s.inbox.iter().find(|i| i.kind == "program").map(|i| i.id).unwrap());
+    assert_eq!(f.rt.program_decision_act(n, "open").unwrap()["open"], "feature");
+    assert_eq!(f.rt.program_decision_act(n, "skip").unwrap()["effect"], "skipped");
+    assert_eq!(f.rt.program(&id).unwrap()["features"][0]["state"], "skipped");
+    // Pause: nothing new starts while paused; running ones go on.
+    f.rt.program_update(&id, &json!({"pause": true})).unwrap();
+    set_run(&f, "payment-step", orch_team::RunState::Done);
+    assert_eq!(state(&f, &id)[1..], [s("payment-step", "merged"), s("order-summary", "planned")]);
+    assert_eq!(f.rt.program(&id).unwrap()["status"], "paused");
+    f.rt.program_update(&id, &json!({"resume": true})).unwrap();
+    assert_eq!(state(&f, &id)[2], s("order-summary", "running"));
+    // Only a feature that has not started can be skipped; max_parallel is clamped; a cancel keeps the running ones.
+    assert!(f.rt.program_update(&id, &json!({"skip": "pf-2"})).is_err());
+    assert_eq!(f.rt.program_update(&id, &json!({"max_parallel": 9})).unwrap()["max_parallel"], 5);
+    let c = f.rt.program_update(&id, &json!({"cancel": true})).unwrap();
+    assert_eq!(c["status"], "cancelled");
+    assert_eq!(c["features"][2]["state"], "running", "it goes on as a normal feature");
+    assert!(f.rt.program_update(&id, &json!({"pause": true})).is_err(), "over");
+    assert!(f.rt.program_update("prg-nope", &json!({"pause": true})).is_err());
+}
+
+#[test]
+fn now_carries_programs_whole_then_as_deltas_and_the_items_leave_the_lane() {
+    let f = program_fixture();
+    fake_start(&f);
+    assert_eq!(f.rt.programs_snapshot(), json!([]));
+    assert!(f.rt.programs_delta().is_none());
+    let id = started(&f);
+    let d = f.rt.programs_delta().unwrap();
+    let row = &d["upsert"][0];
+    assert_eq!(
+        (row["id"].as_str(), row["status"].as_str(), row["root_ref"].as_str()),
+        (Some(id.as_str()), Some("running"), Some("#12"))
+    );
+    assert_eq!(
+        row["counts"],
+        json!({"merged": 0, "running": 2, "pr": 0, "waiting": 1, "queued": 0, "failed": 0, "skipped": 0})
+    );
+    assert_eq!(row["features"][1]["waiting_on"], json!(["address-step"]));
+    assert_eq!(row["features"][0]["state"], "running");
+    assert!(f.rt.programs_delta().is_none(), "nothing moved");
+    set_run(&f, "address-step", orch_team::RunState::Done);
+    f.rt.programs_tick();
+    let d = f.rt.programs_delta().unwrap();
+    assert_eq!(d["upsert"][0]["counts"]["merged"], 1);
+    // The lane shows no item of a program in progress.
+    assert!(f.items().iter().all(|i| i["project"] != f.project.id.as_str()) || f.refs().is_empty(), "{:?}", f.refs());
+    // Done: removed from the list, and an outcome line says so.
+    set_run(&f, "payment-step", orch_team::RunState::Done);
+    set_run(&f, "order-summary", orch_team::RunState::Done);
+    f.rt.programs_tick();
+    let d = f.rt.programs_delta().unwrap();
+    assert_eq!((d["upsert"].as_array().unwrap().len(), d["remove"].as_array().unwrap().len()), (0, 1));
+    f.rt.db.flush().unwrap();
+    let evs = f.rt.db.events(0, None, Some("program.done"), 5).unwrap();
+    assert_eq!(evs.len(), 1);
+    let tz = governor::jiff::tz::TimeZone::UTC;
+    let o = crate::digest::outcome(&evs[0], None, &crate::digest::Names::default(), 0, &tz).unwrap();
+    assert_eq!((o.kind, o.text.as_str()), ("program", "Program Checkout v2 done · 3 merged"));
+}
+
+#[test]
+fn work_shows_program_states_roll_ups_and_roots_and_origins_carry_the_program() {
+    let f = program_fixture();
+    fake_start(&f);
+    let id = started(&f);
+    let scope = json!({"projects": [f.project.id]});
+    let kids = f.rt.work_tree(&scope, &json!([ROOT]), &json!({"state": "all"}), None).unwrap();
+    let app = |n: u64| {
+        kids["nodes"].as_array().unwrap().iter().find(|x| x["id"] == format!("gh:acme/shop#{n}")).unwrap().clone()
+    };
+    assert_eq!(app(13)["app"]["state"], "running");
+    // #14 waits for address-step in the program; #15 runs too (at most 2 at once).
+    assert_eq!(
+        app(14)["app"],
+        json!({"state": "queued", "program": {"id": id, "title": "Checkout v2"}, "waiting_on": ["address-step"]})
+    );
+    // The root is the program's, with its progress; its action opens the program.
+    let roots = f.rt.work_tree(&scope, &Value::Null, &json!({}), None).unwrap();
+    let r = roots["nodes"].as_array().unwrap().iter().find(|x| x["id"] == ROOT).unwrap();
+    assert_eq!(
+        r["app"],
+        json!({"state": "program_root", "program": {"id": id, "title": "Checkout v2"}, "merged": 0, "total": 3})
+    );
+    assert_eq!(r["actions"]["program"], json!({"open_program": id}));
+    // The roll-up counts the descendants by the word list.
+    assert_eq!(
+        r["rollup"],
+        json!({"running": 3, "pr": 0, "waiting": 1, "queued": 0, "merged": 0, "failed": 0, "skipped": 0})
+    );
+    // Origins: the run, its source and the program it belongs to.
+    let o = f.rt.intake_origins();
+    assert_eq!(
+        o.src_runs["run-address-step"]["program"],
+        json!({"id": id, "title": "Checkout v2", "index": 1, "total": 3})
+    );
+    assert_eq!(o.runs["run-address-step"]["program"]["index"], 1);
+    assert_eq!(o.src_runs["run-address-step"]["node"], "gh:acme/shop#13");
+    let tags = f.rt.program_of_starts();
+    assert_eq!(tags["run-order-summary"].0["index"], 3);
+}
+
+#[test]
+fn upstream_changes_become_decisions_for_the_program() {
+    let f = program_fixture();
+    fake_start(&f);
+    let id = started(&f);
+    let decisions = |f: &Fx| -> Vec<(String, String)> {
+        f.rt.store.read(|s| {
+            s.inbox
+                .iter()
+                .filter(|i| i.kind == "program" && i.open())
+                .map(|i| {
+                    (i.payload["kind"].as_str().unwrap().to_string(), i.payload["key"].as_str().unwrap().to_string())
+                })
+                .collect()
+        })
+    };
+    assert!(decisions(&f).is_empty());
+    let t = |n: u64, title: &str, x: Value| {
+        let mut v = tree_issue(n, x);
+        v["title"] = json!(title);
+        v["labels"] = json!({"nodes": []});
+        v
+    };
+    // A child is added under the root (#18), #15 is closed, #15 is now blocked by #14.
+    program_tree(&f, vec![]);
+    let mut issues = vec![
+        t(12, "Checkout v2", json!({"subIssuesSummary": {"total": 6, "completed": 1}})),
+        t(13, "Address step", json!({"parent": {"number": 12}})),
+        t(
+            14,
+            "Payment step",
+            json!({"parent": {"number": 12}, "state": "CLOSED", "blockedBy": {"nodes": [dep(13), dep(15)]}}),
+        ),
+        t(15, "Order summary", json!({"parent": {"number": 12}})),
+        t(18, "Gift cards", json!({"parent": {"number": 12}})),
+    ];
+    issues.push(t(17, "Validation", json!({"parent": {"number": 13}})));
+    answer_tree(&f, issues, vec![]);
+    f.refresh();
+    let d = decisions(&f);
+    assert!(d.contains(&("program_new_item".into(), "new:gh:acme/shop#18".into())), "{d:?}");
+    assert!(d.contains(&("program_item_closed".into(), "closed:pf-2".into())), "{d:?}");
+    assert!(d.contains(&("program_dependency_added".into(), "dep:pf-3>pf-2".into())), "{d:?}");
+    let p = f.rt.program(&id).unwrap();
+    assert_eq!(p["new_items"], json!(["gh:acme/shop#18"]));
+    assert!(p["features"][1]["flags"].as_array().unwrap().contains(&json!("closed_upstream")));
+    assert!(p["features"][1]["flags"].as_array().unwrap().contains(&json!("new_dependency")));
+    // A second refresh posts nothing new.
+    f.refresh();
+    assert_eq!(decisions(&f).len(), d.len());
+    // Add it: the card says where to go; the edit adds a feature and closes the card.
+    let n =
+        f.rt.store.read(|s| s.inbox.iter().find(|i| i.payload["key"] == "new:gh:acme/shop#18").map(|i| i.id).unwrap());
+    assert_eq!(f.rt.program_decision_act(n, "add").unwrap()["open"], "program_add");
+    let p =
+        f.rt.program_update(&id, &json!({"add_item": "gh:acme/shop#18", "mode": "solo", "after": ["pf-1"]})).unwrap();
+    assert_eq!(p["features"].as_array().unwrap().len(), 4);
+    assert_eq!(p["features"][3]["slug"], "gift-cards");
+    assert_eq!(p["features"][3]["depends_on"], json!(["pf-1"]));
+    assert!(p["new_items"].as_array().unwrap().is_empty());
+    assert!(!decisions(&f).contains(&("program_new_item".into(), "new:gh:acme/shop#18".into())));
+    // Skip the closed one on the card; ignore leaves an item out for good.
+    let n = f.rt.store.read(|s| s.inbox.iter().find(|i| i.payload["key"] == "closed:pf-2").map(|i| i.id).unwrap());
+    f.rt.program_decision_act(n, "skip").unwrap();
+    assert_eq!(f.rt.program(&id).unwrap()["features"][1]["state"], "skipped");
+}

@@ -117,7 +117,7 @@ pub fn kebab(s: &str, max: usize) -> String {
 }
 
 /// `base`, else `base-2`, `base-3`… (within `max`) while `taken`.
-fn unique(base: &str, max: usize, taken: impl Fn(&str) -> bool) -> String {
+pub(crate) fn unique(base: &str, max: usize, taken: impl Fn(&str) -> bool) -> String {
     let base = if base.is_empty() { "work" } else { base };
     if !taken(base) {
         return base.to_string();
@@ -154,7 +154,7 @@ impl Runtime {
     }
 
     /// A solo session name for `title`, free among the agents.
-    fn intake_agent_name(&self, title: &str) -> String {
+    pub(crate) fn intake_agent_name(&self, title: &str) -> String {
         let ids: BTreeSet<String> = self.store.read(|s| s.agents.keys().cloned().collect());
         unique(&kebab(title, 30), 30, |s| ids.contains(s) || crate::overwatch::refuse_reserved(s).is_err())
     }
@@ -475,6 +475,7 @@ impl Runtime {
         let by_node: std::collections::HashMap<(&str, &str), &orch_store::WorkIndex> =
             index.iter().map(|n| ((n.project_id.as_str(), n.node_id.as_str()), n)).collect();
         let mut trackers: std::collections::HashMap<String, orch_store::TrackerSettings> = Default::default();
+        let programs = self.program_of_starts();
         for r in started {
             let (Some(kind), Some(reference)) = (r.started_kind.clone(), r.started_ref.clone()) else { continue };
             let v = if r.source == INTAKE_BRIEF_SOURCE {
@@ -483,21 +484,22 @@ impl Runtime {
                 json!({"kind": "intake", "item": format!("it_{}", r.id), "source": r.source, "ref": r.reference,
                        "url": r.url})
             };
-            let source = (r.source != INTAKE_BRIEF_SOURCE).then(|| {
-                let (mut chain, mut up) = (vec![], r.parent_id.as_deref());
-                while let Some(n) = up.and_then(|p| by_node.get(&(r.project_id.as_str(), p))) {
-                    if chain.len() > 50 {
-                        break;
-                    }
-                    chain.push(json!({"id": n.node_id, "ref": n.reference, "title": n.title}));
-                    up = n.parent_id.as_deref();
-                }
-                chain.reverse();
-                let t = trackers
-                    .entry(r.project_id.clone())
-                    .or_insert_with(|| self.db.tracker(&r.project_id).unwrap_or_default());
-                super::work::source_json(&r, chain, t)
-            });
+            let (tag, first) = programs.get(&reference).cloned().map_or((None, None), |(t, f)| (Some(t), Some(f)));
+            let mut v = v;
+            if let Some(t) = &tag {
+                v["program"] = t.clone();
+            }
+            // (the source of a program's start is the feature's first item, not each item it runs)
+            let source =
+                (r.source != INTAKE_BRIEF_SOURCE && first.as_ref().is_none_or(|f| *f == r.node_id)).then(|| {
+                    let chain = super::work::crumbs(&by_node, &r.project_id, r.parent_id.as_deref());
+                    let t = trackers
+                        .entry(r.project_id.clone())
+                        .or_insert_with(|| self.db.tracker(&r.project_id).unwrap_or_default());
+                    let mut s = super::work::source_json(&r, chain, t);
+                    s["program"] = tag.clone().unwrap_or(Value::Null);
+                    s
+                });
             match kind.as_str() {
                 "run" => {
                     out.src_runs.extend(source.map(|s| (reference.clone(), s)));

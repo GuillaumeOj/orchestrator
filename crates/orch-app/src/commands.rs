@@ -691,6 +691,28 @@ pub async fn brief_prefill(core: CoreState<'_>, decision: String, mode: Option<S
     blocking(core, move |c| c.runtime()?.brief_prefill(&decision, mode.as_deref())).await
 }
 
+// ---- implement-improve-intake B4: programs (api-contract §4)
+
+#[tauri::command]
+pub async fn program_plan(core: CoreState<'_>, roots: Value, grouping: String, opts: Option<Value>) -> Res<Value> {
+    blocking(core, move |c| c.runtime()?.program_plan(&roots, &grouping, &opts.unwrap_or(Value::Null))).await
+}
+
+#[tauri::command]
+pub async fn program_start(core: CoreState<'_>, program: Value) -> Res<Value> {
+    blocking(core, move |c| c.runtime()?.program_start(&program)).await
+}
+
+#[tauri::command]
+pub async fn program_update(core: CoreState<'_>, id: String, patch: Value) -> Res<Value> {
+    blocking(core, move |c| c.runtime()?.program_update(&id, &patch)).await
+}
+
+#[tauri::command]
+pub async fn program(core: CoreState<'_>, id: String) -> Res<Value> {
+    blocking(core, move |c| c.runtime()?.program(&id)).await
+}
+
 #[tauri::command]
 pub async fn intake_source(core: CoreState<'_>, project: String) -> Res<Value> {
     blocking(core, move |c| c.runtime()?.intake_source(&project)).await

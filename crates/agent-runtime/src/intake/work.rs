@@ -84,7 +84,10 @@ impl WorkFilter {
     }
 }
 
-fn is_item(kind: &str) -> bool {
+/// Projects whose tree could not be read, with why.
+type Failed = Vec<(String, String)>;
+
+pub(crate) fn is_item(kind: &str) -> bool {
     matches!(kind, "issue" | "local")
 }
 
@@ -103,29 +106,41 @@ enum Class {
     Running,
     Pr,
     Merged,
+    /// In a program, waiting for a dependency / held by the Governor, failed, skipped.
+    Waiting,
+    Queued,
+    Failed,
+    Skipped,
 }
 
 #[derive(Clone, Default)]
 struct Roll {
     running: u32,
     pr: u32,
+    waiting: u32,
+    queued: u32,
     merged: u32,
+    failed: u32,
+    skipped: u32,
 }
 
 impl Roll {
     fn json(&self) -> Value {
-        if self.running + self.pr + self.merged == 0 {
+        if self.running + self.pr + self.waiting + self.queued + self.merged + self.failed + self.skipped == 0 {
             return Value::Null;
         }
-        // (waiting, queued, failed, skipped come with the programs)
-        json!({"running": self.running, "pr": self.pr, "waiting": 0, "queued": 0, "merged": self.merged,
-               "failed": 0, "skipped": 0})
+        json!({"running": self.running, "pr": self.pr, "waiting": self.waiting, "queued": self.queued,
+               "merged": self.merged, "failed": self.failed, "skipped": self.skipped})
     }
 
     fn add(&mut self, o: &Roll) {
         self.running += o.running;
         self.pr += o.pr;
+        self.waiting += o.waiting;
+        self.queued += o.queued;
         self.merged += o.merged;
+        self.failed += o.failed;
+        self.skipped += o.skipped;
     }
 }
 
@@ -179,6 +194,7 @@ impl Ctx {
             rows,
         };
         ctx.load_apps(rt);
+        ctx.overlay_programs(rt);
         ctx.load_rolls();
         Ok(ctx)
     }
@@ -238,6 +254,48 @@ impl Ctx {
         }
     }
 
+    /// What the programs of the project say of their items: waiting / queued in a
+    /// program, failed, skipped, and the roots that are a program's.
+    fn overlay_programs(&mut self, rt: &Runtime) {
+        for v in rt.db.programs(Some(&self.project.id)).unwrap_or_default() {
+            let Ok(p) = serde_json::from_value::<crate::program::Program>(v) else { continue };
+            if !matches!(p.status.as_str(), "running" | "paused") {
+                continue;
+            }
+            let by = json!({"id": p.id, "title": p.title});
+            let slug = |k: &str| p.features.iter().find(|f| f.key == k).map_or(k.to_string(), |f| f.slug.clone());
+            let merged = p.features.iter().filter(|f| f.state == "merged").count();
+            let total = p.features.iter().filter(|f| !f.skip).count();
+            for r in &p.root {
+                if let Some(i) = self.index(r) {
+                    self.apps[i] = (
+                        json!({"state": "program_root", "program": by, "merged": merged, "total": total}),
+                        Class::None,
+                    );
+                }
+            }
+            for f in &p.features {
+                for id in &f.items {
+                    let Some(i) = self.index(id) else { continue };
+                    if self.apps[i].1 != Class::None || self.apps[i].0["state"] != "none" {
+                        continue;
+                    }
+                    let waiting: Vec<String> =
+                        if f.state == "waiting" { f.depends_on.iter().map(|k| slug(k)).collect() } else { vec![] };
+                    self.apps[i] = match f.state.as_str() {
+                        "waiting" | "planned" => (
+                            json!({"state": "queued", "program": by, "waiting_on": waiting}),
+                            if f.state == "waiting" { Class::Waiting } else { Class::Queued },
+                        ),
+                        "failed" => (self.apps[i].0.clone(), Class::Failed),
+                        "skipped" => (self.apps[i].0.clone(), Class::Skipped),
+                        _ => continue,
+                    };
+                }
+            }
+        }
+    }
+
     /// Roll-ups over the descendants (not the node itself): running, PR open, merged.
     fn load_rolls(&mut self) {
         self.rolls = vec![Roll::default(); self.rows.len()];
@@ -252,6 +310,10 @@ impl Ctx {
                         Class::Running => total.running += 1,
                         Class::Pr => total.pr += 1,
                         Class::Merged => total.merged += 1,
+                        Class::Waiting => total.waiting += 1,
+                        Class::Queued => total.queued += 1,
+                        Class::Failed => total.failed += 1,
+                        Class::Skipped => total.skipped += 1,
                         Class::None => {}
                     }
                 }
@@ -264,11 +326,22 @@ impl Ctx {
         }
     }
 
+    /// The feature (or session) a node runs as, from its app state.
+    pub(crate) fn app_feature(&self, i: usize) -> Option<String> {
+        let a = &self.apps[i].0;
+        a["feature"].as_str().or_else(|| a["name"].as_str()).map(str::to_string)
+    }
+
+    /// The children of node `i`, in tree order.
+    pub(crate) fn kids_of(&self, i: usize) -> &[usize] {
+        self.kids.get(&Some(i)).map_or(&[][..], Vec::as_slice)
+    }
+
     pub(crate) fn index(&self, node: &str) -> Option<usize> {
         self.by_id.get(node).copied()
     }
 
-    fn open(&self, i: usize) -> bool {
+    pub(crate) fn open(&self, i: usize) -> bool {
         is_open(&self.rows[i].meta)
     }
 
@@ -277,7 +350,7 @@ impl Ctx {
         self.settings.is_ready(&r.kind, &r.meta)
     }
 
-    fn app_state(&self, i: usize) -> &str {
+    pub(crate) fn app_state(&self, i: usize) -> &str {
         self.apps[i].0["state"].as_str().unwrap_or("none")
     }
 
@@ -349,7 +422,9 @@ impl Ctx {
             }
         };
         let team = if self.can_team { json!("ok") } else { json!({"disabled": "This project has no team yet"}) };
-        let program = if kids_total == 0 || busy {
+        let program = if let Some(id) = self.apps[i].0["program"]["id"].as_str().filter(|_| state == "program_root") {
+            json!({"open_program": id})
+        } else if kids_total == 0 || busy {
             json!("hidden")
         } else if kids_open == 0 {
             json!({"disabled": "No open sub-issues"})
@@ -476,6 +551,24 @@ impl Ctx {
     }
 }
 
+/// The ancestors of a node (root first, the project row left out) from the trees' shape.
+pub(crate) fn crumbs(
+    by_node: &HashMap<(&str, &str), &orch_store::WorkIndex>,
+    project: &str,
+    parent: Option<&str>,
+) -> Vec<Value> {
+    let (mut chain, mut up) = (vec![], parent);
+    while let Some(n) = up.and_then(|p| by_node.get(&(project, p))) {
+        if chain.len() > 50 {
+            break;
+        }
+        chain.push(json!({"id": n.node_id, "ref": n.reference, "title": n.title}));
+        up = n.parent_id.as_deref();
+    }
+    chain.reverse();
+    chain
+}
+
 /// `run.source` of a start from `r` (contract §2, F23): where the run or session came from.
 pub(crate) fn source_json(r: &IntakeRow, breadcrumb: Vec<Value>, t: &TrackerSettings) -> Value {
     let write_back = t.write_back.enabled && t.tracker.kind() != "local";
@@ -529,8 +622,21 @@ impl Runtime {
         Ok(if ids.is_empty() { all } else { all.into_iter().filter(|p| ids.contains(&p.id)).collect() })
     }
 
+    /// The contexts of the projects in scope; one that cannot be read (its settings are broken…) is
+    /// skipped and reported, never failing the others'.
     fn work_ctxs(&self, scope: &Value) -> Result<Vec<Ctx>> {
-        self.work_projects(scope)?.iter().map(|p| Ctx::new(self, p)).collect()
+        Ok(self.work_ctxs_with_errors(scope)?.0)
+    }
+
+    fn work_ctxs_with_errors(&self, scope: &Value) -> Result<(Vec<Ctx>, Failed)> {
+        let (mut ok, mut failed) = (vec![], vec![]);
+        for p in self.work_projects(scope)? {
+            match Ctx::new(self, &p) {
+                Ok(c) => ok.push(c),
+                Err(e) => failed.push((p.id, format!("{e:#}"))),
+            }
+        }
+        Ok((ok, failed))
     }
 
     /// The project's source status (contract §2): refreshing / error / warning / offline, and what the cache holds.
@@ -619,7 +725,7 @@ impl Runtime {
     /// `work_tree`: the roots or the children of `parents`, from the cache.
     pub fn work_tree(&self, scope: &Value, parents: &Value, filter: &Value, after: Option<&str>) -> Result<Value> {
         let f = WorkFilter::parse(filter)?;
-        let mut ctxs = self.work_ctxs(scope)?;
+        let (mut ctxs, failed) = self.work_ctxs_with_errors(scope)?;
         let inflight = super::lock(&self.intake.sched).inflight.clone();
         let (mut nodes, mut more) = (vec![], serde_json::Map::new());
         let parent_ids: Option<Vec<String>> =
@@ -690,8 +796,16 @@ impl Runtime {
                 }
             }
         }
-        let status: serde_json::Map<String, Value> =
+        let mut status: serde_json::Map<String, Value> =
             ctxs.iter().map(|c| (c.project.id.clone(), self.work_status(c, &inflight))).collect();
+        for (id, why) in failed {
+            status.insert(
+                id,
+                json!({"status": "error", "error": {"code": "failed", "message": why}, "warning": null,
+                                     "offline": false, "refreshed_at_ms": null,
+                                     "counts": {"items": 0, "roots": 0, "ready": 0}}),
+            );
+        }
         Ok(json!({"nodes": nodes, "more": more, "status": status}))
     }
 
@@ -929,6 +1043,10 @@ impl Runtime {
         if let Ok(Some(r)) = self.db.work_node_of_run(run) {
             self.work_log(&r, what, None, None);
         }
+        // A merge may free a program's next feature.
+        if what == "merged" {
+            self.programs_tick();
+        }
     }
 
     /// An entry in the history of `r`: `feature` is the slug when known.
@@ -973,7 +1091,7 @@ fn write_back_line(t: &TrackerSettings, reference: &str) -> Option<String> {
 
 /// The brief of a start from a node (notes §5.2): where it is, its text, the open
 /// sub-issues as the scope and what it depends on. A backlog file is the file's text.
-fn work_brief(ctx: &Ctx, i: usize, r: &IntakeRow, kids: &[usize], p: &Project, rt: &Runtime) -> String {
+pub(crate) fn work_brief(ctx: &Ctx, i: usize, r: &IntakeRow, kids: &[usize], p: &Project, rt: &Runtime) -> String {
     if r.kind == "local" {
         return super::start::item_brief(r);
     }
