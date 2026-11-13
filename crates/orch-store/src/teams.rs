@@ -1424,6 +1424,7 @@ impl Store {
         F: FnOnce(&mut SettingsEdit) -> Result<R> + Send + 'static,
     {
         let topics = [orch_protocol::Topic::Project(id.to_string()), orch_protocol::Topic::Board(id.to_string())];
+        self.note([crate::intake::TOPIC]);
         let key = id.to_string();
         let (out, changed) = self.write(move |tx| {
             let row: Option<(String, bool)> = tx

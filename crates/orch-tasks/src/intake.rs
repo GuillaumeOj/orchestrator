@@ -679,13 +679,13 @@ pub fn linear_options(gql: &dyn Graphql, backoff: &Backoff, now: u64, team: &str
 
 const LINEAR_TEAMS_QUERY: &str = "query OrchTrackerTeams { teams(first: 100) { nodes { id key name } } }";
 
-const LINEAR_TRACKER_QUERY: &str = "query OrchTrackerOptions($keys: [String!]) { teams(first: 100, filter: { key: { in: $keys } }) { nodes { key \
+const LINEAR_TRACKER_QUERY: &str = "query OrchTrackerOptions($filter: TeamFilter) { teams(first: 100, filter: $filter) { nodes { key \
     labels(first: 100) { nodes { name } } states(first: 100) { nodes { id name type position } } \
     projects(first: 100) { nodes { id name } } } } }";
 
 /// `tracker_options` for Linear (contract §1, F17): the workspace's teams,
-/// and, for the `teams` (keys) already picked, their projects, labels and
-/// workflow states.
+/// and, for the `teams` (keys or ids, as the source filters take them)
+/// already picked, their projects, labels and workflow states.
 pub fn linear_tracker_options(gql: &dyn Graphql, backoff: &Backoff, now: u64, teams: &[String]) -> R<Value> {
     let d = backoff.call(now, || gql.call(LINEAR_TEAMS_QUERY, &json!({})))?;
     let all: Vec<Value> = d["teams"]["nodes"]
@@ -696,7 +696,12 @@ pub fn linear_tracker_options(gql: &dyn Graphql, backoff: &Backoff, now: u64, te
         .collect();
     let (mut projects, mut labels, mut states) = (vec![], vec![], vec![]);
     if !teams.is_empty() {
-        let d = backoff.call(now, || gql.call(LINEAR_TRACKER_QUERY, &json!({"keys": teams})))?;
+        let d = backoff.call(now, || {
+            gql.call(
+                LINEAR_TRACKER_QUERY,
+                &json!({"filter": {"or": teams.iter().map(|t| team_filter(t)).collect::<Vec<_>>()}}),
+            )
+        })?;
         for t in d["teams"]["nodes"].as_array().into_iter().flatten() {
             for p in t["projects"]["nodes"].as_array().into_iter().flatten() {
                 projects.push(json!({"id": p["id"], "name": p["name"], "team": t["key"]}));

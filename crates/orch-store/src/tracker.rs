@@ -325,6 +325,11 @@ impl TrackerSettings {
             ReadyFilter::Github { labels, .. } if labels.iter().any(|n| n.contains(',')) => {
                 return bad("labels", "a label name cannot contain a comma");
             }
+            ReadyFilter::Github { board_status: Some(_), .. }
+                if !matches!(&self.tracker, Tracker::Github { project_board: Some(_), .. }) =>
+            {
+                return bad("board_status", "pick a Projects board to filter by its Status");
+            }
             ReadyFilter::Linear { state_types, .. }
                 if state_types.iter().any(|t| !LINEAR_STATE_TYPES.contains(&t.as_str())) =>
             {
@@ -665,7 +670,7 @@ pub(crate) fn apply_tracker(tx: &rusqlite::Transaction, id: &str, new: &TrackerS
 }
 
 impl Store {
-    /// The project's tracker settings (default Local when the row is gone).
+    /// The project's tracker settings (an error when the project is gone).
     pub fn tracker(&self, project: &str) -> Result<TrackerSettings> {
         let id = project.to_string();
         self.read(move |c| match read_tracker(c, &id)? {

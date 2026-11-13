@@ -72,7 +72,12 @@ impl Runtime {
         let asked = self
             .intake_repo(p, repo.as_deref())
             .and_then(|r| src::github_options(self.gh_in(p).as_ref(), &r))
-            .map(|o| o["labels"].as_array().is_some_and(|l| l.iter().any(|n| n == "ready")));
+            .map(|o| {
+                // GitHub matches label names without regard to case.
+                o["labels"]
+                    .as_array()
+                    .is_some_and(|l| l.iter().any(|n| n.as_str().is_some_and(|n| n.eq_ignore_ascii_case("ready"))))
+            });
         if let Ok(has) = asked
             && self.db.resolve_tracker_ready(&p.id, has).is_ok()
             && !has
