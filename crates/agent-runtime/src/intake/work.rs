@@ -158,6 +158,8 @@ pub(crate) struct Ctx {
     team: HashMap<usize, Vec<Task>>,
     rolls: Vec<Roll>,
     viewer: Option<String>,
+    /// The write-back status of each node (contract §2 `writeback`).
+    wb: HashMap<String, Value>,
 }
 
 fn phase(s: RunState) -> &'static str {
@@ -190,6 +192,7 @@ impl Ctx {
             apps: vec![],
             team: HashMap::new(),
             rolls: vec![],
+            wb: rt.wb_statuses(&project.id),
             viewer: rt.db.setting(&viewer_key(&project.id)).ok().flatten().and_then(|v| v.as_str().map(str::to_string)),
             rows,
         };
@@ -458,7 +461,7 @@ impl Ctx {
             "rollup": self.rolls[i].json(),
             "ready": self.ready(i),
             "hidden": r.state == IntakeState::Hidden,
-            "writeback": null,
+            "writeback": self.wb.get(&r.node_id).cloned().unwrap_or(Value::Null),
             "actions": self.actions(i),
         })
     }
@@ -1043,8 +1046,12 @@ impl Runtime {
         if let Ok(Some(r)) = self.db.work_node_of_run(run) {
             self.work_log(&r, what, None, None);
         }
-        // A merge may free a program's next feature.
         if what == "merged" {
+            // Every item of the run is closed upstream when GitHub / Linear did not (write-back), and a
+            // merge may free a program's next feature.
+            for r in self.db.work_nodes_of("run", run).unwrap_or_default() {
+                self.wb_spawn(&r.project_id, &r.node_id, crate::writeback::WbOp::Merged);
+            }
             self.programs_tick();
         }
     }

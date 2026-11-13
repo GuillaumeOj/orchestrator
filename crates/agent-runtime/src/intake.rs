@@ -660,7 +660,7 @@ impl Runtime {
     }
 
     /// A GitHub source's repository without asking `gh` (configured, known, or seen).
-    fn intake_repo_known(&self, p: &Project, source: &IntakeSource) -> Option<String> {
+    pub(crate) fn intake_repo_known(&self, p: &Project, source: &IntakeSource) -> Option<String> {
         match source {
             IntakeSource::Github { repo, .. } => repo
                 .clone()

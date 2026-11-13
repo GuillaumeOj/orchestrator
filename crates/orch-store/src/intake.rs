@@ -251,6 +251,17 @@ impl Store {
         })
     }
 
+    /// Every node started with run (or session) `reference` of `kind` (a program feature links several).
+    pub fn work_nodes_of(&self, kind: &str, reference: &str) -> Result<Vec<IntakeRow>> {
+        let (k, r) = (kind.to_string(), reference.to_string());
+        self.read(move |c| {
+            let mut st = c.prepare(&format!(
+                "SELECT {COLS} FROM work_nodes WHERE state='started' AND started_kind=?1 AND started_ref=?2 AND source!=?3 ORDER BY id"
+            ))?;
+            Ok(st.query_map(params![k, r, BRIEF_SOURCE], row)?.collect::<rusqlite::Result<_>>()?)
+        })
+    }
+
     /// A node that ran before (its run merged) starts again: the new run is its mark.
     pub fn intake_restart(&self, id: u64, kind: &str, reference: &str) -> Result<bool> {
         let (kind, reference) = (kind.to_string(), reference.to_string());

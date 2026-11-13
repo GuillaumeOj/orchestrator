@@ -251,6 +251,11 @@ impl Runtime {
                                 detail: None,
                             };
                             let _ = self.db.work_note(&r.project_id, &r.node_id, &e);
+                            self.wb_spawn(
+                                &p.project,
+                                &r.node_id,
+                                crate::writeback::WbOp::Started { feature: f.slug.clone() },
+                            );
                         }
                     }
                 }
@@ -295,15 +300,41 @@ impl Runtime {
         }
     }
 
-    /// Closes the open decisions of program `p` whose key `pick` selects (`new:#19`, `failed:pf-2`…).
-    pub(crate) fn program_close_decisions(&self, p: &Program, pick: impl Fn(&str) -> bool) {
-        self.close_items_where(
-            |i| {
-                i.kind == "program"
-                    && i.payload["program"].as_str() == Some(p.id.as_str())
-                    && pick(i.payload["key"].as_str().unwrap_or(""))
-            },
-            "resolved",
-        );
+    /// Closes the open decisions of program `p` whose key `pick` selects (`new:#19`, `failed:pf-2`…) as
+    /// decided with `word` by the user (`add`, `ignore`, `skip`, `keep`, `open`, `dismiss`): the chat line
+    /// says what was done, once.
+    pub(crate) fn program_close_decisions(&self, p: &Program, word: &str, pick: impl Fn(&str) -> bool) {
+        let ids: Vec<u64> = self.store.read(|s| {
+            s.inbox
+                .iter()
+                .filter(|i| {
+                    i.open()
+                        && i.kind == "program"
+                        && i.payload["program"].as_str() == Some(p.id.as_str())
+                        && pick(i.payload["key"].as_str().unwrap_or(""))
+                })
+                .map(|i| i.id)
+                .collect()
+        });
+        for id in ids {
+            self.program_close_one(id, word);
+        }
+    }
+
+    /// Closes decision `id` as decided with `word` (and tells the chat).
+    pub(crate) fn program_close_one(&self, id: u64, word: &str) {
+        let effect: &'static str = match word {
+            "add" => "added",
+            "ignore" => "ignored",
+            "skip" => "skipped",
+            "keep" => "kept",
+            "open" => "opened",
+            "turn_off" => "turned off",
+            _ => "dismissed",
+        };
+        if self.close_item(id, orch_store::InboxStatus::Decided, word, "user").is_some() {
+            self.advance(id, crate::inbox::Stage::Effect(effect, None));
+            self.touch("inbox");
+        }
     }
 }

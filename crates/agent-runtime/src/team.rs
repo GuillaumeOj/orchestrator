@@ -1729,6 +1729,12 @@ impl Runtime {
                 t.flow.model = model;
                 let out = self.tasks_of(&cx).create(t)?;
                 let t = out.value;
+                // Written back as a sub-issue of the item the run came from (contract §5).
+                if t.external_id.is_some()
+                    && let Ok(Some(src)) = self.db.work_node_of_run(&cx.run.id)
+                {
+                    self.wb_spawn(&cx.project.id, &src.node_id, crate::writeback::WbOp::TeamTask { task: t.id });
+                }
                 self.run_event(
                     &cx.run.id,
                     Some(&rec.id),

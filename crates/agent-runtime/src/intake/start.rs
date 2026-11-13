@@ -476,6 +476,8 @@ impl Runtime {
             index.iter().map(|n| ((n.project_id.as_str(), n.node_id.as_str()), n)).collect();
         let mut trackers: std::collections::HashMap<String, orch_store::TrackerSettings> = Default::default();
         let programs = self.program_of_starts();
+        let mut statuses: std::collections::HashMap<String, std::collections::HashMap<String, Value>> =
+            Default::default();
         for r in started {
             let (Some(kind), Some(reference)) = (r.started_kind.clone(), r.started_ref.clone()) else { continue };
             let v = if r.source == INTAKE_BRIEF_SOURCE {
@@ -498,6 +500,13 @@ impl Runtime {
                         .or_insert_with(|| self.db.tracker(&r.project_id).unwrap_or_default());
                     let mut s = super::work::source_json(&r, chain, t);
                     s["program"] = tag.clone().unwrap_or(Value::Null);
+                    // The write-back state of the source node (contract §2).
+                    s["writeback"] = statuses
+                        .entry(r.project_id.clone())
+                        .or_insert_with(|| self.wb_statuses(&r.project_id))
+                        .get(&r.node_id)
+                        .cloned()
+                        .unwrap_or(Value::Null);
                     s
                 });
             match kind.as_str() {

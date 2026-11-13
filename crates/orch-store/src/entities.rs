@@ -731,6 +731,17 @@ impl Store {
         })
     }
 
+    /// The settings whose key starts with `prefix`, as `(key, value)`.
+    pub fn settings_prefixed(&self, prefix: &str) -> Result<Vec<(String, Value)>> {
+        let pat = format!("{}%", prefix.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_"));
+        self.read(move |c| {
+            let mut st = c.prepare("SELECT key, value FROM kv WHERE key LIKE ?1 ESCAPE '\\'")?;
+            let rows: Vec<(String, String)> =
+                st.query_map([pat], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
+            Ok(rows.into_iter().filter_map(|(k, v)| Some((k, serde_json::from_str(&v).ok()?))).collect())
+        })
+    }
+
     pub fn setting(&self, key: &str) -> Result<Option<Value>> {
         let key = key.to_string();
         self.read(move |c| {

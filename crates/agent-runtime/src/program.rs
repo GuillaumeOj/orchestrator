@@ -782,7 +782,7 @@ impl Runtime {
                 f.state = "skipped".into();
                 // Dependents stop waiting for it.
                 set_depends(&mut p);
-                self.program_close_decisions(&p, |k| k.ends_with(&format!(":{key}")));
+                self.program_close_decisions(&p, "skip", |k| k.ends_with(&format!(":{key}")));
             }
             "ignore_item" => {
                 let item = arg.as_str().ok_or_else(|| bad("ignore_item", "a node id"))?.to_string();
@@ -790,7 +790,7 @@ impl Runtime {
                 if !p.ignored.contains(&item) {
                     p.ignored.push(item.clone());
                 }
-                self.program_close_decisions(&p, |k| k == format!("new:{item}"));
+                self.program_close_decisions(&p, "ignore", |k| k == format!("new:{item}"));
             }
             "add_item" => self.program_add_item(&mut p, arg, obj)?,
             "cancel" => {
@@ -807,7 +807,7 @@ impl Runtime {
                 p.status = "cancelled".into();
                 p.done_at_ms = Some(now);
                 self.event("-", "program.cancelled", json!({"id": p.id, "project": p.project, "title": p.title}));
-                self.program_close_decisions(&p, |_| true);
+                self.program_close_decisions(&p, "dismiss", |_| true);
             }
             other => return Err(bad("patch", format!("{other} is not a program edit"))),
         }
@@ -884,7 +884,7 @@ impl Runtime {
         p.new_items.retain(|n| *n != node);
         set_depends(p);
         p.estimate = self.program_totals(p);
-        self.program_close_decisions(p, |k| k == format!("new:{node}"));
+        self.program_close_decisions(p, "add", |k| k == format!("new:{node}"));
         Ok(())
     }
 }
@@ -901,34 +901,36 @@ impl Runtime {
         let program = pl["program"].as_str().unwrap_or("").to_string();
         let id = crate::decision::decision_id("program", n);
         let key = pl["key"].as_str().unwrap_or("");
-        let close = |effect: &'static str| {
-            self.close_item(n, orch_store::InboxStatus::Decided, action, "user");
-            self.advance(n, crate::inbox::Stage::Effect(effect, None));
-            self.touch("inbox");
-        };
         match (pl["kind"].as_str().unwrap_or(""), action) {
             ("program_new_item", "add") => {
                 Ok(json!({"ok": true, "open": "program_add", "program": program, "item": key.strip_prefix("new:")}))
             }
+            // The edit closes the card with the user's word, once.
             ("program_new_item", "ignore") => {
                 self.program_update(&program, &json!({"ignore_item": key.strip_prefix("new:").unwrap_or("")}))?;
-                close("ignored");
                 Ok(json!({"ok": true, "effect": "ignored", "decision": id}))
             }
             ("program_item_closed", "skip") | ("program_feature_failed", "skip") => {
                 self.program_update(&program, &json!({"skip": pl["feature"]}))?;
-                close("skipped");
                 Ok(json!({"ok": true, "effect": "skipped", "decision": id}))
             }
             ("program_item_closed", "keep") => {
-                close("kept");
+                self.program_close_one(n, "keep");
                 Ok(json!({"ok": true, "effect": "kept", "decision": id}))
             }
             ("program_feature_failed", "open") => {
                 Ok(json!({"ok": true, "open": "feature", "program": program, "feature": pl["slug"]}))
             }
+            ("writeback_failing", "settings") => {
+                Ok(json!({"ok": true, "open": "settings", "section": "tracker", "project": pl["project"]}))
+            }
+            ("writeback_failing", "turn_off") => {
+                self.wb_turn_off(pl["project"].as_str().unwrap_or(""))?;
+                self.program_close_one(n, "turn_off");
+                Ok(json!({"ok": true, "effect": "turned off", "decision": id}))
+            }
             (_, "open") => {
-                close("opened");
+                self.program_close_one(n, "open");
                 Ok(json!({"ok": true, "open": "program", "program": program}))
             }
             (k, a) => Err(anyhow!("{a} does not apply to {k}")),

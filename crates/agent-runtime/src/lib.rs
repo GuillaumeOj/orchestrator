@@ -58,6 +58,7 @@ pub mod transcript;
 pub mod usage;
 pub mod worktree;
 pub mod worktree_watch;
+pub mod writeback;
 
 /// The chaos suite (fix-team-getting-stucked §3.8): a fake CLI in process.
 #[cfg(test)]
