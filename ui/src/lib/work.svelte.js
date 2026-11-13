@@ -6,7 +6,7 @@ import { UNDO_MS } from './inbox.js';
 import { staleOf, staleToast } from './intake.js';
 import { openPrefilled } from './intake.svelte.js';
 import { errText, invoke } from './ipc.js';
-import { readySummary, repoOfRemote, trackerName as trackerWords } from './tracker.js';
+import { originRemote, readySummary, repoOfRemote, trackerName as trackerWords } from './tracker.js';
 import {
   ancestors,
   cleanFilter,
@@ -59,12 +59,10 @@ export class WorkView {
   selection = $state(/** @type {{ parent: string, ids: string[] } | null} */ (null));
   query = $state('');
   results = $state.raw(/** @type {any} */ (null));
-  searchBusy = $state(false);
   loaded = $state(false);
   failed = $state(/** @type {string | null} */ (null));
   details = $state.raw(new Map());
   lastHide = $state(/** @type {{ node: any, until: number } | null} */ (null));
-  refreshing = $state.raw(new Set());
 
   #seq = 0;
   #searchSeq = 0;
@@ -77,7 +75,6 @@ export class WorkView {
     this.ids = ids;
     this.scope = ids.map((id) => {
       const p = projects.find((x) => x.id === id);
-      const origin = (p?.remotes ?? []).find((x) => x.name === 'origin') ?? p?.remotes?.[0];
       return {
         id,
         name: p?.name ?? id,
@@ -87,7 +84,7 @@ export class WorkView {
         ready: '',
         refresh_secs: 600,
         settings: null,
-        remote: origin?.url ?? null,
+        remote: originRemote(p)?.url ?? null,
       };
     });
   }
@@ -160,9 +157,8 @@ export class WorkView {
   refreshStale(now = Date.now()) {
     for (const p of this.scope) {
       const s = this.status[p.id];
-      if (!s || s.status === 'refreshing') continue;
-      const age = now - (s.refreshed_at_ms ?? 0);
-      if (!s.refreshed_at_ms || age > p.refresh_secs * 1000) this.refresh([p.id], { quiet: true });
+      if (s?.status === 'refreshing') continue;
+      if (!s?.refreshed_at_ms || now - s.refreshed_at_ms > p.refresh_secs * 1000) this.refresh([p.id], { quiet: true });
     }
   }
 
@@ -214,7 +210,10 @@ export class WorkView {
       const open = [...new Set([...this.expanded, ...(this.focusRoot ? [this.focusRoot] : [])])];
       if (open.length) await this.#loadChildren(open, seq);
     } catch (e) {
-      if (seq === this.#seq) this.failed = errText(e);
+      if (seq !== this.#seq) return;
+      this.failed = errText(e);
+      // With a tree on screen the old rows stay; the failure is said once.
+      if (this.nodes.size) this.toast?.(`Could not reload Work: ${this.failed}`, { kind: 'error' });
     } finally {
       if (seq === this.#seq) this.loaded = true;
     }
@@ -279,9 +278,12 @@ export class WorkView {
   async loadMore(key) {
     const m = this.more[key];
     if (!m?.cursor) return;
+    const seq = this.#seq;
     this.loading = new Set([...this.loading, `more:${key}`]);
     try {
       const r = await invoke('work_tree', this.#treeArgs(key === 'roots' ? null : [key], m.cursor));
+      // A reload since (filter, work.changed) replaced the list and its cursor: this page is stale.
+      if (seq !== this.#seq || this.#disposed) return;
       this.#merge(r?.nodes ?? [], this.#lists(r?.nodes ?? [], [key]), true);
       const more = { ...this.more };
       if (r?.more?.[key]) more[key] = r.more[key];
@@ -319,8 +321,17 @@ export class WorkView {
     else s.delete(id);
     this.folds = s;
     if (!open || this.tasks.has(id)) return;
+    await this.#loadFold(id);
+  }
+
+  async #loadFold(id) {
     const key = `fold:${id}`;
     this.loading = new Set([...this.loading, key]);
+    if (this.errors.has(key)) {
+      const errs = new Map(this.errors);
+      errs.delete(key);
+      this.errors = errs;
+    }
     try {
       const r = await invoke('work_tree', {
         scope: this.scopeArg,
@@ -328,6 +339,7 @@ export class WorkView {
         filter: { ...$state.snapshot(this.filter), include_team_tasks: true, state: 'all' },
         after: null,
       });
+      if (this.#disposed) return;
       const tasks = (r?.nodes ?? []).filter((n) => n.parent === id && n.team_task);
       this.tasks = new Map(this.tasks).set(id, tasks);
     } catch (e) {
@@ -343,13 +355,23 @@ export class WorkView {
 
   /** `r`: one refresh per project (the core joins one in flight, F38); work.changed brings the result. */
   async refresh(ids = this.ids, { quiet = false } = {}) {
-    this.refreshing = new Set([...this.refreshing, ...ids]);
+    const before = Object.fromEntries(ids.map((id) => [id, this.status[id]]));
     const st = { ...this.status };
     for (const id of ids) st[id] = { ...(st[id] ?? {}), status: 'refreshing' };
     this.status = st;
     try {
       await Promise.all(ids.map((project) => invoke('work_refresh', { project })));
     } catch (e) {
+      // No work.changed follows a refused refresh: put back what each source said, or Refresh stays held.
+      if (!this.#disposed) {
+        const back = { ...this.status };
+        for (const id of ids) {
+          if (back[id]?.status !== 'refreshing') continue;
+          if (before[id]) back[id] = before[id];
+          else delete back[id];
+        }
+        this.status = back;
+      }
       if (!quiet) this.toast?.(`Could not refresh: ${errText(e)}`, { kind: 'error' });
     }
   }
@@ -357,13 +379,11 @@ export class WorkView {
   /** `work.changed {project}` from the core: reload when it is in scope. */
   onChanged(project) {
     if (project && !this.ids.includes(project)) return;
-    const r = new Set(this.refreshing);
-    if (project) r.delete(project);
-    else r.clear();
-    this.refreshing = r;
     this.details = new Map();
     this.tasks = new Map();
     this.reload();
+    // Open Team tasks folds read their lines again (the cache just dropped them).
+    for (const id of this.folds) this.#loadFold(id);
     if (this.query.trim()) this.runSearch();
   }
 
@@ -380,6 +400,7 @@ export class WorkView {
 
   resetFilters() {
     this.filter = { ...defaultFilter(), show_hidden: this.filter.show_hidden };
+    this.selection = null;
     this.save();
     this.reload();
     if (this.query.trim()) this.runSearch();
@@ -410,10 +431,8 @@ export class WorkView {
     if (!q.trim()) {
       this.#searchSeq++;
       this.results = null;
-      this.searchBusy = false;
       return;
     }
-    this.searchBusy = true;
     this.#searchTimer = setTimeout(() => this.runSearch(), SEARCH_MS);
   }
 
@@ -433,14 +452,13 @@ export class WorkView {
       };
     } catch (e) {
       if (seq === this.#searchSeq) this.results = { nodes: [], total: 0, hidden: 0, error: errText(e) };
-    } finally {
-      if (seq === this.#searchSeq) this.searchBusy = false;
     }
   }
 
   /** "3 more hidden by filters · Show": the same query without filters (but Hide closed). */
   showHiddenResults() {
     this.filter = { ...defaultFilter(), state: 'all', show_hidden: this.filter.show_hidden };
+    this.selection = null;
     this.save();
     this.reload();
     this.runSearch();

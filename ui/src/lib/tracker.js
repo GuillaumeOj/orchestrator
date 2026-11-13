@@ -69,6 +69,9 @@ export function switchKind(form, kind) {
 }
 
 /** "acme/shop" from a project's remote url (github.com only), else null. */
+/** A project's `origin` remote, else its first one (null without remotes). */
+export const originRemote = (p) => (p?.remotes ?? []).find((r) => r.name === 'origin') ?? p?.remotes?.[0] ?? null;
+
 export function repoOfRemote(url) {
   const m = /github\.com[:/]([^/\s]+\/[^/\s]+?)(?:\.git)?$/.exec(url ?? '');
   return m ? m[1] : null;

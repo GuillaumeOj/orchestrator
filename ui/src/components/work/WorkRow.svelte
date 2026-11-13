@@ -4,17 +4,19 @@
   // children progress · app-state chip (fixed column). Lines (loading, error, more, source status) share the
   // indent. Buttons inside are not Tab stops: the pane's keys reach them.
   import { tooltip } from '../../lib/tooltip.js';
-  import { closedMark, depMark, GLYPH, isClosed, isContainer, labelsOf, loadErrorText, progressText, refOf, rightOf, selectable, tailOf, titleOf, upstreamText } from '../../lib/workmodel.js';
+  import { closedMark, depMark, GLYPH, isClosed, isContainer, labelsOf, loadErrorText, progressText, refOf, rightOf, selectable, tailOf, titleOf, trackerName, upstreamText } from '../../lib/workmodel.js';
   import AppChip from './AppChip.svelte';
   import KindGlyph from './KindGlyph.svelte';
 
   /**
-   * @type {{ row: any, focused?: boolean, inDetails?: boolean, selected?: boolean, selecting?: boolean,
+   * `ariaBase`: added to `row.level` for aria-level (1 with project rows at level 0: aria-level starts at 1).
+   * @type {{ row: any, ariaBase?: number, focused?: boolean, inDetails?: boolean, selected?: boolean, selecting?: boolean,
    *          narrow?: boolean, readyTip?: string, projectTail?: any, onrow?: () => void, ondisclose?: () => void,
    *          onchip?: (c: any) => void, onaction?: (what: string) => void }}
    */
   let {
     row,
+    ariaBase = 0,
     focused = false,
     inDetails = false,
     selected = false,
@@ -36,7 +38,7 @@
   const labels = $derived(n && row.kind === 'node' && !narrow ? labelsOf(n) : { chips: [], more: 0 });
   const strong = $derived(!!n && !isClosed(n) && (isContainer(n) || ['Epic', 'Feature'].includes(n.upstream?.issue_type)));
   const canSel = $derived(n && row.kind === 'node' ? selectable(n).ok : false);
-  const lineLevel = $derived(row.level);
+  const lineLevel = $derived(row.level + ariaBase);
 </script>
 
 {#snippet guides(k)}
@@ -92,7 +94,7 @@
 {:else if row.kind === 'project'}
   {@const p = row.project}
   <!-- svelte-ignore a11y_click_events_have_key_events -->
-  <div class="row project" class:focused class:open={inDetails} role="treeitem" tabindex="-1" aria-level={0} aria-expanded={row.open} aria-selected={focused} data-key={row.key} onclick={onrow}>
+  <div class="row project" class:focused class:open={inDetails} role="treeitem" tabindex="-1" aria-level={lineLevel} aria-expanded={row.open} aria-selected={focused} data-key={row.key} onclick={onrow}>
     {@render disclosure(row.open, true)}
     <KindGlyph glyph={GLYPH.project} label="Project {p.name}" />
     <span class="title strong">{p.name}</span>
@@ -108,7 +110,7 @@
     {@render guides(row.indent)}
     {@render disclosure(row.open, true)}
     <KindGlyph glyph={GLYPH.fold} label="Team tasks" />
-    <span class="up" use:tooltip={`Tasks the team of ${n.app?.feature ?? 'this feature'} wrote to ${n.id.startsWith('lin') ? 'Linear' : 'GitHub'}. Manage them in the feature.`}>Team tasks · {row.count}{n.app?.feature ? ` · feature ${n.app.feature}` : ''}</span>
+    <span class="up" use:tooltip={`Tasks the team of ${n.app?.feature ?? 'this feature'} wrote to ${trackerName(n)}. Manage them in the feature.`}>Team tasks · {row.count}{n.app?.feature ? ` · feature ${n.app.feature}` : ''}</span>
   </div>
 {:else if row.kind === 'task'}
   <!-- svelte-ignore a11y_click_events_have_key_events -->

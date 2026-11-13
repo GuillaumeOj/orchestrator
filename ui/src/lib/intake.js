@@ -142,8 +142,11 @@ export function shortRef(item, siblings = []) {
 export const moreCount = (more, partial) => (partial ? (more > 0 ? `${more}+` : '') : String(more));
 
 /** Up to two labels as chips (+n), without `size:*` / `size/*` and `orch*` (§2). */
+/** Labels the app never shows (P4.5 §2): `size:*` / `size/*` and `orch` / `orch:*`. */
+export const isShownLabel = (l) => !/^size[:/]/i.test(l) && !/^orch(:|$)/i.test(l);
+
 export function shownLabels(item) {
-  const all = (item?.labels ?? []).filter((l) => !/^size[:/]/i.test(l) && !/^orch(:|$)/i.test(l));
+  const all = (item?.labels ?? []).filter(isShownLabel);
   return { chips: all.slice(0, 2), more: Math.max(0, all.length - 2) };
 }
 

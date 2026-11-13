@@ -3,7 +3,7 @@
 // reads the app state, the clock or the core; callers pass the data. Tested in test/work-model.test.js.
 
 import { clock, dayHm, plural } from './format.js';
-import { ageText, GH_SCOPE_COMMAND, shownLabels } from './intake.js';
+import { ageText, GH_SCOPE_COMMAND, isShownLabel, shownLabels } from './intake.js';
 import { trackerError } from './tracker.js';
 
 // ---------------------------------------------------------------- trackers, kinds
@@ -189,10 +189,9 @@ export function chipOf(node, { short = false, readyTip = '' } = {}) {
       return {
         tone: 'done',
         text: 'merged',
-        tip: `Merged ${a.merged_at_ms ? dayHm(a.merged_at_ms) : ''}${a.feature ? ` · feature ${a.feature}` : ''}`.replace(
-          'Merged  ·',
-          'Merged ·',
-        ),
+        tip: [`Merged${a.merged_at_ms ? ` ${dayHm(a.merged_at_ms)}` : ''}`, a.feature ? `feature ${a.feature}` : '']
+          .filter(Boolean)
+          .join(' · '),
         click: a.feature ? { kind: 'feature', slug: a.feature } : null,
       };
     case 'program_root':
@@ -550,7 +549,17 @@ export function visibleRows(t) {
         count: parent.team_tasks,
       });
       if (open) {
-        if (t.loading.has(`fold:${parent.id}`) && !t.tasks.has(parent.id))
+        const fk = `fold:${parent.id}`;
+        if (t.errors.has(fk))
+          out.push({
+            kind: 'error',
+            key: `error:${fk}`,
+            level: level + 1,
+            indent: indentOf(level + 1),
+            parent: fk,
+            message: t.errors.get(fk),
+          });
+        else if (t.loading.has(fk) && !t.tasks.has(parent.id))
           out.push({
             kind: 'loading',
             key: `loading:fold:${parent.id}`,
@@ -690,9 +699,7 @@ export function statusLine(p, s, now = Date.now()) {
         command: GH_SCOPE_COMMAND,
         short: e.text,
       };
-    const kept = s.refreshed_at_ms
-      ? ` · items kept from ${ageText(s.refreshed_at_ms, now).replace(/^updated /, '')}`
-      : '';
+    const kept = s.refreshed_at_ms ? ` · items kept from ${ageText(s.refreshed_at_ms, now)}` : '';
     return {
       tone: 'error',
       text: `${p.name} · ${e.text}${kept}`,
@@ -744,7 +751,7 @@ export function resultsText(res, query, names) {
 /** The facts line: GitHub `<type> · <state> · <board status> · <labels> · assignee <a> · milestone v2`, Linear, Linear project. */
 export function factsOf(node) {
   const u = node?.upstream ?? {};
-  const labels = (u.labels ?? []).filter((l) => !/^size[:/]/i.test(l) && !/^orch(:|$)/i.test(l));
+  const labels = (u.labels ?? []).filter(isShownLabel);
   const assignee = u.assignees?.length ? `assignee ${u.assignees.join(', ')}` : '';
   if (node?.kind === 'linear_project')
     return [u.target_date ? `target ${shortDate(u.target_date, true)}` : '', u.state].filter(Boolean).join(' · ');
@@ -780,10 +787,10 @@ export function factsOf(node) {
 /** The children heading: "Sub-issues · 1 of 2 done" (GitHub) / "Issues · 2 of 6 done" (containers) / "Sub-issues" (Linear). */
 export function childrenHeading(node) {
   const c = node?.children ?? {};
-  const done = c.done ?? 0;
-  if (isContainer(node)) return `Issues · ${plural(c.total ?? 0, 'issue')} · ${done} done`;
+  const done = `${c.done ?? 0} of ${c.total ?? 0} done`;
+  if (isContainer(node)) return `Issues · ${done}`;
   if (trackerOf(node) === 'linear') return 'Sub-issues';
-  return `Sub-issues · ${done} of ${c.total ?? 0} done`;
+  return `Sub-issues · ${done}`;
 }
 
 /** One history line (F6). `tracker`: "GitHub" / "Linear". */

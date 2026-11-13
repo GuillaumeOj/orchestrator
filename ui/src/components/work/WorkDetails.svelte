@@ -92,12 +92,13 @@
 </script>
 
 {#snippet line(n)}
+  {@const c = chipOf(n, { short: true })}
   <div class="kid">
     <KindGlyph node={n} />
     {#if refOf(n)}<span class="ref">{refOf(n)}</span>{/if}
     <button type="button" class="ktitle" tabindex="-1" onclick={() => act('reveal', n.id)}>{n.title}</button>
     <span class="grow"></span>
-    {#if chipOf(n, { short: true })}<AppChip chip={chipOf(n, { short: true })} onopen={(c) => act('chip', c)} />{:else}<span class="muted">—</span>{/if}
+    {#if c}<AppChip chip={c} onopen={(x) => act('chip', x)} />{:else}<span class="muted">—</span>{/if}
   </div>
 {/snippet}
 
@@ -218,7 +219,7 @@
         {#if est?.team || est?.solo}
           {#each [['team', 'Team run'], ['solo', 'Solo']] as [m, label] (m)}
             {#if est[m]}
-              <div class="deprow"><span class="dl muted">{label}</span><div class="dv"><span>{exactRange(est[m])}</span><span class="muted">{basisText(est[m], m, est.size ?? null, project?.name ?? node.project)}</span></div></div>
+              <div class="deprow"><span class="dl muted">{label}</span><div class="dv"><span>{exactRange(est[m])}</span><span class="muted">{basisText(est[m], m, est.size ?? null, trail[0]?.title ?? node.project)}</span></div></div>
             {/if}
           {/each}
           {#if est.room_pp != null}<div class="deprow"><span class="dl muted">Room</span><span>{Number(est.room_pp).toFixed(1)} pp left this week</span></div>{/if}

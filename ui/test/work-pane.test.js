@@ -501,6 +501,21 @@ describe('states (§11)', () => {
   });
 });
 
+describe('project counts (SourceStatus.counts)', () => {
+  it('the project row and details read items / ready from the status', async () => {
+    app.data.projects.push({ id: 'mobile', name: 'mobile', path: '/m', git: {} });
+    const counts = { items: 14, roots: 3, ready: 3 };
+    const { container } = await mount(['shop-api', 'mobile'], {
+      status: { 'shop-api': { ...STATUS_OK, counts }, mobile: STATUS_OK },
+    });
+    await waitFor(() => expect(text(row(container, 'project:shop-api'))).toContain('3 ready'));
+    await fireEvent.click(row(container, 'project:shop-api'));
+    await waitFor(() =>
+      expect(text(container.querySelector('.details'))).toContain('updated 4 min ago · 14 items · 3 ready'),
+    );
+  });
+});
+
 describe('entry points (§1.2): one tab per scope', () => {
   it('same scope focuses its tab and lands the reveal; another scope opens a new tab', () => {
     app.panes = {};

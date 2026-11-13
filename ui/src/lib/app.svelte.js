@@ -2179,7 +2179,10 @@ export function commands() {
 
 /** The project Work opens on from the leader / palette: the focused pane's, else the context's, else all. */
 function workContext() {
-  const id = paneProject(focusedSpec()) ?? contextProjectId();
+  // A Work tab in focus keeps its own scope (several projects, or all).
+  const s = focusedSpec();
+  if (s?.type === 'work') return s.projects ?? null;
+  const id = paneProject(s) ?? contextProjectId();
   return id ? [id] : null;
 }
 

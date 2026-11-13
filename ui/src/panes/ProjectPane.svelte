@@ -13,7 +13,7 @@
   import { keyIgnored } from '../lib/keyboard.js';
   import { onTopics, statusOf } from '../lib/now.svelte.js';
   import { tooltip } from '../lib/tooltip.js';
-  import { repoOfRemote } from '../lib/tracker.js';
+  import { originRemote, repoOfRemote } from '../lib/tracker.js';
   import { openWork } from '../lib/work.js';
 
   let { paneId } = $props();
@@ -25,10 +25,7 @@
 
   let d = $state(null);
   // "Browse shop-api's work in acme/shop" (notes §1.2): the origin remote's repository, when known.
-  const trackerText = $derived.by(() => {
-    const r = (p?.remotes ?? []).find((x) => x.name === 'origin') ?? p?.remotes?.[0];
-    return repoOfRemote(r?.url) ?? '';
-  });
+  const trackerText = $derived(repoOfRemote(originRemote(p)?.url) ?? '');
   let err = $state(null);
   let prs = $state(null);
   let busy = $state(null);

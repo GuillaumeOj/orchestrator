@@ -11,7 +11,7 @@
   import WorkDetails from '../components/work/WorkDetails.svelte';
   import WorkRow from '../components/work/WorkRow.svelte';
   import { app, copyText, featureBySlug, now30, openAgent, openEditor, openFeature, openProjectSettings, openUrl, projects, toast } from '../lib/app.svelte.js';
-  import { ageText } from '../lib/intake.js';
+  import { ageText, isShownLabel } from '../lib/intake.js';
   import { fixSource } from '../lib/intake.svelte.js';
   import { errText, invoke, listen } from '../lib/ipc.js';
   import { isTypingTarget } from '../lib/keyboard.js';
@@ -33,6 +33,7 @@
     noMatchText,
     refOf,
     resultsText,
+    scopeTitle,
     selectionText,
     TRACKER_NAME,
     trackerOf,
@@ -79,7 +80,10 @@
   );
 
   /** Ready, not hidden, per project (the project row's "3 ready"): the Ready lane's own list. */
-  const readyCount = (pid) => (app.now?.intake?.items ?? []).filter((i) => i.project === pid && !i.hidden).length;
+  // SourceStatus.counts (contract §2) when the core sends it, else the Ready lane's own list.
+  const readyCount = (pid) =>
+    view.status[pid]?.counts?.ready ?? (app.now?.intake?.items ?? []).filter((i) => i.project === pid && !i.hidden).length;
+  const itemCount = (pid) => view.status[pid]?.counts?.items;
 
   const rows = $derived(
     visibleRows({
@@ -160,7 +164,7 @@
       : [],
   );
   const title = $derived.by(() => {
-    const base = spec?.projects ? (ids.length === 1 ? `Work · ${names[ids[0]] ?? ids[0]}` : `Work · ${ids.length} projects`) : 'Work · all projects';
+    const base = scopeTitle(spec?.projects ? ids : null, ids.map((id) => names[id]));
     return focusNode ? `${base} › ${refOf(focusNode) || focusNode.title}` : base;
   });
 
@@ -191,14 +195,16 @@
   // ---------------------------------------------------------------- filter options (from the cache)
 
   const filterOptions = $derived.by(() => {
-    const labels = new Set();
-    const assignees = new Set();
-    const milestones = new Set();
-    const types = new Set();
-    const lin = new Map();
+    // The values in force are options too: a saved filter may name one no loaded item carries any more.
+    const f = view.filter;
+    const labels = new Set(f.labels);
+    const assignees = new Set(f.assignees);
+    const milestones = new Set(f.milestone ? [f.milestone] : []);
+    const types = new Set(f.issue_types);
+    const lin = new Map(f.linear_projects.map((id) => [id, id]));
     for (const n of view.nodes.values()) {
       const u = n.upstream ?? {};
-      for (const l of u.labels ?? []) if (!/^size[:/]/i.test(l) && !/^orch(:|$)/i.test(l)) labels.add(l);
+      for (const l of u.labels ?? []) if (isShownLabel(l)) labels.add(l);
       for (const a of u.assignees ?? []) assignees.add(a);
       if (u.milestone) milestones.add(u.milestone);
       if (n.kind === 'milestone') milestones.add(n.title);
@@ -300,7 +306,7 @@
     if (f?.agent) return openAgent(f.agent);
     const feat = slug ? featureBySlug(n.project, slug) : null;
     if (feat) openFeature(feat.id);
-    else toast(`Feature ${slug ?? ''} is not in this app any more.`.replace('  ', ' '));
+    else toast(slug ? `Feature ${slug} is not in this app any more.` : 'Feature is not in this app any more.');
   }
 
   function openNode(n) {
@@ -629,6 +635,10 @@
             {#each [0, 1, 2] as i (i)}<span class="bar-row" style:padding-left="{i * 16 + 16}px"><span class="sk short"></span><span class="sk"></span><span class="grow"></span><span class="sk tail"></span></span>{/each}
           </div>
         {/each}
+      {:else if searching && view.results?.error}
+        <div class="empty" data-empty>
+          <p class="err" data-results>Could not search: {view.results.error} · <button type="button" class="link" onclick={() => view.runSearch()}>Retry</button></p>
+        </div>
       {:else if searching && view.results && !view.results.total}
         <!-- No results (notes §4.1): centred in the tree, as the other empty states. -->
         <div class="empty" data-empty>
@@ -670,6 +680,7 @@
         {#each rows as r (r.key)}
           <WorkRow
             row={r}
+            ariaBase={view.multi ? 1 : 0}
             focused={view.focused === r.key}
             inDetails={view.detailsOpen && view.focused === r.key}
             selected={!!view.selection?.ids.includes(r.key)}
@@ -690,7 +701,7 @@
         bind:el={detailsEl}
         node={view.selection && selNodes.length >= 2 ? null : curNode}
         project={!curNode && curProject ? { ...curProject, trackerLine: view.trackerLine(curProject) } : null}
-        projectStatus={curProject ? [view.status[curProject.id]?.refreshed_at_ms ? `updated ${ageText(view.status[curProject.id].refreshed_at_ms, now)}` : '', `${readyCount(curProject.id)} ready`].filter(Boolean).join(' · ') : ''}
+        projectStatus={curProject ? [view.status[curProject.id]?.refreshed_at_ms ? `updated ${ageText(view.status[curProject.id].refreshed_at_ms, now)}` : '', itemCount(curProject.id) != null ? `${itemCount(curProject.id)} items` : '', `${readyCount(curProject.id)} ready`].filter(Boolean).join(' · ') : ''}
         detail={curNode ? view.detailsOf(curNode) : null}
         {trail}
         kids={curNode && view.kids.has(curNode.id) ? view.kids.get(curNode.id).map((id) => view.nodes.get(id)).filter(Boolean) : null}
