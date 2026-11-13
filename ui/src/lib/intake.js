@@ -262,9 +262,8 @@ export function originChip(origin) {
   const from = `From ${origin.ref}${origin.title ? ` ${origin.title}` : ''}`;
   // The parent alone; under a Linear milestone, "project › milestone" (§5.2).
   const bc = origin.breadcrumb ?? [];
-  const crumb = crumbLine(bc.at(-1)?.id?.startsWith('lin-milestone:') ? bc.slice(-2) : bc, {
-    parentOnly: bc.at(-1)?.id?.startsWith('lin-milestone:') !== true,
-  });
+  const underMilestone = bc.at(-1)?.id?.startsWith('lin-milestone:');
+  const crumb = crumbLine(underMilestone ? bc.slice(-2) : bc, { parentOnly: !underMilestone });
   return {
     text: [from, crumb && `in ${crumb}`, name].filter(Boolean).join(' · '),
     tip: crumbTip(origin.breadcrumb),
