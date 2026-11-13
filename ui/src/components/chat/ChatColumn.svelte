@@ -660,7 +660,7 @@
   function openOutcome(o) {
     if (o.url) return openUrl(o.url);
     if (o.kind === 'report_ready') return openReport(o.report ?? 'current');
-    if (o.task != null && o.project) return openTask(o.project, o.task, { run: o.run, feature: o.feature, conflict: o.kind === 'sync_conflict', remote_url: o.remote_url, ref: o.ref });
+    if (o.task != null && o.project) return openTask(o.project, o.task, { run: o.run, feature: o.feature, conflict: o.kind === 'sync_conflict', remote_url: o.remote_url, ref: o.ref, tracker: o.tracker });
     if (o.run && o.feature) {
       const f = featureBySlug(o.project, o.feature);
       if (f) return openFeature(f.id);

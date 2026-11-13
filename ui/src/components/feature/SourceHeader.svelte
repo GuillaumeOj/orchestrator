@@ -35,10 +35,10 @@
       <span class="ttl">{m.ref} {m.title}</span>
       <span class="sep">·</span>
       {#if m.url}
-        <button type="button" class="link" aria-label={`Open ${m.ref} in ${m.tracker}`} use:tooltip={`Open ${m.ref} in ${m.tracker}`} onclick={() => openUrl(m.url)}>{m.tracker} ↗</button>
+        <button type="button" class="link strong" aria-label={`Open ${m.ref} in ${m.tracker}`} use:tooltip={`Open ${m.ref} in ${m.tracker}`} onclick={() => openUrl(m.url)}>{m.tracker} ↗</button>
       {:else}<span>{m.tracker}</span>{/if}
     {:else if m.kind === 'brief' && m.url}
-      <button type="button" class="link" onclick={() => openUrl(m.url)}>{m.title} ↗</button>
+      <button type="button" class="link soft" onclick={() => openUrl(m.url)}>{m.title} ↗</button>
     {:else}
       <span class="muted">{m.title}</span>
     {/if}
@@ -99,6 +99,13 @@
   }
   .warn {
     color: var(--color-pacing-amber);
+  }
+  .link.strong {
+    color: inherit;
+    font: var(--text-body-strong);
+  }
+  .link.soft {
+    color: var(--color-text-muted);
   }
   .link {
     background: none;

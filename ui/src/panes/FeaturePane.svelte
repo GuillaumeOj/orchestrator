@@ -265,8 +265,8 @@
       if (e.key === 'Escape' && !e.defaultPrevented) (root?.focus(), e.preventDefault());
       return;
     }
-    // Tasks has focus: its keys (handled there) shadow the pane's e / m / p.
-    if (e.target.closest?.('[data-tasks]')) return;
+    // Tasks has focus: its keys (handled there) shadow the pane's e / m / p only.
+    if (e.target.closest?.('[data-tasks]') && ['e', 'm', 'p'].includes(e.key)) return;
     if (e.metaKey || e.ctrlKey || e.altKey || !v) return;
     const k = e.key;
     if (k === 'e') openDoc();

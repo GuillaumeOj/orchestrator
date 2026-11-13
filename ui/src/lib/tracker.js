@@ -77,7 +77,7 @@ export function repoOfRemote(url) {
 const REPO = /^[^/\s]+\/[^/\s]+$/;
 
 /** A glob the core refuses: absolute, or with a `..` path component (`v1..v2` is fine). */
-export const hasParentPart = (g) => g.startsWith('/') || g.split('/').includes('..');
+export const hasParentPart = (g) => g.startsWith('/') || g.split(/[/\\]/).includes('..');
 
 /** Client rules (the same fields the core validates), field → message in the notes' words; {} when valid. */
 export function problems(form) {

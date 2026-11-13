@@ -160,7 +160,7 @@
     if (o.url) return openUrl(o.url);
     if (o.kind === 'turn_done' && o.agent) return openSession(o.agent);
     if (o.kind === 'report_ready') return openReport(o.report ?? 'current');
-    if (o.kind === 'sync_conflict' && o.project) return openTask(o.project, o.task, { run: o.run, feature: o.feature, conflict: true, remote_url: o.remote_url, ref: o.ref });
+    if (o.kind === 'sync_conflict' && o.project) return openTask(o.project, o.task, { run: o.run, feature: o.feature, conflict: true, remote_url: o.remote_url, ref: o.ref, tracker: o.tracker });
     if (o.run && index.has(`run:${o.run}`)) return reveal(`run:${o.run}`);
     if (o.agent) return openSession(o.agent);
   }

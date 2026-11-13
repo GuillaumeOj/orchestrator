@@ -1071,17 +1071,19 @@ export async function openTask(projectId, taskId, hint = {}) {
   const name = `T-${id}`;
   const url = hint.remote_url ?? null;
   toast(
-    `${name} belongs to ${hint.feature ?? 'a feature'} (deleted).${url ? ` Open ${hint.ref ?? 'it'} upstream?` : ''}`,
+    `${name} belongs to ${hint.feature ?? 'a feature'} (deleted).${url ? ` Open ${hint.ref ?? 'it'}${hint.tracker ? ` in ${hint.tracker}` : ' upstream'}?` : ''}`,
     url ? { action: { label: 'Open', run: () => openUrl(url) }, ms: 12000 } : {},
   );
 }
 
 async function taskFeature(projectId, id, hint) {
   const all = features();
-  if (hint.run) return all.find((f) => f.run?.id === hint.run) ?? null;
+  const byRun = hint.run ? all.find((f) => f.run?.id === hint.run) : null;
+  if (byRun) return byRun;
   const named =
     hint.feature && all.find((f) => f.id === hint.feature || (f.project_id === projectId && f.slug === hint.feature));
   if (named) return named;
+  if (hint.run) return null;
   for (const f of all.filter((x) => x.project_id === projectId && x.run)) {
     const v = await invoke('feature_view', { feature: f.id }).catch(() => null);
     if (v?.tasks?.some((t) => String(t.id) === id)) return f;

@@ -105,7 +105,7 @@
     optsError && ['gh_missing', 'gh_auth', 'linear_key', 'linear_auth'].includes(optsError.code) ? (optsError.code.startsWith('linear') ? 'Linear' : 'GitHub') : null,
   );
   const trackerJson = $derived(form ? JSON.stringify(form.tracker) : '');
-  const trkName = $derived(form ? (kind === 'linear' ? form.tracker.teams.join(', ') : trackerName(form.tracker, known)) : null);
+  const trkName = $derived(form ? (kind === 'linear' ? form.tracker.teams.join(', ') || null : trackerName(form.tracker, known)) : null);
   const previewErr = $derived(preview?.error ? trackerError(preview.error, kind, trkName) : null);
   const previewWarn = $derived(preview?.warning === 'gh_sub_issues' ? trackerError({ code: 'gh_sub_issues' }, kind, trkName).text : null);
   const info = $derived(notice && !altPending && form ? noticeInfo(notice, form, { project: name, known }) : null);
@@ -153,7 +153,8 @@
   $effect(() => {
     optsTick;
     if (!trackerJson) return;
-    const t = JSON.parse(trackerJson);
+    const key = trackerJson; // the tracker this read is for (`trackerJson` itself is live: it follows the form)
+    const t = JSON.parse(key);
     if (t.kind === 'github' && t.repo?.trim() && !/^[^/\s]+\/[^/\s]+$/.test(t.repo.trim())) return;
     if (t.kind === 'local' && (!t.backlog_glob || hasParentPart(t.backlog_glob))) {
       opts = null;
@@ -162,7 +163,7 @@
     const timer = setTimeout(
       async () => {
         const o = await loadOptions(t);
-        if (!o || JSON.stringify(untrack(() => form?.tracker)) !== trackerJson) return;
+        if (!o || JSON.stringify(untrack(() => form?.tracker)) !== key) return;
         opts = o;
         optsError = o.error ?? null;
         untrack(() => {

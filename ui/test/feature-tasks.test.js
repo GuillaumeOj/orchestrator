@@ -341,13 +341,14 @@ describe('the Board is gone: entry points', () => {
     replies.open_url = open;
     await A.openTask('shop-api', 12, {
       run: 'run-gone',
-      feature: 'checkout',
+      feature: 'checkout-old',
       remote_url: 'https://github.com/acme/shop/issues/70',
       ref: '#70',
+      tracker: 'GitHub',
     });
     expect(app.panes).toEqual({});
     const t = app.toasts.at(-1);
-    expect(t.text).toBe('T-12 belongs to checkout (deleted). Open #70 upstream?');
+    expect(t.text).toBe('T-12 belongs to checkout-old (deleted). Open #70 in GitHub?');
     expect(t.action.label).toBe('Open');
   });
   it('the waiting chip T-n opens the task in its Feature pane', async () => {

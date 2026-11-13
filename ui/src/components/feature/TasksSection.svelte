@@ -8,12 +8,11 @@
   import { isTypingTarget } from '../../lib/keyboard.js';
   import { remoteName } from '../../lib/linear.js';
   import { taskMarks, tasksSummary } from '../../lib/source.js';
-  import { blockedBy, COLUMNS, editPatch, handle, moveCursor, remoteLinkLabel, shiftStatus } from '../../lib/teams.js';
+  import { blockedBy, COLUMNS, editPatch, handle, moveCursor, remoteLinkLabel, runFinished, shiftStatus } from '../../lib/teams.js';
   import { tooltip } from '../../lib/tooltip.js';
   import AgentChip from '../AgentChip.svelte';
   import Menu from '../Menu.svelte';
   import Select from '../Select.svelte';
-  import StatusBadge from '../StatusBadge.svelte';
   import TaskModelChip from '../TaskModelChip.svelte';
 
   /** `v` = feature_view; `land` = { task, conflict, tasks, seq } (one-shot, by `seq`); `onleave` gives the focus back to the pane. */
@@ -30,8 +29,9 @@
   const tasks = $derived(v.tasks ?? []);
   const cols = $derived(COLUMNS.map((c) => tasks.filter((t) => t.status === c.id)));
   const selected = $derived(cols[cur.col]?.[cur.row] ?? null);
-  const run = $derived(v.run ?? null);
-  const source = $derived(run?.source ?? null);
+  /** The run tasks are created and assigned in: a finished run takes no new work. */
+  const run = $derived(v.run && !runFinished(v.run.status) ? v.run : null);
+  const source = $derived(v.run?.source ?? null);
   const nodes = $derived((v.team?.nodes ?? []).filter((n) => !n.is_lead));
   const nodeOptions = (none) => [...(none ? [{ value: '', label: none }] : []), ...nodes.map((n) => ({ value: n.id, label: n.id }))];
   const focusBox = (node) => node.querySelector('button')?.focus();
@@ -133,6 +133,8 @@
       return;
     }
     if (e.metaKey || e.ctrlKey || e.altKey) return;
+    // A focused button / link (Create, Cancel, Save) keeps its own Enter.
+    if (e.key === 'Enter' && e.target !== root && e.target.closest?.('button, a, summary')) return;
     const arrows = { ArrowLeft: 'h', ArrowRight: 'l', ArrowUp: 'k', ArrowDown: 'j' };
     const k = arrows[e.key] ?? (e.key.length === 1 ? e.key.toLowerCase() : e.key);
     const t = selected;
@@ -213,7 +215,7 @@
   <div class="taskcols">
     {#each COLUMNS as c, ci (c.id)}
       <div class="tcol" role="group" aria-label={c.label}>
-        <div class="colh"><StatusBadge state={c.state} compact /> <b>{c.label}</b> <span class="muted">{cols[ci].length}</span><span class="grow"></span><span class="colkey muted" aria-hidden="true">{ci + 1}</span></div>
+        <div class="colh"><b>{c.label}</b> <span class="muted">{cols[ci].length}</span><span class="grow"></span><span class="colkey muted" aria-hidden="true">{ci + 1}</span></div>
         {#each cols[ci] as t, ri (t.id)}
           {@const blocked = c.id === 'ready' ? blockedBy(t, tasks) : []}
           {@const marks = taskMarks(t)}
@@ -230,13 +232,12 @@
                 <span class="cmenu" onclick={(e) => e.stopPropagation()}><Menu bind:this={cardMenu} items={menuItems(t)} label="Task menu" /></span>
               {/if}
             </div>
-            <div class="title">{t.title} <TaskModelChip task={t} /></div>
-            <div class="tt">
+            <div class="title">{t.title}</div>
+            <div class="chipsrow">
+              <TaskModelChip task={t} />
               {#if t.node}<AgentChip id={t.node} role={roleOf(t)} />{/if}
-              <span class="grow"></span>
-              {#if blocked.length}<span class="blocked">{'\u{F051F}'} blocked by {blocked.map((d) => `T-${d}`).join(', ')}</span>
-              {:else if t.branch}<span class="muted mono">{t.branch.split('/').pop()}</span>{/if}
             </div>
+            {#if blocked.length}<div class="blocked">{'\u{F051F}'} blocked by {blocked.map((d) => `T-${d}`).join(', ')}</div>{/if}
           </div>
         {:else}<span class="muted none">No tasks</span>{/each}
       </div>
@@ -282,6 +283,9 @@
     gap: var(--space-xs);
   }
   .colkey {
+    padding: 0 var(--space-xs);
+    border: var(--border-width-default) solid var(--color-border-subtle);
+    border-radius: var(--radius-sm);
     font: var(--text-caption);
   }
   .none {
@@ -306,14 +310,20 @@
     background: var(--color-surface-selected);
   }
   .title {
-    font: var(--text-body-strong);
+    font: var(--text-body);
+    color: var(--color-text-primary);
+  }
+  .chipsrow {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-xs);
   }
   .blocked {
     color: var(--color-status-queued);
     font: var(--text-caption);
   }
   .conflict {
-    color: var(--color-status-waiting-for-you);
+    color: var(--color-pacing-amber);
     font: var(--text-caption);
   }
   .cmenu {
