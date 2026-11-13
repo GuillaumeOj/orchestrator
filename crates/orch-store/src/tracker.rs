@@ -360,7 +360,9 @@ impl TrackerSettings {
         match (&self.tracker, &self.ready) {
             (Tracker::Local { backlog_glob: Some(_) }, _) => kind == "local",
             (Tracker::Github { .. }, ReadyFilter::Github { labels: want, milestone, board_status, issue_type }) => {
-                if kind != "issue" || !has(meta, "state", "open") {
+                // (a row cached before the tree has no state: it was an open issue)
+                let open = meta["state"].as_str().is_none_or(|s| s.eq_ignore_ascii_case("open"));
+                if kind != "issue" || !open {
                     return false;
                 }
                 if want.is_empty() && milestone.is_none() && board_status.is_none() && issue_type.is_none() {
@@ -368,7 +370,7 @@ impl TrackerSettings {
                 }
                 let have = labels(meta);
                 want.iter().all(|w| have.contains(&w.to_lowercase()))
-                    && milestone.as_ref().is_none_or(|m| meta["milestone"].as_str() == Some(m))
+                    && milestone.as_ref().is_none_or(|m| has(meta, "milestone", m.trim()))
                     && board_status.as_ref().is_none_or(|b| has(meta, "board_status", b))
                     && issue_type.as_ref().is_none_or(|t| has(meta, "issue_type", t))
             }

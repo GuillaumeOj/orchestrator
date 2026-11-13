@@ -391,7 +391,9 @@ impl Runtime {
         {
             let mut m = lock(&self.intake.incr);
             match project {
-                Some(p) => m.remove(p).map(drop).unwrap_or_default(),
+                Some(p) => {
+                    m.remove(p);
+                }
                 None => m.clear(),
             }
         }
@@ -509,9 +511,16 @@ impl Runtime {
             return;
         }
         // The migrated GitHub default (label `ready`) is asked of the repository here, once, not on a settings read.
-        if self.db.tracker_ready_pending(id).unwrap_or(false) {
+        let t = if self.db.tracker_ready_pending(id).unwrap_or(false) {
             self.resolve_pending_ready(&p);
-        }
+            // (it may have emptied the default: the settings are read again)
+            match self.db.tracker(id) {
+                Ok(t) => t,
+                Err(_) => return,
+            }
+        } else {
+            t
+        };
         let t0 = std::time::Instant::now();
         let mut status = self.db.intake_status(id).unwrap_or_default();
         // Local at the tip already read: nothing can have changed (a tracker
@@ -614,6 +623,8 @@ impl Runtime {
     /// Refreshes now, waiting for one in flight to end first (a source
     /// change must not be answered by the old source's refresh).
     fn intake_refresh_now(&self, id: &str) {
+        // A settings change: the tree is read whole, not since the last read.
+        lock(&self.intake.incr).remove(id);
         let deadline = std::time::Instant::now() + WAIT_INFLIGHT;
         // Retried: the refresher thread can take the slot between the wait
         // and our own start.
@@ -672,6 +683,9 @@ impl Runtime {
                     "error": null, "refreshed_at_ms": null, "url": null, "count": 0, "more": 0, "partial": false, "hidden": 0}));
                 continue;
             }
+            let mine_nodes: Vec<&orch_store::WorkIndex> = all.iter().filter(|n| n.project_id == p.id).collect();
+            let ids: std::collections::HashSet<&str> = mine_nodes.iter().map(|n| n.node_id.as_str()).collect();
+            let roots = mine_nodes.iter().filter(|n| n.parent_id.as_deref().is_none_or(|q| !ids.contains(q))).count();
             let facts = self.project_facts(p);
             let mine: Vec<&IntakeRow> =
                 rows.iter().filter(|r| r.project_id == p.id && r.source == source.kind()).collect();
@@ -722,6 +736,8 @@ impl Runtime {
                 "hidden": hidden.len(),
                 "warning": status.warning,
                 "offline": status.offline,
+                // What the cache holds (team tasks are not nodes): the project row's and the status line's.
+                "counts": {"items": mine_nodes.len(), "roots": roots, "ready": ready.len()},
             }));
         }
         json!({"items": items, "sources": sources})

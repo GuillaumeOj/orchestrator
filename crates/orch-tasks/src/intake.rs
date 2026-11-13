@@ -229,9 +229,7 @@ fn is_offline_text(lower: &str) -> bool {
         "no route to host",
         "connection refused",
         "dial tcp",
-        "timed out",
         "network unreachable",
-        "offline",
     ]
     .iter()
     .any(|p| lower.contains(p))

@@ -416,6 +416,8 @@ pub fn github_tree(gh: &dyn Gh, o: &GithubTree) -> R<Tree> {
         }
     }
     let mut raw: Vec<Value> = open.nodes;
+    // Open issues are always read; only closed ones depend on their parent being loaded.
+    let open_numbers: std::collections::HashSet<u64> = raw.iter().filter_map(|c| c["number"].as_u64()).collect();
     let mut have: std::collections::HashSet<u64> = raw.iter().filter_map(|c| c["number"].as_u64()).collect();
     // Closed ones: roots, and the children of a loaded parent. (Incremental: all that changed.)
     let loaded_parent = |c: &Value, have: &std::collections::HashSet<u64>| {
@@ -430,7 +432,7 @@ pub fn github_tree(gh: &dyn Gh, o: &GithubTree) -> R<Tree> {
     }
     if o.since.is_none() {
         // A closed child of a closed root older than the window is not loaded; its own parent is.
-        raw.retain(|c| loaded_parent(c, &have));
+        raw.retain(|c| c["number"].as_u64().is_some_and(|n| open_numbers.contains(&n)) || loaded_parent(c, &have));
     }
     // Sub-issues of loaded parents in every state (module doc), one parent at a time.
     if tree && o.since.is_none() {
@@ -766,7 +768,11 @@ pub fn linear_tree(gql: &dyn Graphql, backoff: &Backoff, q: &LinearTree) -> R<Tr
     if q.since.is_none() {
         let have: std::collections::HashSet<String> =
             raw.iter().filter_map(|v| v["identifier"].as_str().map(str::to_string)).collect();
-        let loaded_children = |ident: &str| raw.iter().filter(|v| v["parent"]["identifier"] == ident).count();
+        let mut loaded: std::collections::HashMap<&str, usize> = Default::default();
+        for p in raw.iter().filter_map(|v| v["parent"]["identifier"].as_str()) {
+            *loaded.entry(p).or_default() += 1;
+        }
+        let loaded_children = |ident: &str| loaded.get(ident).copied().unwrap_or(0);
         let missing: Vec<(String, String)> = raw
             .iter()
             .filter_map(|v| {

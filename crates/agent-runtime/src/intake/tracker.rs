@@ -158,7 +158,8 @@ impl Runtime {
     pub fn tracker_commit(&self, project: &str, s: &TrackerSettings) -> Result<Value> {
         let p = self.intake_project(project)?;
         self.db.set_tracker(&p.id, s)?;
-        if !s.intake_source().is_none() {
+        // The tree is cached whatever the Ready filter names.
+        if super::readable(s) {
             self.intake_refresh_now(&p.id);
         }
         self.tracker_settings(project)

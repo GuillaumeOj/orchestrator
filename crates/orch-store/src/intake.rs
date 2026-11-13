@@ -273,6 +273,16 @@ impl Store {
                 let meta = js(&it.meta);
                 match have {
                     None => {
+                        // An incremental read does not know the place in the whole order: last.
+                        let at = if full {
+                            pos as i64
+                        } else {
+                            tx.query_row(
+                                "SELECT coalesce(max(position) + 1, 0) FROM work_nodes WHERE project_id=?1",
+                                [&id],
+                                |r| r.get(0),
+                            )?
+                        };
                         tx.execute(
                             "INSERT INTO work_nodes(project_id, node_id, source, kind, ref, title, url, body, meta,
                                updated_at, fetched_at_ms, position, state, parent_id)
@@ -289,7 +299,7 @@ impl Store {
                                 meta,
                                 it.rev,
                                 now_ms as i64,
-                                pos as i64,
+                                at,
                                 it.parent_id
                             ],
                         )?;

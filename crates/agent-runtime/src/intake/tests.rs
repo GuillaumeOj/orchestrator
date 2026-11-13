@@ -1048,6 +1048,7 @@ fn the_lane_shows_ready_nodes_with_their_breadcrumb_and_actions_and_the_tree_sta
     assert_eq!(it["actions"]["solo"], "ok");
     assert_eq!(it["actions"]["team"], json!({"disabled": "This project has no team yet"}));
     assert_eq!(it["actions"]["program"], json!({"disabled": "No sub-issues to run as a program"}));
+    assert_eq!(f.source()["counts"], json!({"items": 4, "roots": 2, "ready": 1}), "milestone and #3 are roots");
     // The whole tree is cached, the lane only shows what is ready.
     assert_eq!(f.rt.db.work_nodes(Some(&f.project.id)).unwrap().len(), 4);
     // The Ready filter is read when the lane is: no refetch.
