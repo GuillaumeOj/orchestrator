@@ -693,7 +693,8 @@ impl Runtime {
             let status = self.db.intake_status(&p.id).unwrap_or_default();
             let shown = ready.len().min(src::CAP);
             // The tree: the node, its ancestors (root first, the project row left out) and the row actions.
-            let ctx = work::Ctx::new(self, p).ok();
+            // (built only when the lane has rows to decorate: this runs on every snapshot)
+            let ctx = (!ready.is_empty() || !hidden.is_empty()).then(|| work::Ctx::new(self, p).ok()).flatten();
             for r in ready.iter().take(src::CAP).chain(hidden.iter()) {
                 let mut v = item_json(&ItemFields::of_row(r), &facts, &est);
                 v["node"] = json!(r.node_id);
