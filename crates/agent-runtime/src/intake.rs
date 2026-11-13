@@ -26,11 +26,13 @@ pub mod brief;
 pub mod estimate;
 pub mod report;
 pub mod start;
+pub mod tracker;
 
 pub use start::IntakeLink;
 
 pub const TOPIC: &str = orch_store::INTAKE_TOPIC;
-/// Global setting: seconds between two refreshes of a project (F16).
+/// The migrated global setting of the seconds between two refreshes
+/// (B1: now `TrackerSettings::refresh_secs`, per project).
 pub const REFRESH_SECS_KEY: &str = "intake.refresh_secs";
 pub const DEFAULT_REFRESH_SECS: u64 = 600;
 /// Start-up refreshes are this far apart, per project.
@@ -100,7 +102,7 @@ impl Refresher {
 
 /// The command error of a rejected source (api-contract §1.1): its text is
 /// the JSON `{code: "bad_request", field, message}`.
-fn bad_request(field: &str, message: impl Into<String>) -> anyhow::Error {
+pub(crate) fn bad_request(field: &str, message: impl Into<String>) -> anyhow::Error {
     anyhow!(json!({"code": "bad_request", "field": field, "message": message.into()}).to_string())
 }
 
@@ -311,9 +313,9 @@ impl Runtime {
         Ok(())
     }
 
-    fn refresh_ms(&self) -> u64 {
-        let s = self.db.setting(REFRESH_SECS_KEY).ok().flatten().and_then(|v| v.as_u64());
-        s.unwrap_or(DEFAULT_REFRESH_SECS).clamp(60, 3600) * 1000
+    fn refresh_ms(&self, project: &str) -> u64 {
+        let s = self.db.tracker(project).map_or(DEFAULT_REFRESH_SECS, |t| t.refresh_secs);
+        s.clamp(60, 3600) * 1000
     }
 
     /// Projects with a source, by id.
@@ -454,7 +456,7 @@ impl Runtime {
         self.intake_refresh_inner(id);
         let mut s = lock(&self.intake.sched);
         s.inflight.remove(id);
-        let next = orch_protocol::now_ms() + self.refresh_ms();
+        let next = orch_protocol::now_ms() + self.refresh_ms(id);
         // A request made during the refresh stays due.
         if s.due.get(id) != Some(&0) {
             s.due.insert(id.to_string(), next);

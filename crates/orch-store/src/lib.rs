@@ -13,6 +13,7 @@ mod report;
 mod reports;
 mod runtime_rows;
 mod teams;
+mod tracker;
 mod transcripts;
 mod util;
 
@@ -33,6 +34,9 @@ pub use teams::{
     Artifact, CiJob, CiSummary, DEFAULT_INTAKE_GLOB, DeliveryState, Feature, FileAccess, FileKind, GithubIntakeFilter,
     IntakeInvalid, IntakeSource, Message, PrPosition, PrStatus, ProjectFile, ProjectSettings, SettingsEdit, Task,
     TaskBackendConfig, TaskFlow, TaskNote, TeamRun, pr_number_from_url, valid_repo,
+};
+pub use tracker::{
+    LINEAR_STATE_TYPES, MigrationNotice, ProjectBoard, REFRESH_SECS, ReadyFilter, Tracker, TrackerSettings, WriteBack,
 };
 pub use transcripts::{IndexStats, SearchHit, TranscriptFile, encode_project_dir, extract_text};
 pub use util::{tag, untag};

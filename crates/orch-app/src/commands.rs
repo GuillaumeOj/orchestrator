@@ -596,6 +596,40 @@ pub async fn linear_states(core: CoreState<'_>, team: String) -> Res<Value> {
 
 // ---- P4.5 intake (api-contract §3.1)
 
+// ---- implement-improve-intake B1: tracker settings (api-contract §1)
+
+#[tauri::command]
+pub async fn tracker_settings(core: CoreState<'_>, project: String) -> Res<Value> {
+    blocking(core, move |c| c.runtime()?.tracker_settings(&project)).await
+}
+
+/// Validates and stores; `migrate` answers the `{confirm}` of a switch to
+/// Linear for a project with tasks (D8).
+#[tauri::command]
+pub async fn tracker_settings_set(
+    core: CoreState<'_>,
+    project: String,
+    settings: Value,
+    migrate: Option<String>,
+) -> Res<Value> {
+    blocking(core, move |c| c.tracker_settings_set(&project, &settings, migrate.as_deref())).await
+}
+
+#[tauri::command]
+pub async fn tracker_preview(core: CoreState<'_>, project: String, settings: Value) -> Res<Value> {
+    blocking(core, move |c| c.runtime()?.tracker_preview(&project, &settings)).await
+}
+
+#[tauri::command]
+pub async fn tracker_options(core: CoreState<'_>, project: String, tracker: Value) -> Res<Value> {
+    blocking(core, move |c| c.runtime()?.tracker_options(&project, &tracker)).await
+}
+
+#[tauri::command]
+pub async fn tracker_notice_dismiss(core: CoreState<'_>, project: String) -> Res<Value> {
+    blocking(core, move |c| c.runtime()?.tracker_notice_dismiss(&project)).await
+}
+
 #[tauri::command]
 pub async fn intake_source(core: CoreState<'_>, project: String) -> Res<Value> {
     blocking(core, move |c| c.runtime()?.intake_source(&project)).await

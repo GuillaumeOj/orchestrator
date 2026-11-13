@@ -612,6 +612,14 @@ CREATE TABLE intake_items (
 );
 CREATE INDEX intake_items_project ON intake_items(project_id, position);
 "#,
+    // 18 (implement-improve-intake B1): one tracker per project replaces the
+    // task backend and the intake source; `tracker_notice` is its migration
+    // notice (JSON, NULL = none). The two old columns stay, unread (I1 drops
+    // them). The data step (`tracker::migrate_projects`) runs after this SQL.
+    r#"
+ALTER TABLE projects ADD COLUMN tracker TEXT;
+ALTER TABLE projects ADD COLUMN tracker_notice TEXT;
+"#,
 ];
 
 pub(crate) fn migrate(c: &mut Connection) -> Result<()> {
@@ -622,6 +630,9 @@ pub(crate) fn migrate(c: &mut Connection) -> Result<()> {
     for (i, sql) in MIGRATIONS.iter().enumerate().skip(have as usize) {
         let tx = c.transaction()?;
         tx.execute_batch(sql)?;
+        if i == 17 {
+            crate::tracker::migrate_projects(&tx)?;
+        }
         tx.pragma_update(None, "user_version", (i + 1) as u32)?;
         tx.commit()?;
     }

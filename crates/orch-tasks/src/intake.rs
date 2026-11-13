@@ -468,6 +468,43 @@ pub fn github_options(gh: &dyn Gh, repo: &str) -> R<Value> {
     Ok(json!({"labels": labels, "milestones": milestones, "projects": projects, "error": error}))
 }
 
+const ISSUE_TYPES_QUERY: &str = "query OrchIssueTypes($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { \
+    issueTypes(first: 50) { nodes { name } } } }";
+
+/// The issue types of `repo` (none when GitHub has none or does not say:
+/// the types are an option, not a requirement).
+fn github_issue_types(gh: &dyn Gh, repo: &str) -> Vec<String> {
+    let (owner, name) = repo.split_once('/').unwrap_or((repo, ""));
+    let v = gh_json(
+        gh,
+        &[
+            "api",
+            "graphql",
+            "-f",
+            &format!("query={ISSUE_TYPES_QUERY}"),
+            "-f",
+            &format!("owner={owner}"),
+            "-f",
+            &format!("name={name}"),
+        ],
+    );
+    match v {
+        Ok(v) if graphql_errors(&v).is_none() => names(&v["data"]["repository"]["issueTypes"], "name"),
+        _ => vec![],
+    }
+}
+
+/// `tracker_options` for GitHub (contract §1): `intake_options` with the
+/// repository's issue types and the owner's Projects v2 boards (with their
+/// *Status* options) as `boards`; a boards failure is in `error`.
+pub fn github_tracker_options(gh: &dyn Gh, repo: &str) -> R<Value> {
+    let mut o = github_options(gh, repo)?;
+    o["boards"] = o["projects"].take();
+    o.as_object_mut().map(|m| m.remove("projects"));
+    o["issue_types"] = json!(github_issue_types(gh, repo));
+    Ok(o)
+}
+
 /// The checkout's repository by `gh repo view` (when no remote names it).
 pub fn gh_repo(gh: &dyn Gh) -> R<String> {
     let v = gh_json(gh, &["repo", "view", "--json", "nameWithOwner"])?;
@@ -638,6 +675,43 @@ pub fn linear_options(gql: &dyn Graphql, backoff: &Backoff, now: u64, team: &str
         .ok_or_else(|| SourceError::new("not_found", format!("no Linear team {team}")))?;
     let labels: Vec<String> = names(&t["labels"], "name").into_iter().filter(|l| !is_orch_label(l)).collect();
     Ok(json!({"labels": labels}))
+}
+
+const LINEAR_TEAMS_QUERY: &str = "query OrchTrackerTeams { teams(first: 100) { nodes { id key name } } }";
+
+const LINEAR_TRACKER_QUERY: &str = "query OrchTrackerOptions($keys: [String!]) { teams(first: 100, filter: { key: { in: $keys } }) { nodes { key \
+    labels(first: 100) { nodes { name } } states(first: 100) { nodes { id name type position } } \
+    projects(first: 100) { nodes { id name } } } } }";
+
+/// `tracker_options` for Linear (contract §1, F17): the workspace's teams,
+/// and, for the `teams` (keys) already picked, their projects, labels and
+/// workflow states.
+pub fn linear_tracker_options(gql: &dyn Graphql, backoff: &Backoff, now: u64, teams: &[String]) -> R<Value> {
+    let d = backoff.call(now, || gql.call(LINEAR_TEAMS_QUERY, &json!({})))?;
+    let all: Vec<Value> = d["teams"]["nodes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|t| json!({"id": t["id"], "key": t["key"], "name": t["name"]}))
+        .collect();
+    let (mut projects, mut labels, mut states) = (vec![], vec![], vec![]);
+    if !teams.is_empty() {
+        let d = backoff.call(now, || gql.call(LINEAR_TRACKER_QUERY, &json!({"keys": teams})))?;
+        for t in d["teams"]["nodes"].as_array().into_iter().flatten() {
+            for p in t["projects"]["nodes"].as_array().into_iter().flatten() {
+                projects.push(json!({"id": p["id"], "name": p["name"], "team": t["key"]}));
+            }
+            for l in names(&t["labels"], "name") {
+                if !is_orch_label(&l) && !labels.contains(&l) {
+                    labels.push(l);
+                }
+            }
+            let mut st: Vec<&Value> = t["states"]["nodes"].as_array().into_iter().flatten().collect();
+            st.sort_by(|a, b| a["position"].as_f64().unwrap_or(0.0).total_cmp(&b["position"].as_f64().unwrap_or(0.0)));
+            states.extend(st.into_iter().map(|s| json!({"id": s["id"], "name": s["name"], "type": s["type"]})));
+        }
+    }
+    Ok(json!({"teams": all, "projects": projects, "labels": labels, "states": states}))
 }
 
 // ------------------------------------------------------------------ repo docs
