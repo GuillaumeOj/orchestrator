@@ -5,7 +5,7 @@
   // decision shows its card in the chat, an agent focuses it, a task opens its card.
   // Compact (rows, tooltips): the reason truncates, since never does;
   // the full text is on hover. The status badge sits before it, on the surface.
-  import { focusCard, now30, openAgent, openBoard } from '../lib/app.svelte.js';
+  import { focusCard, now30, openAgent, openTask } from '../lib/app.svelte.js';
   import { waitLine, waitSince, waitWhat } from '../lib/now.svelte.js';
   import { WAITING_ON } from '../lib/status.js';
 
@@ -26,7 +26,7 @@
       case 'agent':
         return () => openAgent(ref);
       case 'task':
-        return rec.project ? () => openBoard(rec.project, ref.replace(/^T-/, '')) : null;
+        return rec.project ? () => openTask(rec.project, ref, { run: rec.run, feature: rec.feature }) : null;
       default:
         return null;
     }

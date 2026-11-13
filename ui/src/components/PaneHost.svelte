@@ -4,7 +4,6 @@
   // body switch by `spec.type` picks the pane.
   import { app, focusPane } from '../lib/app.svelte.js';
   import AgentPane from '../panes/AgentPane.svelte';
-  import BoardPane from '../panes/BoardPane.svelte';
   import DiffPane from '../panes/DiffPane.svelte';
   import FeaturePane from '../panes/FeaturePane.svelte';
   import MissionPane from '../panes/MissionPane.svelte';
@@ -29,7 +28,6 @@
     {:else if spec.type === 'diff'}<DiffPane {paneId} />
     {:else if spec.type === 'canvas'}<TeamCanvasPane {paneId} />
     {:else if spec.type === 'feature'}<FeaturePane {paneId} />
-    {:else if spec.type === 'board'}<BoardPane {paneId} />
     {:else if spec.type === 'report'}<ReportPane {paneId} />
     {:else if spec.type === 'setup'}<SetupPane />{/if}
   </div>

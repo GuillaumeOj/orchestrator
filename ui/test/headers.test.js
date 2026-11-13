@@ -98,7 +98,7 @@ describe('project pane header (R4)', () => {
 describe('feature pane header (R9)', () => {
   const live = { id: 'run-1', status: 'executing', team_id: 't1', started_at_ms: Date.now() - 3600000 };
 
-  it('running: Pause, Stop, danger Delete, `⋯` = Board, Canvas, Publish to Notion, Open in Notion', async () => {
+  it('running: Pause, Stop, danger Delete, `⋯` = Show source in Work, Canvas, Publish to Notion, Open in Notion', async () => {
     replies.feature_view = view(live);
     replies.feature_doc = '# Spec';
     app.panes = { f1: { type: 'feature', featureId: 'f1' } };
@@ -106,7 +106,7 @@ describe('feature pane header (R9)', () => {
     await waitFor(() => expect(container.querySelector('.fh')).toBeTruthy());
     const head = container.querySelector('.fh');
     expectPattern(head, [['Pause team'], ['Stop the team…'], ['Delete feature…', true], ['More actions']]);
-    expect(await menuLabels(head)).toEqual(['Board', 'Canvas', 'Publish to Notion', 'Open in Notion']);
+    expect(await menuLabels(head)).toEqual(['Show source in Work', 'Canvas', 'Publish to Notion', 'Open in Notion']);
   });
 
   it('two rows: row 1 = slug, pill, actions; row 2 = team, branch, started', async () => {

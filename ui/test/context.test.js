@@ -20,18 +20,7 @@ vi.mock('../src/lib/ipc.js', () => ({
   },
 }));
 const stub = async () => ({ default: (await import('./fixtures/PaneStub.svelte')).default });
-for (const p of [
-  'Agent',
-  'Board',
-  'Diff',
-  'Feature',
-  'Mission',
-  'Project',
-  'Report',
-  'Setup',
-  'TeamCanvas',
-  'TermPaneView',
-])
+for (const p of ['Agent', 'Diff', 'Feature', 'Mission', 'Project', 'Report', 'Setup', 'TeamCanvas', 'TermPaneView'])
   vi.doMock(`../src/panes/${p === 'TermPaneView' ? p : `${p}Pane`}.svelte`, stub);
 
 const A = await import('../src/lib/app.svelte.js');
@@ -40,7 +29,7 @@ const { default: Workspace } = await import('../src/components/Workspace.svelte'
 
 const feature = { id: 'blog-fx', project_id: 'blog', slug: 'fx', branch: 'orch/fx/integration', run: null };
 
-/** Tabs: Mission control (app-wide), shop-api project, blog feature, shop-api board, an editor without a project. */
+/** Tabs: Mission control (app-wide), shop-api project, blog feature, shop-api diff, an editor without a project. */
 function seed() {
   app.data = { ...fixture(), features: [feature] };
   app.now = nowOf(app.data, { decisions: [] });
@@ -48,7 +37,7 @@ function seed() {
     m: { type: 'mission', title: 'Mission control' },
     sp: { type: 'project', projectId: 'shop-api', title: 'shop-api' },
     bf: { type: 'feature', featureId: 'blog-fx', projectId: 'blog', title: 'fx' },
-    sb: { type: 'board', projectId: 'shop-api', title: 'shop-api tasks' },
+    sb: { type: 'diff', projectId: 'shop-api', title: 'diff' },
     ed: { type: 'editor', projectId: null, title: 'nvim · ' },
   };
   app.layout = { kind: 'leaf', id: 'l1', tabs: ['m', 'sp', 'bf', 'sb', 'ed'], active: 'sp' };
@@ -74,7 +63,6 @@ describe('paneProject (design-notes §5.3)', () => {
   it('project-bound panes give their project; app-wide ones give null', () => {
     const p = A.paneProject;
     expect(p({ type: 'project', projectId: 'a' })).toBe('a');
-    expect(p({ type: 'board', projectId: 'a' })).toBe('a');
     expect(p({ type: 'diff', projectId: 'a' })).toBe('a');
     expect(p({ type: 'trust', projectId: 'a' })).toBe('a');
     // A feature: the listed feature's project wins over the spec's.
@@ -162,7 +150,7 @@ describe('visible tabs and the active tab (rules 1, 2, §12.8)', () => {
 
 describe('opening a pane of another project (rule 3)', () => {
   it('switches the context to it, but All stays All; app-wide panes never change it', () => {
-    A.openBoard('blog');
+    A.openProject('blog');
     expect(app.workspace.project).toBe('all');
     A.setContext('shop-api');
     A.openFeature('blog-fx');

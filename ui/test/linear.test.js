@@ -1,12 +1,9 @@
 // T-12: Project settings › Task backend Linear (FR-501, FR-503) and the
-// Board's Linear cards, against a mocked core.
+// Linear helpers.
 
-import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { app } from '../src/lib/app.svelte.js';
+import { describe, expect, it, vi } from 'vitest';
 import { mappingRows, mappingToSave, syncLine } from '../src/lib/linear.js';
 import { handle } from '../src/lib/teams.js';
-import { fixture } from './fixture.js';
 
 const calls = [];
 const replies = {};
@@ -20,8 +17,6 @@ vi.mock('../src/lib/ipc.js', () => ({
   listen: () => Promise.resolve(() => {}),
   errText: (e) => (typeof e === 'string' ? e : (e?.message ?? String(e))),
 }));
-
-const { default: BoardPane } = await import('../src/panes/BoardPane.svelte');
 
 const STATES = [
   { id: 's1', name: 'Backlog', type: 'backlog', default_column: 'backlog' },
@@ -47,60 +42,5 @@ describe('linear helpers', () => {
       'Last sync 15:04: 7 pushed · 0 pulled · 0 conflicts',
     );
     expect(handle({ id: 3, backend: 'linear', external_id: 'ENG-142' })).toBe('ENG-142');
-  });
-});
-
-describe('Board › Linear', () => {
-  beforeEach(() => {
-    cleanup();
-    calls.length = 0;
-    for (const k of Object.keys(replies)) delete replies[k];
-    app.data = fixture();
-    app.toasts = [];
-    app.panes = {};
-  });
-
-  it('board on Linear: the header, the ENG ids and the remote-won marker', async () => {
-    const task = (id, ext, over = {}) => ({
-      id,
-      project_id: 'shop',
-      backend: 'linear',
-      external_id: ext,
-      feature_id: null,
-      team_run_id: null,
-      title: `Task ${id}`,
-      body: '',
-      status: 'ready',
-      node: null,
-      agent_id: null,
-      depends_on: [],
-      branch: null,
-      notes: [],
-      created_at_ms: 1,
-      updated_at_ms: 1,
-      ...over,
-    });
-    replies.board_view = {
-      project: { id: 'shop', name: 'shop-api' },
-      backend: 'linear',
-      linear_team: 'ENG',
-      repo: null,
-      last_sync_error: null,
-      tasks: [task(1, 'ENG-142'), task(2, 'ENG-140', { remote_won: true })],
-      features: [],
-      runs: [],
-    };
-    replies.board_sync = { imported: 0, updated: 0, pushed: 7, pulled: 1, conflicts: 1, errors: [] };
-    app.panes.b1 = { type: 'board', projectId: 'shop', title: 'shop tasks' };
-    const { container, getByText } = render(BoardPane, { paneId: 'b1' });
-    await waitFor(() => getByText('ENG-142'));
-    expect(container.textContent).toContain('Linear · ENG');
-    expect(container.textContent).toContain('↓ changed in Linear');
-    await fireEvent.keyDown(container.querySelector('.board'), { key: 'r' });
-    await waitFor(() =>
-      expect(app.toasts.at(-1)?.text).toBe(
-        'Synced shop-api with Linear · 7 pushed · 1 pulled · 1 conflict (Linear won)',
-      ),
-    );
   });
 });
