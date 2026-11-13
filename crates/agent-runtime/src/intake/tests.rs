@@ -59,6 +59,8 @@ struct FakeLinear {
     sent: Arc<Mutex<Vec<(String, Value)>>>,
     /// Mutations fail with this.
     write_error: Arc<Mutex<Option<String>>>,
+    /// The projects of the tree read (with their milestones).
+    projects: Arc<Mutex<Vec<Value>>>,
 }
 
 impl Graphql for FakeLinear {
@@ -97,7 +99,7 @@ impl Graphql for FakeLinear {
             return Ok(json!({"issueUpdate": {"success": true}, "commentCreate": {"success": true}}));
         }
         let r = self.issues.lock().unwrap().clone()?;
-        Ok(json!({"issues": {"nodes": r}, "projects": {"nodes": []}}))
+        Ok(json!({"issues": {"nodes": r}, "projects": {"nodes": self.projects.lock().unwrap().clone()}}))
     }
 }
 
@@ -122,6 +124,7 @@ fn fx() -> Fx {
         calls: Arc::default(),
         sent: Arc::default(),
         write_error: Arc::default(),
+        projects: Arc::default(),
     };
     let l = linear.clone();
     cfg.linear = Some(LinearFactory(Arc::new(move || Box::new(l.clone()))));
@@ -2731,4 +2734,95 @@ fn the_user_can_include_a_closed_item_name_an_added_feature_and_see_when_a_new_i
     let p = f.rt.program_update(&id, &json!({"add_item": "gh:acme/shop#18", "mode": "solo", "slug": "gifts"})).unwrap();
     assert_eq!(p["features"].as_array().unwrap().last().unwrap()["slug"], "gifts");
     assert_eq!(p["new_items_added"], json!({}));
+}
+
+// ------------------------------------------------------------ the exit criterion (I1)
+
+/// A run merges: its state, and the run event the app emits for it.
+fn merge_run(f: &Fx, slug: &str) {
+    set_run(f, slug, orch_team::RunState::Done);
+    f.rt.work_on_run_event(&format!("run-{slug}"), "run.state", &json!({"from": "executing", "to": "done"}));
+}
+
+fn write_back_on(f: &Fx) {
+    let mut t = f.rt.db.tracker(&f.project.id).unwrap();
+    t.write_back.enabled = true;
+    f.rt.db.set_tracker(&f.project.id, &t).unwrap();
+}
+
+fn closed_on_github(f: &Fx, n: u64) -> bool {
+    wb_call(f, &[&format!("PATCH repos/acme/shop/issues/{n}"), "state=closed"])
+}
+
+#[test]
+fn exit_criterion_a_github_epic_runs_as_one_program_and_closes_with_its_parent() {
+    let f = program_fixture();
+    fake_start(&f);
+    write_back_on(&f);
+    for n in [12, 13, 14, 15, 17] {
+        f.answer(&format!("repos/acme/shop/issues/{n}"), json!({"node_id": format!("I_{n}"), "state": "open"}));
+    }
+    // One plan, one approval: the epic's three open sub-issues, #14 blocked by #13.
+    let id = started(&f);
+    assert_eq!(
+        state(&f, &id),
+        [s("address-step", "running"), s("payment-step", "waiting"), s("order-summary", "running")]
+    );
+    assert!(!closed_on_github(&f, 13), "nothing is closed before it merges");
+    // #14 starts only once #13 is merged.
+    merge_run(&f, "address-step");
+    assert_eq!(state(&f, &id)[..2], [s("address-step", "merged"), s("payment-step", "running")]);
+    f.rt.db.flush().unwrap();
+    assert!(closed_on_github(&f, 13) && closed_on_github(&f, 17), "the merged feature's items are closed");
+    assert!(!closed_on_github(&f, 14));
+    merge_run(&f, "payment-step");
+    merge_run(&f, "order-summary");
+    f.rt.db.flush().unwrap();
+    assert_eq!(f.rt.program(&id).unwrap()["status"], "done");
+    for n in [13, 14, 15, 17, 12] {
+        assert!(closed_on_github(&f, n), "#{n} closed (the epic with the program)");
+    }
+}
+
+#[test]
+fn exit_criterion_a_linear_project_with_two_milestones_runs_and_completes() {
+    let l = fx();
+    let mut tr = l.rt.db.tracker(&l.project.id).unwrap();
+    tr.tracker = orch_store::Tracker::Linear { teams: vec!["ENG".into()], projects: None };
+    tr.ready = orch_store::ReadyFilter::defaults("linear");
+    tr.write_back.enabled = true;
+    l.rt.db.set_tracker(&l.project.id, &tr).unwrap();
+    *l.linear.projects.lock().unwrap() = vec![json!({"id": "pr1", "name": "Checkout", "slugId": "co",
+        "url": "https://linear.app/acme/project/co", "state": "started", "targetDate": null,
+        "updatedAt": "2026-11-01T00:00:00Z",
+        "projectMilestones": {"nodes": [{"id": "m1", "name": "Alpha", "targetDate": null},
+                                        {"id": "m2", "name": "Beta", "targetDate": null}]},
+        "initiatives": {"nodes": []}})];
+    let issue = |ident: &str, m: &str| {
+        json!({"id": format!("id-{ident}"), "identifier": ident, "title": format!("T {ident}"), "description": "d",
+        "url": format!("https://linear.app/acme/issue/{ident}/x"), "priority": 0, "estimate": null, "sortOrder": 1.0,
+        "updatedAt": "2026-11-10T00:00:00Z", "dueDate": null, "state": {"name": "Todo", "type": "unstarted"},
+        "cycle": null, "project": {"id": "pr1"}, "projectMilestone": {"id": m, "name": m}, "parent": null,
+        "team": {"key": "ENG"}, "labels": {"nodes": []}, "assignee": null, "children": {"nodes": []},
+        "relations": {"nodes": []}, "inverseRelations": {"nodes": []}})
+    };
+    *l.linear.issues.lock().unwrap() = Ok(vec![issue("ENG-1", "m1"), issue("ENG-2", "m2")]);
+    l.refresh();
+    fake_start(&l);
+    let v = plan(&l, json!(["lin-project:pr1"]), "child", json!({}));
+    let id = l.rt.program_start(&v["program"]).unwrap()["program"]["id"].as_str().unwrap().to_string();
+    let slugs: Vec<String> = state(&l, &id).into_iter().map(|(s, _)| s).collect();
+    assert_eq!(slugs.len(), 2, "one feature per milestone: {slugs:?}");
+    for slug in &slugs {
+        merge_run(&l, slug);
+    }
+    l.rt.db.flush().unwrap();
+    assert_eq!(l.rt.program(&id).unwrap()["status"], "done");
+    let sent = l.linear.sent.lock().unwrap();
+    let done = sent.iter().filter(|(q, v)| q.contains("issueUpdate") && v["input"]["stateId"] == "s-done").count();
+    assert_eq!(done, 2, "both issues moved to Done");
+    assert!(
+        sent.iter().any(|(q, v)| q.contains("projectUpdate") && v["id"] == "pr1" && v["input"]["state"] == "completed"),
+        "the project is completed with the program"
+    );
 }

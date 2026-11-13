@@ -68,6 +68,12 @@ fn carries(hay: &str, id: &str) -> bool {
     })
 }
 
+/// `gh-milestone:owner/name/3`: the repository and the milestone's number.
+fn github_milestone(node: &str) -> Option<(String, u64)> {
+    let (repo, n) = node.strip_prefix("gh-milestone:")?.rsplit_once('/')?;
+    Some((repo.to_string(), n.parse().ok()?))
+}
+
 /// A node's id says which tracker item it is: `gh:owner/name#12`.
 fn github_item(node: &str) -> Option<(String, u64)> {
     let rest = node.strip_prefix("gh:")?;
@@ -112,10 +118,14 @@ impl Runtime {
     fn wb_owns(&self, p: &Project, t: &TrackerSettings, row: &IntakeRow) -> bool {
         match &t.tracker {
             Tracker::Github { repo, .. } => {
-                let Some((r, _)) = github_item(&row.node_id) else { return false };
+                let Some((r, _)) = github_item(&row.node_id).or_else(|| github_milestone(&row.node_id)) else {
+                    return false;
+                };
                 let mine = repo.clone().or_else(|| self.intake_repo_known(p, &t.intake_source()));
                 mine.is_none_or(|m| m.eq_ignore_ascii_case(&r))
             }
+            // A project is the project's own: only its status is written (when a program on it is done).
+            Tracker::Linear { .. } if row.node_id.starts_with("lin-project:") => true,
             Tracker::Linear { teams, .. } => {
                 let Some(rest) = row.node_id.strip_prefix("lin:") else { return false };
                 let team = rest.rsplit_once('-').map_or("", |(t, _)| t);
@@ -127,6 +137,22 @@ impl Runtime {
 
     fn wb_apply(&self, p: &Project, t: &TrackerSettings, row: &IntakeRow, op: &WbOp) -> Result<(), SourceError> {
         let wbk = &t.write_back;
+        // The root of a program that is not an issue: a GitHub milestone is closed, a Linear project completed.
+        if matches!(op, WbOp::Parent) && row.kind != "issue" {
+            return match (&t.tracker, row.kind.as_str()) {
+                (Tracker::Github { .. }, "milestone") => {
+                    let (repo, n) =
+                        github_milestone(&row.node_id).ok_or_else(|| SourceError::new("failed", "not a milestone"))?;
+                    w::gh_close_milestone(self.gh_in(p).as_ref(), &repo, n)
+                }
+                (Tracker::Linear { .. }, "linear_project") => {
+                    let id = row.node_id.strip_prefix("lin-project:").unwrap_or_default();
+                    w::lin_project_complete(self.linear_transport().as_ref(), id)
+                }
+                // A Linear milestone or initiative has no state to close.
+                _ => Ok(()),
+            };
+        }
         match &t.tracker {
             Tracker::Github { project_board, .. } => {
                 let (repo, n) =
