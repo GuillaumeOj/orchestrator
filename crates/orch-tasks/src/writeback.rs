@@ -172,6 +172,12 @@ pub fn gh_board_status(g: &dyn Gh, repo: &str, n: u64, owner: &str, number: u64,
     Ok(name)
 }
 
+/// Closes milestone `n` of `repo` (the root of a program is done).
+pub fn gh_close_milestone(g: &dyn Gh, repo: &str, n: u64) -> R<()> {
+    gh(g, &["api", "-X", "PATCH", &format!("repos/{repo}/milestones/{n}"), "-f", "state=closed"])?;
+    Ok(())
+}
+
 /// Makes issue `child` a sub-issue of `parent` (both of `repo`).
 pub fn gh_add_sub_issue(g: &dyn Gh, repo: &str, parent: u64, child: u64) -> R<()> {
     let (p, c) = (gh_node_id(g, repo, parent)?, gh_node_id(g, repo, child)?);
@@ -275,6 +281,19 @@ pub fn lin_comment(g: &dyn Graphql, issue: &str, body: &str) -> R<()> {
         "mutation OrchWbComment($input: CommentCreateInput!) { commentCreate(input: $input) { success } }",
         json!({"input": {"issueId": issue, "body": body}}),
     )?;
+    Ok(())
+}
+
+/// Marks a Linear project completed (the root of a program is done).
+pub fn lin_project_complete(g: &dyn Graphql, project: &str) -> R<()> {
+    let d = lin(
+        g,
+        "mutation OrchWbProject($id: String!, $input: ProjectUpdateInput!) { projectUpdate(id: $id, input: $input) { success } }",
+        json!({"id": project, "input": {"state": "completed"}}),
+    )?;
+    if d["projectUpdate"]["success"] == false {
+        return Err(SourceError::new("linear_write", "Linear did not apply the change"));
+    }
     Ok(())
 }
 

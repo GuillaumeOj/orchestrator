@@ -554,9 +554,13 @@ fn linear_issues_query() -> String {
     )
 }
 
+/// A Linear team given as its id (a UUID) rather than its key.
+pub fn is_team_id(t: &str) -> bool {
+    t.len() == 36 && t.chars().filter(|c| *c == '-').count() == 4
+}
+
 fn team_in(teams: &[String]) -> Value {
-    let (ids, keys): (Vec<&String>, Vec<&String>) =
-        teams.iter().partition(|t| t.len() == 36 && t.chars().filter(|c| *c == '-').count() == 4);
+    let (ids, keys): (Vec<&String>, Vec<&String>) = teams.iter().partition(|t| is_team_id(t));
     match (ids.is_empty(), keys.is_empty()) {
         (_, true) => json!({"id": {"in": ids}}),
         (true, _) => json!({"key": {"in": keys}}),

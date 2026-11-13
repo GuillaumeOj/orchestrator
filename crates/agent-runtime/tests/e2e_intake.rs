@@ -108,6 +108,13 @@ fn refs(rt: &agent_runtime::runtime::Runtime, project: &str) -> Vec<String> {
     items_of(rt, project).iter().filter(|i| i["state"] == "ready").map(|i| i["ref"].as_str().unwrap().into()).collect()
 }
 
+/// Stores a legacy-shaped source (adapted into the project's tracker) and reads it now.
+fn set_source(rt: &agent_runtime::runtime::Runtime, project: &str, src: &Value) {
+    let s: orch_store::IntakeSource = serde_json::from_value(src.clone()).unwrap();
+    rt.db.set_intake_source(project, &s.normalized()).unwrap();
+    wait_for("the source's first read", 30, || rt.intake_refresh_project(project));
+}
+
 #[test]
 fn a_week_of_work_started_from_intake() {
     let gh: Answers = Arc::default();
@@ -141,13 +148,13 @@ fn a_week_of_work_started_from_intake() {
         rt.db.upsert_role(r, 1).unwrap();
     }
     rt.db.save_team(&team, &roles, 1).unwrap();
-    rt.intake_source_set(
+    set_source(
+        &rt,
         &a.id,
         &json!({"type": "github", "repo": "acme/shop", "filter": {"kind": "label", "names": ["ready"]}}),
-    )
-    .unwrap();
-    rt.intake_source_set(&b.id, &json!({"type": "linear", "team": "ENG", "label": "next"})).unwrap();
-    rt.intake_source_set(&c.id, &json!({"type": "repo_docs"})).unwrap();
+    );
+    set_source(&rt, &b.id, &json!({"type": "linear", "team": "ENG", "label": "next"}));
+    set_source(&rt, &c.id, &json!({"type": "repo_docs"}));
 
     // Items of each source show in now.intake (the orch-labelled one does not).
     assert_eq!(refs(&rt, &a.id), ["#12", "#13"]);
@@ -162,7 +169,7 @@ fn a_week_of_work_started_from_intake() {
     // A team run from #12, through the prefilled launch form.
     let it12 =
         items_of(&rt, &a.id).into_iter().find(|i| i["ref"] == "#12").unwrap()["id"].as_str().unwrap().to_string();
-    let form = rt.intake_prefill(Some(&it12), None, Some("team")).unwrap()["launch"].clone();
+    let form = rt.work_prefill("gh:acme/shop#12", Some("team")).unwrap()["launch"].clone();
     assert!(form["brief"].as_str().unwrap().contains("#12"));
     let run = rt
         .launch(&LaunchSpec {
@@ -179,7 +186,7 @@ fn a_week_of_work_started_from_intake() {
 
     // A solo session from ENG-42, its text as the first message.
     let eng = items_of(&rt, &b.id)[0]["id"].as_str().unwrap().to_string();
-    let s = rt.intake_prefill(Some(&eng), None, Some("solo")).unwrap()["session"].clone();
+    let s = rt.work_prefill("lin:ENG-42", Some("solo")).unwrap()["session"].clone();
     let name = s["name"].as_str().unwrap().to_string();
     let spec = AgentSpec {
         agent_id: name.clone(),

@@ -377,6 +377,10 @@ fn program_card(kind: &str, p: &Value) -> (String, String, Vec<Value>, Vec<Actio
     let actions = match kind {
         "program_new_item" => vec![act("add", "Add to program", Some("⏎")), act("ignore", "Ignore", Some("r"))],
         "program_item_closed" => vec![act("skip", "Skip it", Some("⏎")), act("keep", "Keep", Some("r"))],
+        // A dependent of work outside the program that failed or was cancelled: start it anyway, or skip it.
+        "program_feature_failed" if !p["dependency"].is_null() => {
+            vec![act("start_anyway", "Start anyway", Some("⏎")), act("skip", "Skip it", Some("x"))]
+        }
         "program_feature_failed" => vec![act("open", "Open feature", Some("⏎")), act("skip", "Skip it", Some("x"))],
         "writeback_failing" => {
             vec![act("settings", "Open settings", Some("⏎")), act("turn_off", "Turn off write-back", None)]

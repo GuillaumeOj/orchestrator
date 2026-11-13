@@ -17,8 +17,8 @@ use crate::linear::{GqlError, Graphql};
 
 mod tree;
 pub use tree::{
-    CLOSED_WINDOW_DAYS, GithubTree, LinearTree, Node, Tree, dfs_order, github_children, github_tree, linear_children,
-    linear_tree, local_tree, tree_since,
+    CLOSED_WINDOW_DAYS, GithubTree, LinearTree, Node, Tree, dfs_order, github_children, github_tree, is_team_id,
+    linear_children, linear_tree, local_tree, tree_since,
 };
 
 /// Items per project in the lane (more → "+ n more in <source>").

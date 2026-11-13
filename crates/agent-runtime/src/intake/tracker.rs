@@ -99,10 +99,12 @@ impl<'a> Preview<'a> {
         let n = &self.tree.nodes[i];
         let meta = &self.metas[i];
         let kids: Vec<&src::Node> = self.tree.nodes.iter().filter(|c| c.parent.as_deref() == Some(&n.id)).collect();
-        let open = kids
-            .iter()
-            .filter(|c| self.metas[self.by_id[c.id.as_str()]]["state"].as_str().unwrap_or("open") == "open")
-            .count();
+        // (Linear's `state` is the state's name: its type says whether the issue is open)
+        let is_open = |m: &Value| match m["state_type"].as_str() {
+            Some(t) => !matches!(t, "completed" | "canceled"),
+            None => m["state"].as_str().unwrap_or("open").eq_ignore_ascii_case("open"),
+        };
+        let open = kids.iter().filter(|c| is_open(&self.metas[self.by_id[c.id.as_str()]])).count();
         let breadcrumb = self.breadcrumb(i);
         json!({
             "id": n.id, "project": p.id, "kind": n.kind, "ref": n.f.reference, "title": n.f.title, "url": n.f.url,
@@ -194,31 +196,6 @@ impl Runtime {
             Err(e) => json!({"roots": 0, "items": 0, "ready": 0, "sample": [], "partial": false,
                              "warning": null, "error": e.json(), "files": files}),
         })
-    }
-
-    /// `intake_preview` (the old command): the Ready items `source` would list.
-    pub(super) fn preview_source(&self, p: &Project, s: &TrackerSettings) -> Value {
-        let facts = self.project_facts(p);
-        let est = self.intake_est();
-        match self.tree_fetch(p, s, None) {
-            Ok((tree, _)) => {
-                let v = Preview::new(s, &tree);
-                let kind = super::tracker_source(s);
-                let items: Vec<Value> = v
-                    .ready
-                    .iter()
-                    .take(PREVIEW)
-                    .map(|i| {
-                        let u = tree.nodes[*i].upsert();
-                        super::item_json(&super::ItemFields::of_upsert(&u, &p.id, kind), &facts, &est)
-                    })
-                    .collect();
-                let n = v.ready.len();
-                let shown = n.min(src::CAP);
-                json!({"count": shown, "more": n - shown, "partial": tree.partial, "items": items, "error": null})
-            }
-            Err(e) => json!({"count": 0, "more": 0, "partial": false, "items": [], "error": e.json()}),
-        }
     }
 
     /// `tracker_options`: what the form offers for a (partial) tracker.

@@ -6,7 +6,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use orch_secrets::Secrets;
 use orch_tasks::linear::{self, GqlError, Graphql};
 use serde_json::{Value, json};
@@ -84,17 +84,5 @@ impl Runtime {
                 token: self.linear_token.clone(),
             }),
         }
-    }
-
-    /// `linear_teams`: `{ teams: [{id, key, name}] }`.
-    pub fn linear_teams(&self) -> Result<Value> {
-        Ok(json!({"teams": linear::teams(self.linear_transport().as_ref())?}))
-    }
-
-    /// `linear_states`: a team's states with their default column, and its projects.
-    pub fn linear_states(&self, team: &str) -> Result<Value> {
-        let (states, projects) =
-            linear::team_states(self.linear_transport().as_ref(), team).map_err(|e| anyhow!("{e:#}"))?;
-        Ok(json!({"states": states, "projects": projects}))
     }
 }

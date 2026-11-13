@@ -162,7 +162,8 @@ pub(crate) struct Ctx {
     wb: HashMap<String, Value>,
 }
 
-fn phase(s: RunState) -> &'static str {
+/// The phase word of a run's state (Work's app state, a program feature's phase).
+pub(crate) fn phase(s: RunState) -> &'static str {
     match s {
         RunState::Draft | RunState::Spec | RunState::SpecGate => "spec",
         RunState::Planning => "planning",
@@ -1019,7 +1020,13 @@ impl Runtime {
 
     /// `brief_prefill(decision, mode)`: the form of a planned brief (no origin).
     pub fn brief_prefill(&self, decision: &str, mode: Option<&str>) -> Result<Value> {
-        self.intake_prefill(None, Some(decision), mode)
+        let d = self.open_brief(decision)?;
+        let pl = &d.payload;
+        let p = self.intake_project(pl["project"].as_str().unwrap_or(""))?;
+        let s = |k: &str| pl[k].as_str().map(str::to_string);
+        let (title, text) = (s("title").unwrap_or_default(), s("brief").unwrap_or_default());
+        let suggested = s("mode").unwrap_or_else(|| "team".into());
+        self.prefill_forms(&p, &title, &text, &suggested, s("team").as_deref(), s("slug"), None, mode)
     }
 
     /// Resolves who `@me` is for the project's tracker (the GitHub login, the Linear user name), once.
@@ -1065,7 +1072,7 @@ impl Runtime {
             for r in self.db.work_nodes_of("run", run).unwrap_or_default() {
                 self.wb_spawn(&r.project_id, &r.node_id, crate::writeback::WbOp::Merged);
             }
-            self.programs_tick();
+            self.programs_kick();
         }
     }
 

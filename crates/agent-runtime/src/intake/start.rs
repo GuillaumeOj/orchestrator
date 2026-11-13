@@ -177,7 +177,7 @@ impl Runtime {
         item.ok_or_else(|| anyhow!("no brief decision {id:?}"))
     }
 
-    fn open_brief(&self, id: &str) -> Result<InboxItem> {
+    pub(super) fn open_brief(&self, id: &str) -> Result<InboxItem> {
         let item = self.find_brief(id)?;
         if !item.open() {
             return Err(stale("brief closed", None));
@@ -207,39 +207,6 @@ impl Runtime {
                 Err(stale("already started", Some(json!({"kind": kind, "name": name}))))
             }
         }
-    }
-
-    /// `intake_prefill(item | brief_decision, mode)` (api-contract §3.2): the
-    /// launch or new-session form, built by the core.
-    pub fn intake_prefill(&self, item: Option<&str>, brief: Option<&str>, mode: Option<&str>) -> Result<Value> {
-        let (project, title, text, suggested, team, slug, url) = match (item, brief) {
-            (Some(i), None) => {
-                let r = self.ready_row(i)?;
-                let p = self.intake_project(&r.project_id)?;
-                let facts = self.project_facts(&p);
-                let suggested = super::suggested_mode(&r.meta, &facts).to_string();
-                let wanted = r.meta["team"].as_str().map(str::to_string);
-                let url = r.url.clone().unwrap_or_else(|| r.reference.clone());
-                (p, r.title.clone(), item_brief(&r), suggested, wanted, None, Some(url))
-            }
-            (None, Some(b)) => {
-                let d = self.open_brief(b)?;
-                let pl = &d.payload;
-                let p = self.intake_project(pl["project"].as_str().unwrap_or(""))?;
-                let s = |k: &str| pl[k].as_str().map(str::to_string);
-                (
-                    p,
-                    s("title").unwrap_or_default(),
-                    s("brief").unwrap_or_default(),
-                    s("mode").unwrap_or_else(|| "team".into()),
-                    s("team"),
-                    s("slug"),
-                    None,
-                )
-            }
-            _ => bail!(bad("item", "give an item or a brief decision")),
-        };
-        self.prefill_forms(&project, &title, &text, &suggested, team.as_deref(), slug, url, mode)
     }
 
     /// The launch or new-session form of mode `mode` (else the `suggested` one).
@@ -469,9 +436,14 @@ impl Runtime {
         }
     }
 
-    /// Where each started run and session came from (api-contract §2.3,
-    /// F13, F14), by `(kind, ref)`.
+    #[cfg(test)]
     pub(crate) fn intake_origins(&self) -> Origins {
+        self.intake_origins_with(&self.program_of_starts())
+    }
+
+    /// Where each started run and session came from (api-contract §2.3, F13, F14), by `(kind, ref)`;
+    /// `programs` are the programs' tags (`now` reads them once for its cards too).
+    pub(crate) fn intake_origins_with(&self, programs: &std::collections::HashMap<String, (Value, String)>) -> Origins {
         let mut out = Origins::default();
         let started = self.db.intake_started().unwrap_or_default();
         // The breadcrumbs of the started nodes: one read of the trees' shape.
@@ -483,7 +455,6 @@ impl Runtime {
         let by_node: std::collections::HashMap<(&str, &str), &orch_store::WorkIndex> =
             index.iter().map(|n| ((n.project_id.as_str(), n.node_id.as_str()), n)).collect();
         let mut trackers: std::collections::HashMap<String, orch_store::TrackerSettings> = Default::default();
-        let programs = self.program_of_starts();
         let mut statuses: std::collections::HashMap<String, std::collections::HashMap<String, Value>> =
             Default::default();
         for r in started {
@@ -517,16 +488,16 @@ impl Runtime {
                         .unwrap_or(Value::Null);
                     s
                 });
-            match kind.as_str() {
-                "run" => {
-                    out.src_runs.extend(source.map(|s| (reference.clone(), s)));
-                    out.runs.insert(reference, v)
-                }
-                _ => {
-                    out.src_agents.extend(source.map(|s| (reference.clone(), s)));
-                    out.agents.insert(reference, v)
-                }
+            // (a program feature's items share one run: its origin is the feature's first item, as its source is)
+            let is_first = first.as_ref().is_none_or(|f| *f == r.node_id);
+            let (srcs, origins) = match kind.as_str() {
+                "run" => (&mut out.src_runs, &mut out.runs),
+                _ => (&mut out.src_agents, &mut out.agents),
             };
+            srcs.extend(source.map(|s| (reference.clone(), s)));
+            if is_first || !origins.contains_key(&reference) {
+                origins.insert(reference, v);
+            }
         }
         out
     }
