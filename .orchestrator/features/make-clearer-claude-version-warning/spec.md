@@ -71,7 +71,7 @@ Mac" escape hatch, see §6.)
 The start-up warning (`runtime.rs`) and the live one (`setup.rs::version_warnings`)
 become one function with this text:
 
-> claude 2.1.323 is newer than the last tested version (2.1.302). Agents still run. To verify it, run `make contract` in an Orchestrator checkout (docs/app/CONTRACT-TESTS.md).
+> claude 2.1.323 is newer than the last tested version (2.1.302). Agents still run. To verify it, run `make contract` in an Orchestrator checkout (`docs/app/CONTRACT-TESTS.md`).
 
 `is_runtime_version_warning` keeps matching it (prefix
 `claude <v> is newer than the last tested version`). "R2" goes from every

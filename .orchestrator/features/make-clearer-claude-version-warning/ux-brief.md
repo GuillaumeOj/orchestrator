@@ -34,8 +34,9 @@ To verify    make contract                                   [copy on click]
 - The second line is muted. The doc path is plain mono text (the app has no
   repo checkout path to open it from).
 - The same row also appears for the "latest is newer than the last tested version"
-  note (before updating), with the copy "Updating is fine: agents still run. Verify
-  after updating with `make contract`."
+  note (before updating). That note keeps its sentence and gains the new ending:
+  "2.1.330 is newer than the last tested version. Updating is fine: agents still
+  run. Verify after updating with `make contract`."
 - Not shown when the version is within the range or too old (too old keeps its red note).
 
 ## 3. Setup pane (`SetupPane.svelte`)
@@ -43,6 +44,10 @@ To verify    make contract                                   [copy on click]
 Suffix after the version: ` (newer than the last tested version 2.1.302: agents still run; verify with make contract)`, `make contract` in mono.
 
 ## 4. Copy rules
+
+Punctuation sits tight against a mono chip (no padding gap before `.` `,` `)` `:`).
+The CONTRACT-TESTS.md doc also covers released builds: clone the repo to run the suite.
+
 
 No "R2", no "contract tests" without the command next to them. "Agents still run"
 always appears with an untested warning.
