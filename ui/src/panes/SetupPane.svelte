@@ -79,7 +79,7 @@
       <p class="muted">Checking claude --version and the login…</p>
     {:else}
       <p>
-        <span class="mono">{short(c.path)}</span> · {c.version ?? 'not found'}{c.untested ? ' (newer than the last tested version: run the contract tests)' : ''}
+        <span class="mono">{short(c.path)}</span> · {c.version ?? 'not found'}{#if c.untested}{' '}(newer than the last tested version {c.supported?.tested_max}: agents still run; verify with <span class="mono">{c.supported?.verify?.command ?? 'make contract'}</span>){/if}
         {#if c.logged_in != null} · {c.logged_in ? `logged in (${c.auth_method}, ${c.subscription ?? 'no subscription'})` : 'not logged in'}{/if}
       </p>
       {#if c.problem_kind === 'version' || c.update?.state === 'updating'}<ClaudeUpdateBlock {c} compact />{/if}

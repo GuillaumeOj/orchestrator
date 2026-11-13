@@ -3,7 +3,7 @@
   // update block, compatibility and the account. Everything is derived from `setup.claude`.
   // Keys: u update / retry, r check now, ⏎ the block's default button, esc back to the sections.
   import { app, claudeAct, toast } from '../lib/app.svelte.js';
-  import { account, compat, hint, installedHeader, keysOf, updateBlock } from '../lib/claude.js';
+  import { account, codeSpans, compat, hint, installedHeader, keysOf, updateBlock } from '../lib/claude.js';
   import { shortPath } from '../lib/format.js';
   import { keyIgnored } from '../lib/keyboard.js';
   import { tooltip } from '../lib/tooltip.js';
@@ -24,6 +24,15 @@
       toast('Copied the path');
     } catch {
       toast('Could not copy the path', { kind: 'error' });
+    }
+  }
+
+  async function copyVerify() {
+    try {
+      await navigator.clipboard.writeText(cp.verify.command);
+      toast('Copied');
+    } catch {
+      toast('Could not copy the command', { kind: 'error' });
     }
   }
 
@@ -58,8 +67,17 @@
     <h3>Compatibility</h3>
     <div class="kv"><span class="muted">Supported</span><span>{cp.supported}</span></div>
     {#each cp.notes as n (n.text)}
-      <div class="kv"><span></span><span class={n.tone}><span aria-hidden="true">{n.tone === 'red' ? '●' : '▲'}</span> {n.text}</span></div>
+      <div class="kv"><span></span><span class={n.tone}><span aria-hidden="true">{n.tone === 'red' ? '●' : '▲'}</span> {#each codeSpans(n.text) as p}{#if p.code}<span class="code">{p.text}</span>{:else}{p.text}{/if}{/each}</span></div>
     {/each}
+    {#if cp.verify}
+      <div class="kv">
+        <span class="muted">To verify</span>
+        <div>
+          <button class="code verify" data-verify use:tooltip={'Copy'} onclick={copyVerify}>{cp.verify.command} <span aria-hidden="true">{'\u{F018F}'}</span></button>
+          <p class="muted vline">{cp.verify.line} <span class="mono">{cp.verify.doc}</span></p>
+        </div>
+      </div>
+    {/if}
   {/if}
   {#if acct}
     <h3>Account</h3>
@@ -137,6 +155,21 @@
     grid-template-columns: 7em 1fr;
     gap: var(--space-md);
     padding: 0 var(--space-md);
+  }
+  .code {
+    font-family: var(--font-family-mono);
+    padding: 0 var(--space-xs);
+    border: var(--border-width-default) solid var(--color-border-subtle);
+    border-radius: var(--radius-sm);
+  }
+  .verify {
+    background: none;
+    color: inherit;
+    cursor: copy;
+  }
+  .vline {
+    margin-top: var(--space-xs);
+    font: var(--text-caption);
   }
   .amber {
     color: var(--color-pacing-amber);

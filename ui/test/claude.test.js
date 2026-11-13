@@ -9,10 +9,12 @@ import {
   claudeChip,
   claudeToast,
   cmpVersion,
+  codeSpans,
   compat,
   elapsed,
   hint,
   installedHeader,
+  isVersionWarning,
   liveKeys,
   navBadge,
   paletteActions,
@@ -198,14 +200,55 @@ describe('copy', () => {
   it('compat notes: too old (red), newer installed, newer latest (amber)', () => {
     expect(compat(claude()).supported).toBe('2.1.302 (minimum) – 2.1.317 (last tested)');
     expect(compat(claude()).notes).toEqual([
-      { tone: 'amber', text: '2.1.330 is newer than the last tested version. Agents run, with a warning.' },
+      {
+        tone: 'amber',
+        text: '2.1.330 is newer than the last tested version. Updating is fine: agents still run. Verify after updating with `make contract`.',
+      },
     ]);
-    expect(compat(claude({ version: '2.1.320' }, { available: false })).notes[0].text).toMatch(
-      /^Newer than the last tested/,
+    expect(compat(claude({ version: '2.1.320' }, { available: false })).notes[0].text).toBe(
+      '2.1.320 is newer than the last tested version. Agents still run.',
     );
     const o = compat(old());
     expect(o.notes[0]).toEqual({ tone: 'red', text: 'Too old. The app is read-only until Claude Code is updated.' });
     expect(o.notes[1].tone).toBe('amber');
+  });
+});
+
+const W =
+  'claude 2.1.323 is newer than the last tested version (2.1.302). Agents still run. To verify it, run `make contract` in an Orchestrator checkout (`docs/app/CONTRACT-TESTS.md`).';
+
+describe('version warning helpers', () => {
+  it('matches only the untested-version warning', () => {
+    expect(isVersionWarning(W)).toBe(true);
+    expect(isVersionWarning('claude 2.1.1 is older than the supported minimum (2.1.302)')).toBe(false);
+    expect(isVersionWarning('something claude 2.1.323 is newer than the last tested version')).toBe(false);
+    expect(isVersionWarning(null)).toBe(false);
+  });
+  it('codeSpans marks backticked text and drops the ticks', () => {
+    expect(codeSpans('run `make contract` (`a/b.md`).')).toEqual([
+      { text: 'run ', code: false },
+      { text: 'make contract', code: true },
+      { text: ' (', code: false },
+      { text: 'a/b.md', code: true },
+      { text: ').', code: false },
+    ]);
+  });
+  it('verify row: both untested cases, from supported.verify with a fallback; hidden in range or too old', () => {
+    const verify = { command: 'make contract', doc: 'docs/app/CONTRACT-TESTS.md' };
+    const v = compat(claude({ version: '2.1.320' }, { available: false })).verify;
+    expect(v).toMatchObject(verify);
+    expect(v.line).toMatch(/a few cents of plan quota/);
+    expect(compat(claude()).verify).toMatchObject(verify); // only the latest is newer
+    const custom = claude(
+      {
+        version: '2.1.320',
+        supported: { min: '2.1.302', tested_max: '2.1.317', verify: { command: 'just c', doc: 'd.md' } },
+      },
+      { available: false },
+    );
+    expect(compat(custom).verify).toMatchObject({ command: 'just c', doc: 'd.md' });
+    expect(compat(claude({}, { available: false })).verify).toBeNull();
+    expect(compat(old()).verify).toBeNull();
   });
 });
 
@@ -412,6 +455,51 @@ describe('components', () => {
     }
     app.data.setup = { ...app.data.setup, claude: old({}, { state: 'error', error: 'EACCES', error_from: 'update' }) };
     await waitFor(() => expect(container.querySelector('.banner')).not.toBeNull());
+  });
+
+  it('banner: the untested-version warning shows mono chips and Details opens Claude Code settings', async () => {
+    app.data.warnings = [W];
+    const { container, getByText } = render(Banner);
+    expect(text(container)).toContain(
+      'Check: claude 2.1.323 is newer than the last tested version (2.1.302). Agents still run.',
+    );
+    expect([...container.querySelectorAll('.code')].map((e) => e.textContent)).toEqual([
+      'make contract',
+      'docs/app/CONTRACT-TESTS.md',
+    ]);
+    expect(text(container)).not.toContain('`');
+    await fireEvent.click(getByText('Details'));
+    expect(app.window).toMatchObject({ kind: 'settings', section: 'claude' });
+  });
+
+  it('banner: other warnings have no Details', () => {
+    app.data.warnings = ['something else happened'];
+    const { container } = render(Banner);
+    expect(text(container)).toContain('something else happened');
+    expect(text(container)).not.toContain('Details');
+  });
+
+  it('Settings: the To verify row copies the command', async () => {
+    const writeText = vi.fn(() => Promise.resolve());
+    Object.assign(navigator, { clipboard: { writeText } });
+    app.data.setup.claude = claude({ version: '2.1.320' }, { available: false });
+    const { container } = render(ClaudeSettings);
+    expect(text(container)).toContain('To verify make contract');
+    expect(text(container)).toContain('(a few cents of plan quota). docs/app/CONTRACT-TESTS.md');
+    await fireEvent.click(container.querySelector('[data-verify]'));
+    expect(writeText).toHaveBeenCalledWith('make contract');
+    await waitFor(() => expect(app.toasts.some((t) => t.text === 'Copied')).toBe(true));
+    cleanup();
+    app.data.setup.claude = claude({}, { available: false });
+    expect(text(render(ClaudeSettings).container)).not.toContain('To verify');
+  });
+
+  it('Setup step 1: an untested version names the tested one and the command', () => {
+    app.data.setup.claude = claude({ version: '2.1.320', untested: true });
+    app.data.setup.trust = [];
+    expect(text(render(SetupPane).container)).toContain(
+      '2.1.320 (newer than the last tested version 2.1.317: agents still run; verify with make contract)',
+    );
   });
 
   it('Setup step 1: the version problem gets the update state line', () => {

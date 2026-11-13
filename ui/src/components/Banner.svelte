@@ -2,7 +2,7 @@
   // Global banners (§9.3, Penpot 05 copy): one at a time, highest attention first;
   // the rest collapse to "+n". Error banners: a 4 px left bar in the status color.
   import { app, claudeBusy, claudeUpdate, openPlanner, openSettings, openSingleton, pauseAll } from '../lib/app.svelte.js';
-  import { bannerClaude } from '../lib/claude.js';
+  import { bannerClaude, codeSpans, isVersionWarning } from '../lib/claude.js';
   import { when } from '../lib/format.js';
   import { counts } from '../lib/now.svelte.js';
   import { tooltip } from '../lib/tooltip.js';
@@ -42,7 +42,7 @@
       const n = d.power?.off_hours_pending ?? 0;
       out.push({ id: 'ac', color: 'var(--color-pacing-amber)', title: 'Off-hours work needs AC power.', text: `${n} off-hours task${n === 1 ? '' : 's'} won't run while the Mac sleeps. Plug in to keep it awake, or they wait for the next off-hours window.`, planner: true });
     }
-    for (const w of (d.warnings ?? []).filter((w) => !isRestoreWarning(w))) out.push({ id: `w:${w}`, color: 'var(--color-status-queued)', title: 'Check:', text: w });
+    for (const w of (d.warnings ?? []).filter((w) => !isRestoreWarning(w))) out.push({ id: `w:${w}`, color: 'var(--color-status-queued)', title: 'Check:', text: w, spans: codeSpans(w), claudeDetails: isVersionWarning(w) });
     return out.filter((b) => !dismissed[b.id]);
   });
   const top = $derived(banners[0]);
@@ -51,7 +51,7 @@
 {#if top}
   <div class="banner" style:box-shadow="inset 4px 0 0 {top.color}" role="status">
     <b>{top.title}</b>
-    <span class="text" class:one={top.update}>{top.text}{#if top.fail} <span class="amber">{top.fail}</span>{/if}</span>
+    <span class="text" class:one={top.update}>{#if top.spans}{#each top.spans as p}{#if p.code}<span class="code">{p.text}</span>{:else}{p.text}{/if}{/each}{:else}{top.text}{/if}{#if top.fail} <span class="amber">{top.fail}</span>{/if}</span>
     {#if top.update}<button class="btn" disabled={top.update.disabled || claudeBusy()} data-claude-update onclick={claudeUpdate}>{#if top.update.spinner}<span class="spinning" aria-hidden="true">◐</span> {/if}{top.update.label}</button>{/if}
     {#if top.claudeDetails}<button class="btn" onclick={() => openSettings('claude')}>Details</button>{/if}
     {#if top.planner}<button type="button" class="btn" use:tooltip={{ label: 'Week planner', key: '⌘; g' }} onclick={() => openPlanner()}>Week planner</button>{/if}
@@ -80,6 +80,12 @@
   }
   .text.one {
     white-space: nowrap;
+  }
+  .code {
+    font-family: var(--font-family-mono);
+    padding: 0 var(--space-xs);
+    border: var(--border-width-default) solid var(--color-border-subtle);
+    border-radius: var(--radius-sm);
   }
   .amber {
     color: var(--color-pacing-amber);
