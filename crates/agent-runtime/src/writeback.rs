@@ -54,11 +54,6 @@ fn fails_key(project: &str) -> String {
     format!("work.writeback.fails:{project}")
 }
 
-/// A Linear team given as an id (a UUID) rather than a key.
-fn is_team_id(x: &str) -> bool {
-    x.len() == 36 && x.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
-}
-
 /// Whether `hay` carries `id` as a whole reference (`eng-4` is not in `eng-42`).
 fn carries(hay: &str, id: &str) -> bool {
     hay.match_indices(id).any(|(i, _)| {
@@ -85,7 +80,7 @@ impl Runtime {
     /// Whether Linear team key `key` is one of the project's `teams` (keys, or team ids resolved to their key).
     pub(crate) fn linear_team_ok(&self, teams: &[String], key: &str) -> bool {
         teams.iter().any(|x| {
-            if is_team_id(x) {
+            if orch_tasks::intake::is_team_id(x) {
                 self.linear_team_key(x).is_some_and(|k| k.eq_ignore_ascii_case(key))
             } else {
                 x.eq_ignore_ascii_case(key)
