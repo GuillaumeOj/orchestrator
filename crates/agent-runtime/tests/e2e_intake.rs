@@ -25,6 +25,31 @@ struct FakeGh(Answers);
 impl orch_tasks::github::Gh for FakeGh {
     fn run(&self, args: &[String]) -> anyhow::Result<String> {
         assert!(!args.iter().any(|a| a == "-X" || a.contains("mutation")), "intake writes nothing: {args:?}");
+        // The tree's GraphQL queries: the REST-shaped issues below, as GraphQL returns them.
+        if let Some(q) = args.iter().find_map(|a| a.strip_prefix("query=")) {
+            let a = self.0.lock().unwrap();
+            let rest = a.get("repos/acme/shop/issues").cloned().unwrap_or(json!([]));
+            if q.contains("OrchTreeMilestones") {
+                return Ok(json!({"data": {"repository": {"milestones": {"nodes": []}}}}).to_string());
+            }
+            let nodes: Vec<Value> = rest
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|i| {
+                    let l = |k: &str, key: &str| -> Vec<Value> {
+                        i[k].as_array().into_iter().flatten().map(|x| json!({key: x[key]})).collect()
+                    };
+                    json!({"number": i["number"], "title": i["title"], "body": i["body"], "url": i["html_url"],
+                        "state": "OPEN", "updatedAt": i["updated_at"], "labels": {"nodes": l("labels", "name")},
+                        "assignees": {"nodes": []}, "milestone": null, "parent": null,
+                        "subIssuesSummary": {"total": 0, "completed": 0}})
+                })
+                .collect();
+            return Ok(json!({"data": {"repository": {"url": "https://github.com/acme/shop", "issues": {
+                "pageInfo": {"hasNextPage": false, "endCursor": null}, "nodes": nodes}}}})
+            .to_string());
+        }
         // The first argument after `api` that is not a flag (`--paginate`).
         let key = args.iter().skip(1).find(|a| !a.starts_with('-')).cloned().unwrap_or_default();
         let a = self.0.lock().unwrap();
@@ -43,8 +68,9 @@ impl Graphql for FakeLinear {
         Ok(json!({"issues": {"nodes": [
             {"id": "u1", "identifier": "ENG-42", "title": "Refunds", "description": "Refund partial orders.",
              "priority": 2, "estimate": 2, "sortOrder": 1.0, "url": "https://linear.app/acme/issue/ENG-42/refunds",
+             "state": {"name": "Todo", "type": "unstarted"}, "team": {"key": "ENG"}, "project": null,
              "updatedAt": "2026-11-01T00:00:00Z", "labels": {"nodes": [{"name": "next"}]}}
-        ]}}))
+        ]}, "projects": {"nodes": []}}))
     }
 }
 
@@ -165,6 +191,7 @@ fn a_week_of_work_started_from_intake() {
 
     // #13 is closed upstream: it leaves the lane at the next refresh.
     gh.lock().unwrap().insert("repos/acme/shop/issues".into(), json!([issue(12, &["ready"])]));
+    rt.intake_request(Some(&a.id)); // a user's refresh: a full read
     rt.intake_refresh_project(&a.id);
     assert!(refs(&rt, &a.id).is_empty());
 

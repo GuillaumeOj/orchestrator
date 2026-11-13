@@ -21,8 +21,17 @@ struct FakeGh(Answers, Calls);
 impl orch_tasks::github::Gh for FakeGh {
     fn run(&self, args: &[String]) -> anyhow::Result<String> {
         self.1.lock().unwrap().push(args.to_vec());
-        // The first argument after `api` that is not a flag (`--paginate`).
-        let key = args.iter().skip(1).find(|a| !a.starts_with('-')).cloned().unwrap_or_default();
+        // The first argument after `api` that is not a flag (`--paginate`); a GraphQL call by its operation.
+        let mut key = args.iter().skip(1).find(|a| !a.starts_with('-')).cloned().unwrap_or_default();
+        if key == "graphql"
+            && let Some(q) = args.iter().find_map(|a| a.strip_prefix("query="))
+            && let Some(op) = q.split_whitespace().nth(1).map(|o| o.split('(').next().unwrap_or(o))
+        {
+            let by_op = format!("graphql:{op}");
+            if self.0.lock().unwrap().contains_key(&by_op) {
+                key = by_op;
+            }
+        }
         let a = self.0.lock().unwrap();
         match a.iter().filter(|(k, _)| key.starts_with(k.as_str())).max_by_key(|(k, _)| k.len()) {
             Some((_, Ok(v))) => Ok(v.to_string()),
@@ -43,7 +52,7 @@ impl Graphql for FakeLinear {
     fn call(&self, query: &str, _vars: &Value) -> Result<Value, GqlError> {
         self.calls.lock().unwrap().push(query.to_string());
         let r = self.issues.lock().unwrap().clone()?;
-        Ok(json!({"issues": {"nodes": r}}))
+        Ok(json!({"issues": {"nodes": r}, "projects": {"nodes": []}}))
     }
 }
 
@@ -96,11 +105,42 @@ fn issue(n: u64, labels: &[&str], updated: &str) -> Value {
 
 const ISSUES: &str = "repos/acme/shop/issues";
 
+/// A REST-shaped test issue as the GraphQL tree query returns it (`None`: a pull request).
+fn gql_issue(i: &Value) -> Option<Value> {
+    if i.get("pull_request").is_some() {
+        return None;
+    }
+    let nodes = |k: &str, key: &str| -> Vec<Value> {
+        i[k].as_array().into_iter().flatten().map(|l| json!({key: l[key]})).collect()
+    };
+    Some(json!({"number": i["number"], "title": i["title"], "body": i["body"], "url": i["html_url"],
+        "state": i["state"].as_str().unwrap_or("open").to_uppercase(), "updatedAt": i["updated_at"],
+        "labels": {"nodes": nodes("labels", "name")}, "assignees": {"nodes": nodes("assignees", "login")},
+        "milestone": i["milestone"], "parent": null, "subIssuesSummary": {"total": 0, "completed": 0}}))
+}
+
 impl Fx {
+    /// What a user's Refresh does: a full read (the scheduled ones are incremental).
+    fn refresh(&self) -> bool {
+        lock(&self.rt.intake.incr).clear();
+        self.rt.intake_refresh_project(&self.project.id)
+    }
+    /// `ISSUES` (the REST list of the old readers) answers the tree's issues query.
     fn answer(&self, key: &str, v: Value) {
+        if key == ISSUES {
+            let nodes: Vec<Value> = v.as_array().unwrap().iter().filter_map(gql_issue).collect();
+            let page = json!({"data": {"repository": {"url": "https://github.com/acme/shop",
+                "issues": {"pageInfo": {"hasNextPage": false, "endCursor": null}, "nodes": nodes}}}});
+            let mut g = self.gh.lock().unwrap();
+            g.insert("graphql:OrchTreeIssues".into(), Ok(page));
+            g.entry("graphql:OrchTreeMilestones".into())
+                .or_insert(Ok(json!({"data": {"repository": {"milestones": {"nodes": []}}}})));
+            return;
+        }
         self.gh.lock().unwrap().insert(key.into(), Ok(v));
     }
     fn fail(&self, key: &str, e: &str) {
+        let key = if key == ISSUES { "graphql:OrchTreeIssues" } else { key };
         self.gh.lock().unwrap().insert(key.into(), Err(e.into()));
     }
     fn github_label(&self) {
@@ -171,24 +211,29 @@ fn github_items_reach_now_and_follow_the_source() {
     assert_eq!(full["assignees"], json!([]));
     // A closed issue leaves the lane at the next refresh.
     f.answer(ISSUES, json!([issue(3, &["ready", "size:L"], "2026-11-01T00:00:00Z")]));
-    f.rt.intake_refresh_project(&f.project.id);
+    f.refresh();
     assert_eq!(f.refs(), ["#3"]);
     // Hide: the item stays in `items` as hidden and is counted; an edit upstream brings it back.
     f.rt.intake_hide(&id).unwrap();
     let s = f.source();
     assert_eq!((s["count"].as_u64(), s["hidden"].as_u64()), (Some(0), Some(1)));
     assert_eq!(f.items()[0]["state"], "hidden");
-    f.rt.intake_refresh_project(&f.project.id);
+    f.refresh();
     assert_eq!(f.items()[0]["state"], "hidden", "unchanged upstream: still hidden");
     f.answer(ISSUES, json!([issue(3, &["ready", "size:L"], "2026-11-02T00:00:00Z")]));
-    f.rt.intake_refresh_project(&f.project.id);
+    f.refresh();
     assert_eq!((f.items()[0]["state"].as_str(), f.items()[0]["id"].as_str()), (Some("ready"), Some(id.as_str())));
     f.rt.intake_hide(&id).unwrap();
     f.rt.intake_unhide(&id).unwrap();
     assert_eq!(f.items()[0]["state"], "ready");
     // Read-only towards GitHub.
     for c in f.calls.lock().unwrap().iter() {
-        assert!(!c.iter().any(|a| a == "-X" || a == "-f" || a == "-F" || a.contains("mutation")), "{c:?}");
+        // (the GraphQL queries pass their variables as fields)
+        let graphql = c.get(1).is_some_and(|a| a == "graphql");
+        assert!(
+            !c.iter().any(|a| a == "-X" || a.contains("mutation") || (!graphql && (a == "-f" || a == "-F"))),
+            "{c:?}"
+        );
     }
 }
 
@@ -199,7 +244,7 @@ fn an_error_keeps_the_last_good_items() {
     f.github_label();
     f.rt.db.flush().unwrap();
     f.fail(ISSUES, "To get started with GitHub CLI, please run:  gh auth login");
-    f.rt.intake_refresh_project(&f.project.id);
+    f.refresh();
     let s = f.source();
     assert_eq!(s["status"], "error");
     assert_eq!((s["error"]["code"].as_str(), s["error"]["fix"].as_str()), (Some("gh_auth"), Some("integrations")));
@@ -208,12 +253,12 @@ fn an_error_keeps_the_last_good_items() {
     f.rt.db.flush().unwrap();
     let errs = f.rt.db.events(0, None, Some("intake.error"), 10).unwrap();
     assert_eq!(errs.len(), 1);
-    f.rt.intake_refresh_project(&f.project.id);
+    f.refresh();
     f.rt.db.flush().unwrap();
     assert_eq!(f.rt.db.events(0, None, Some("intake.error"), 10).unwrap().len(), 1, "the same error is logged once");
     // Recovered.
     f.answer(ISSUES, json!([issue(1, &["ready"], "2026-11-01T00:00:00Z")]));
-    f.rt.intake_refresh_project(&f.project.id);
+    f.refresh();
     assert_eq!((f.source()["status"].as_str(), &f.source()["error"]), (Some("ok"), &Value::Null));
 }
 
@@ -223,7 +268,7 @@ fn linear_items_and_key_errors() {
     *f.linear.issues.lock().unwrap() = Ok(vec![
         json!({"id": "u1", "identifier": "ENG-42", "title": "Refunds", "description": "d", "priority": 2,
                "estimate": 5, "sortOrder": 1.0, "url": "https://linear.app/acme/issue/ENG-42/refunds",
-               "team": {"key": "ENG"}, "project": null,
+               "team": {"key": "ENG"}, "project": null, "state": {"name": "Todo", "type": "unstarted"},
                "updatedAt": "2026-11-01T00:00:00Z", "labels": {"nodes": [{"name": "next"}]}}),
         json!({"id": "u2", "identifier": "ENG-43", "title": "Task", "description": "", "priority": 1,
                "updatedAt": "2026-11-01T00:00:00Z", "labels": {"nodes": [{"name": "orch"}]}}),
@@ -236,7 +281,7 @@ fn linear_items_and_key_errors() {
     let full = f.rt.intake_item(f.items()[0]["id"].as_str().unwrap()).unwrap();
     assert_eq!((full["priority"].as_str(), full["points"].as_f64()), (Some("High"), Some(5.0)));
     *f.linear.issues.lock().unwrap() = Err(GqlError::Unauthorized("no Linear API key: add it".into()));
-    f.rt.intake_refresh_project(&f.project.id);
+    f.refresh();
     assert_eq!(f.source()["error"]["code"], "linear_key");
     assert_eq!(f.refs(), ["ENG-42"]);
     for q in f.linear.calls.lock().unwrap().iter() {
@@ -391,7 +436,7 @@ fn now_carries_intake_whole_and_only_on_change() {
     assert!(events.lock().unwrap().iter().all(|v| v.get("intake").is_none()));
     // The same answer again: only the refresh time moves ("updated just now").
     std::thread::sleep(std::time::Duration::from_millis(5));
-    f.rt.intake_refresh_project(&f.project.id);
+    f.refresh();
     f.rt.now_pump(false);
     let sent: Vec<Value> = events.lock().unwrap().iter().filter_map(|v| v.get("intake").cloned()).collect();
     assert_eq!(sent.len(), 1);
@@ -714,7 +759,7 @@ fn no_path_starts_work_without_the_users_command() {
     // Refreshes, the refresher's passes, the lane's commands.
     f.rt.intake_refresh(None).unwrap();
     f.rt.intake_step(orch_protocol::now_ms());
-    f.rt.intake_refresh_project(&f.project.id);
+    f.refresh();
     let id = f.item_id("#1");
     f.rt.intake_item(&id).unwrap();
     f.rt.intake_prefill(Some(&id), None, None).unwrap();
@@ -888,33 +933,39 @@ fn tracker_options_add_issue_types_and_boards() {
 }
 
 #[test]
-fn the_migrated_ready_default_is_checked_once_and_a_failed_check_stays_pending() {
+fn the_migrated_ready_default_is_checked_once_by_the_refresher_and_a_failed_check_stays_pending() {
     let f = fx();
     let id = f.project.id.clone();
     let mut t = orch_store::TrackerSettings::default()
         .with_backend(&orch_store::TaskBackendConfig::Github { repo: Some("acme/shop".into()) });
     t.ready = orch_store::ReadyFilter::defaults("github");
     f.rt.db.set_tracker(&id, &t).unwrap();
+    f.answer(ISSUES, json!([]));
     let mark = || f.rt.db.set_setting(&format!("tracker.ready_pending:{id}"), &json!(true)).unwrap();
     let ready = || f.rt.tracker_settings(&id).unwrap()["settings"]["ready"]["labels"].clone();
-    // The check fails: the default stays and stays pending.
+    let asks = || f.calls.lock().unwrap().iter().filter(|c| c.iter().any(|a| a.contains("labels/ready"))).count();
+    // The settings read asks nothing.
     mark();
-    f.fail("repos/acme/shop/labels", "HTTP 500");
+    assert_eq!(ready(), json!(["ready"]));
+    assert_eq!(asks(), 0, "no network read on a settings read");
+    // The check fails: the default stays and stays pending.
+    f.fail("repos/acme/shop/labels/ready", "HTTP 500");
+    f.refresh();
     assert_eq!(ready(), json!(["ready"]));
     assert!(f.rt.db.tracker_ready_pending(&id).unwrap());
-    // The repository answers without the label: emptied, once.
-    f.answer("repos/acme/shop/labels", json!([{"name": "bug"}]));
-    f.answer("repos/acme/shop/milestones", json!([]));
-    f.answer("graphql", json!({"data": {}}));
+    // The repository has no such label: emptied, once.
+    f.fail("repos/acme/shop/labels/ready", "HTTP 404: Not Found");
+    f.refresh();
     assert_eq!(ready(), json!([]));
     assert!(!f.rt.db.tracker_ready_pending(&id).unwrap());
-    let n = f.calls.lock().unwrap().len();
-    assert_eq!(ready(), json!([]));
-    assert_eq!(f.calls.lock().unwrap().len(), n, "settled: no network read on the next call");
+    let n = asks();
+    f.refresh();
+    assert_eq!(asks(), n, "settled: asked no more");
     // With the label: kept.
     f.rt.db.set_tracker(&id, &t).unwrap();
     mark();
-    f.answer("repos/acme/shop/labels", json!([{"name": "ready"}]));
+    f.answer("repos/acme/shop/labels/ready", json!({"name": "ready"}));
+    f.refresh();
     assert_eq!(ready(), json!(["ready"]));
     assert!(!f.rt.db.tracker_ready_pending(&id).unwrap());
 }
@@ -930,4 +981,195 @@ fn the_old_intake_commands_still_answer_through_the_tracker() {
     assert_eq!(s["source"]["filter"]["names"], json!(["ready"]));
     f.rt.intake_source_set(&f.project.id, &Value::Null).unwrap();
     assert!(f.rt.intake_source(&f.project.id).unwrap()["source"].is_null());
+}
+
+// ------------------------------------------------------------ the tree (B2)
+
+fn tree_issue(n: u64, extra: Value) -> Value {
+    let mut v = json!({"number": n, "title": format!("Issue {n}"), "body": format!("Body of {n}"),
+        "url": format!("https://github.com/acme/shop/issues/{n}"), "state": "OPEN",
+        "updatedAt": "2026-11-01T00:00:00Z", "labels": {"nodes": [{"name": "ready"}]},
+        "assignees": {"nodes": []}, "milestone": null, "parent": null,
+        "subIssuesSummary": {"total": 0, "completed": 0}});
+    for (k, x) in extra.as_object().unwrap() {
+        v[k] = x.clone();
+    }
+    v
+}
+
+fn answer_tree(f: &Fx, issues: Vec<Value>, milestones: Vec<Value>) {
+    f.answer(
+        "graphql:OrchTreeIssues",
+        json!({"data": {"repository": {"url": "https://github.com/acme/shop",
+            "issues": {"pageInfo": {"hasNextPage": false, "endCursor": null}, "nodes": issues}}}}),
+    );
+    f.answer("graphql:OrchTreeMilestones", json!({"data": {"repository": {"milestones": {"nodes": milestones}}}}));
+}
+
+fn github_tracker(f: &Fx) {
+    let mut t = f.rt.db.tracker(&f.project.id).unwrap();
+    t.tracker = orch_store::Tracker::Github { repo: Some("acme/shop".into()), project_board: None };
+    t.ready = orch_store::ReadyFilter::defaults("github");
+    f.rt.db.set_tracker(&f.project.id, &t).unwrap();
+}
+
+fn milestone(n: u64, title: &str) -> Value {
+    json!({"number": n, "title": title, "url": "https://github.com/acme/shop/milestone/3", "dueOn": null,
+           "updatedAt": "2026-11-01T00:00:00Z", "open": {"totalCount": 2}, "closed": {"totalCount": 0}})
+}
+
+#[test]
+fn the_lane_shows_ready_nodes_with_their_breadcrumb_and_actions_and_the_tree_stays_cached() {
+    let f = fx();
+    github_tracker(&f);
+    answer_tree(
+        &f,
+        vec![
+            tree_issue(
+                1,
+                json!({"milestone": {"number": 3, "title": "v2"}, "labels": {"nodes": []},
+                "subIssuesSummary": {"total": 1, "completed": 0}}),
+            ),
+            tree_issue(2, json!({"parent": {"number": 1}, "milestone": {"number": 3, "title": "v2"}})),
+            tree_issue(3, json!({"labels": {"nodes": [{"name": "bug"}]}})),
+        ],
+        vec![milestone(3, "v2")],
+    );
+    f.refresh();
+    // Only #2 is ready (the label): #1 is its parent, #3 has another label, the milestone is a container.
+    assert_eq!(f.refs(), ["#2"]);
+    let it = &f.items()[0];
+    assert_eq!(it["node"], "gh:acme/shop#2");
+    assert_eq!(
+        it["breadcrumb"],
+        json!([{"id": "gh-milestone:acme/shop/3", "ref": "v2", "title": "v2"},
+               {"id": "gh:acme/shop#1", "ref": "#1", "title": "Issue 1"}])
+    );
+    assert_eq!(it["actions"]["solo"], "ok");
+    assert_eq!(it["actions"]["team"], json!({"disabled": "This project has no team yet"}));
+    assert_eq!(it["actions"]["program"], json!({"disabled": "No sub-issues to run as a program"}));
+    // The whole tree is cached, the lane only shows what is ready.
+    assert_eq!(f.rt.db.work_nodes(Some(&f.project.id)).unwrap().len(), 4);
+    // The Ready filter is read when the lane is: no refetch.
+    let mut t = f.rt.db.tracker(&f.project.id).unwrap();
+    t.ready = orch_store::ReadyFilter::Github {
+        labels: vec!["bug".into()],
+        milestone: None,
+        board_status: None,
+        issue_type: None,
+    };
+    let n = f.calls.lock().unwrap().len();
+    f.rt.db.set_tracker(&f.project.id, &t).unwrap();
+    assert_eq!(f.refs(), ["#3"]);
+    assert_eq!(f.calls.lock().unwrap().len(), n);
+    assert_eq!(f.rt.db.work_nodes(Some(&f.project.id)).unwrap().len(), 4);
+}
+
+#[test]
+fn scheduled_reads_are_incremental_and_a_users_refresh_is_full() {
+    let f = fx();
+    github_tracker(&f);
+    answer_tree(&f, vec![tree_issue(1, json!({})), tree_issue(2, json!({}))], vec![]);
+    let tree_calls = |f: &Fx| -> Vec<Vec<String>> {
+        f.calls.lock().unwrap().iter().filter(|c| c.iter().any(|a| a.contains("OrchTreeIssues"))).cloned().collect()
+    };
+    f.refresh();
+    assert_eq!(f.refs(), ["#1", "#2"]);
+    assert!(tree_calls(&f).iter().all(|c| !c.iter().any(|a| a.starts_with("since=") && !a.contains("2026-0"))));
+    let before = tree_calls(&f).len();
+    // A scheduled read: what changed since (one query, open and closed), merged into the cache.
+    answer_tree(&f, vec![tree_issue(2, json!({"title": "Renamed"})), tree_issue(3, json!({}))], vec![]);
+    assert!(f.rt.intake_refresh_project(&f.project.id));
+    let calls = tree_calls(&f);
+    assert_eq!(calls.len(), before + 1);
+    let last = calls.last().unwrap();
+    assert!(last.iter().any(|a| a == "states[]=OPEN") && last.iter().any(|a| a == "states[]=CLOSED"));
+    assert!(last.iter().any(|a| a.starts_with("since=")), "{last:?}");
+    assert_eq!(f.refs(), ["#1", "#2", "#3"], "#1 was not listed: an incremental read removes nothing");
+    assert_eq!(f.items().iter().find(|i| i["ref"] == "#2").unwrap()["title"], "Renamed");
+    // A user's refresh reads everything again: #1 is gone.
+    answer_tree(&f, vec![tree_issue(2, json!({})), tree_issue(3, json!({}))], vec![]);
+    f.rt.intake_request(Some(&f.project.id));
+    f.rt.intake_refresh_project(&f.project.id);
+    assert_eq!(f.refs(), ["#2", "#3"]);
+}
+
+#[test]
+fn offline_keeps_the_cache_and_says_so() {
+    let f = fx();
+    github_tracker(&f);
+    answer_tree(&f, vec![tree_issue(1, json!({}))], vec![]);
+    f.refresh();
+    assert_eq!(f.refs(), ["#1"]);
+    f.fail("graphql:OrchTreeIssues", "dial tcp: lookup api.github.com: no such host; network is unreachable");
+    f.refresh();
+    let s = f.source();
+    assert_eq!((s["offline"].as_bool(), &s["error"], s["status"].as_str()), (Some(true), &Value::Null, Some("ok")));
+    assert!(s["refreshed_at_ms"].as_u64().is_some());
+    assert_eq!(f.refs(), ["#1"], "the cache is shown");
+}
+
+#[test]
+fn a_refresh_in_flight_is_joined_not_repeated() {
+    let f = fx();
+    github_tracker(&f);
+    answer_tree(&f, vec![tree_issue(1, json!({}))], vec![]);
+    let id = f.project.id.clone();
+    lock(&f.rt.intake.sched).inflight.insert(id.clone());
+    let rt = f.rt.clone();
+    let end = id.clone();
+    let h = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        lock(&rt.intake.sched).inflight.remove(&end);
+        rt.intake.wake.notify_all();
+    });
+    let t0 = std::time::Instant::now();
+    assert!(f.rt.intake_join(&id));
+    assert!(t0.elapsed() >= std::time::Duration::from_millis(200), "it waited for the refresh in flight");
+    h.join().unwrap();
+    assert!(f.calls.lock().unwrap().is_empty(), "and did not start another");
+    // Nothing in flight: it runs one.
+    assert!(f.rt.intake_join(&id));
+    assert!(!f.calls.lock().unwrap().is_empty());
+    assert_eq!(f.refs(), ["#1"]);
+}
+
+#[test]
+fn the_preview_reads_the_tree_with_counts_a_breadcrumb_a_warning_and_the_backlog_files() {
+    let f = fx();
+    answer_tree(
+        &f,
+        vec![
+            tree_issue(
+                1,
+                json!({"labels": {"nodes": []}, "milestone": {"number": 3, "title": "v2"},
+                "subIssuesSummary": {"total": 1, "completed": 0}}),
+            ),
+            tree_issue(2, json!({"parent": {"number": 1}})),
+            tree_issue(3, json!({})),
+        ],
+        vec![milestone(3, "v2")],
+    );
+    let p = f.rt.tracker_preview(&f.project.id, &gh_settings(ready_labels(&["ready"]))).unwrap();
+    assert_eq!((p["roots"].as_u64(), p["items"].as_u64(), p["ready"].as_u64()), (Some(2), Some(3), Some(2)));
+    let s = &p["sample"][0];
+    assert_eq!((s["id"].as_str(), s["depth"].as_u64()), (Some("gh:acme/shop#2"), Some(3)));
+    assert_eq!(s["breadcrumb"].as_array().unwrap().len(), 2);
+    assert_eq!(p["sample"][1]["breadcrumb"], json!([]));
+    assert_eq!((p["warning"].clone(), p["error"].clone()), (Value::Null, Value::Null));
+    assert_eq!(f.rt.db.tracker(&f.project.id).unwrap().tracker.kind(), "local", "nothing stored");
+    // Local: the backlog files, by name.
+    let repo = f.project.path.clone();
+    std::fs::create_dir_all(repo.join(".orchestrator/backlog")).unwrap();
+    commit_file(&repo, ".orchestrator/backlog/01-a.md", "# A\n", "a");
+    commit_file(&repo, ".orchestrator/backlog/02-b.md", "# B\n", "b");
+    let local =
+        json!({"tracker": {"kind": "local", "backlog_glob": ".orchestrator/backlog/*.md"}, "ready": {"kind": "local"}});
+    let p = f.rt.tracker_preview(&f.project.id, &local).unwrap();
+    assert_eq!((p["ready"].as_u64(), p["items"].as_u64()), (Some(2), Some(2)));
+    assert_eq!(p["files"], json!([".orchestrator/backlog/01-a.md", ".orchestrator/backlog/02-b.md"]));
+    let o =
+        f.rt.tracker_options(&f.project.id, &json!({"kind": "local", "backlog_glob": ".orchestrator/backlog/*.md"}))
+            .unwrap();
+    assert_eq!((o["matches"].as_u64(), o["files"].clone()), (Some(2), p["files"].clone()));
 }
