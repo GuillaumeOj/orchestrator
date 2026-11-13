@@ -151,6 +151,8 @@ Program = {
   "edges": [{ "from": "pf-1", "to": "pf-2", "source": "tracker"|"sequential"|"user", "items": ["gh:…#13", "gh:…#14"] }],   // F10: `to` waits for `from`
   "cut": [["pf-2", "pf-3"]],                       // edges the user removed; kept on re-plan (F10)
   "new_items": ["<WorkNode id>"],                  // F7
+  "new_items_added": { "<WorkNode id>": 0 },      // when each new item appeared upstream ("added 13 Nov")
+  "include": ["<WorkNode id>"],                    // closed items the user included ("Include anyway"); kept in their feature, not left out
   "estimate": { "low_pp": 10, "high_pp": 17, "room_pp": 12, "room_scope": "shop-api", "over_room": "none"|"high"|"low" },   // F9
   "left_out": { "closed": ["<id>"], "running": [{ "id", "feature" }] },
   "created_at_ms": 0, "started_at_ms": 0 | null, "done_at_ms": 0 | null
@@ -173,7 +175,7 @@ PlanIssue = { "kind": "cycle"|"already_running"|"closed"|"no_team"|"over_room", 
 |---|---|---|
 | `program_plan` | `roots: [ids]` (one node, or ≥ 2 siblings), `grouping`, `opts: {sequential, max_parallel, cut?}` | `{ program: Program (draft), issues: [PlanIssue] }` |
 | `program_start` | `program` (the edited draft) | `{ program }` (running) or `{ issues }` (dialog stays) |
-| `program_update` | `id, patch`: `{pause}` · `{resume}` · `{skip: key}` · `{add_item: id, mode, team, after: [keys]}` · `{ignore_item: id}` · `{max_parallel: n}` · `{cancel}` | `Program` |
+| `program_update` | `id, patch`: `{pause}` · `{resume}` · `{skip: key}` · `{add_item: id, mode, team, after: [keys], slug?}` · `{ignore_item: id}` · `{max_parallel: n}` · `{cancel}` | `Program` |
 | `program` | `id` | `Program` with live states |
 
 **Engine**: a feature starts when every `depends_on` (not skipped) is `merged`, the program is `running`, fewer than `max_parallel` of its features run, and the Governor admits it (else `queued`, held by the Governor; `waiting` = a dependency not merged). Starting = the same path as a team run / solo session started from the node (spec / PR gates per feature unchanged). Upstream changes (notes §7.3): new child → `new_items` + decision; child closed → flag + decision; dependency added → edges recomputed for not-started features + decision.
