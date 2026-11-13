@@ -79,17 +79,14 @@
 
   // Loads on mount and on window focus; later only when a `programs` delta upserts or removes THIS program.
   onMount(() => onTopics(() => false, load));
-  let seenRow = /** @type {any} */ (undefined);
-  let rowSeen = false;
+  const NONE = Symbol('unseen');
+  let seenRow = /** @type {any} */ (NONE);
   $effect(() => {
     const row = id ? app.now.programs?.[id] : undefined;
-    if (!rowSeen) {
-      rowSeen = true;
-      seenRow = row;
-      return;
-    }
-    if (row === seenRow) return;
+    const first = seenRow === NONE;
+    const same = row === seenRow;
     seenRow = row;
+    if (first || same) return;
     untrack(load);
   });
 
