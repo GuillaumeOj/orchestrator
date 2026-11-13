@@ -4,6 +4,7 @@
   // first (past 6: "+n more"). The chip at `chip` is the h/l target.
   import { openUrl } from '../../lib/app.svelte.js';
   import { waited } from '../../lib/format.js';
+  import { originOf } from '../../lib/intake.js';
   import { phaseFull, phaseText, prText, tasksText } from '../../lib/mission.js';
   import { attention } from '../../lib/now.svelte.js';
   import MemberChip from './MemberChip.svelte';
@@ -29,7 +30,7 @@
 
 <div class="l1">
   <span class="where"><span class="muted">{run.project} ›</span> <b>{run.feature}</b></span>
-  {#if run.origin}<OriginChip origin={run.origin} project={run.project} />{/if}
+  {#if originOf(run)}<OriginChip origin={originOf(run)} project={run.project} />{/if}
   <PhaseStepper {run} title={phaseFull(run, now)} />
   <span class="grow"></span>
   <span class="phase" class:failed={run.phase === 'failed'} title={phaseFull(run, now)}>{phaseText(run, now)}</span>

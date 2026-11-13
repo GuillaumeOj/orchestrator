@@ -4,7 +4,6 @@
     mission: '\u{F0437}',
     project: '\u{F024B}',
     feature: '\u{F062C}',
-    board: '\u{F0570}',
     diff: '\u{F08AA}',
     canvas: '\u{F1049}',
     editor: '\u{E62B}',

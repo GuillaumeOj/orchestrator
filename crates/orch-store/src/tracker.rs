@@ -349,6 +349,49 @@ impl TrackerSettings {
         Ok(())
     }
 
+    /// Whether a cached node is "Ready to start": it matches the Ready
+    /// filter (contract §1). A filter that names nothing matches nothing.
+    /// Containers (milestones, projects, initiatives) never are.
+    pub fn is_ready(&self, kind: &str, meta: &Value) -> bool {
+        let has = |v: &Value, key: &str, want: &str| v[key].as_str().is_some_and(|x| x.eq_ignore_ascii_case(want));
+        let labels = |meta: &Value| -> Vec<String> {
+            meta["labels"].as_array().into_iter().flatten().filter_map(|l| l.as_str().map(str::to_lowercase)).collect()
+        };
+        match (&self.tracker, &self.ready) {
+            (Tracker::Local { backlog_glob: Some(_) }, _) => kind == "local",
+            (Tracker::Github { .. }, ReadyFilter::Github { labels: want, milestone, board_status, issue_type }) => {
+                // (a row cached before the tree has no state: it was an open issue)
+                let open = meta["state"].as_str().is_none_or(|s| s.eq_ignore_ascii_case("open"));
+                if kind != "issue" || !open {
+                    return false;
+                }
+                if want.is_empty() && milestone.is_none() && board_status.is_none() && issue_type.is_none() {
+                    return false;
+                }
+                let have = labels(meta);
+                want.iter().all(|w| have.contains(&w.to_lowercase()))
+                    && milestone.as_ref().is_none_or(|m| has(meta, "milestone", m.trim()))
+                    && board_status.as_ref().is_none_or(|b| has(meta, "board_status", b))
+                    && issue_type.as_ref().is_none_or(|t| has(meta, "issue_type", t))
+            }
+            (Tracker::Linear { .. }, ReadyFilter::Linear { state_types, label, project, cycle }) => {
+                if kind != "issue" {
+                    return false;
+                }
+                if state_types.is_empty() && label.is_none() && project.is_none() && cycle.is_none() {
+                    return false;
+                }
+                let t = meta["state_type"].as_str().unwrap_or("");
+                !matches!(t, "completed" | "canceled")
+                    && (state_types.is_empty() || state_types.iter().any(|s| s == t))
+                    && label.as_ref().is_none_or(|l| labels(meta).contains(&l.to_lowercase()))
+                    && project.as_ref().is_none_or(|p| meta["project_id"].as_str() == Some(p))
+                    && cycle.as_ref().is_none_or(|c| meta["cycle_kind"].as_str() == Some(c))
+            }
+            _ => false,
+        }
+    }
+
     // -------------------------------------------------- views of the old types
 
     /// The task backend the tracker stands for. Linear: the first team and
@@ -565,7 +608,10 @@ pub(crate) fn migrate_settings(backend: &TaskBackendConfig, intake: &IntakeSourc
         }
         (TaskBackendConfig::Github { repo: a }, IntakeSource::Github { repo: b, .. }) => {
             // An unset repo is the project's remote: same as any repo the store cannot resolve.
-            let same = a.is_none() || b.is_none() || a == b;
+            let same = match (a, b) {
+                (Some(a), Some(b)) => a.eq_ignore_ascii_case(b),
+                _ => true,
+            };
             let mut s = base.with_intake(intake);
             if let Tracker::Github { repo, .. } = &mut s.tracker {
                 *repo = a.clone();
@@ -612,7 +658,7 @@ pub(crate) fn migrate_projects(tx: &rusqlite::Transaction) -> Result<()> {
         .query_row("SELECT value FROM kv WHERE key='intake.refresh_secs'", [], |r| r.get::<_, String>(0))
         .optional()?
         .and_then(|v| v.trim().parse().ok());
-    let refresh = global.map(|g| REFRESH_SECS.into_iter().find(|s| g <= *s).unwrap_or(3600));
+    let refresh = global.map(|g| REFRESH_SECS.into_iter().min_by_key(|s| s.abs_diff(g)).unwrap_or(600));
     for (id, backend, intake) in rows {
         let backend: TaskBackendConfig = serde_json::from_str(&backend).unwrap_or_default();
         let intake: IntakeSource = intake.and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
@@ -661,8 +707,10 @@ pub(crate) fn apply_tracker(tx: &rusqlite::Transaction, id: &str, new: &TrackerS
     if old.task_backend() != new.task_backend() {
         tx.execute("DELETE FROM kv WHERE key=?1", [format!("task_sync_cursor:{id}")])?;
     }
-    if old.intake_source() != new.intake_source() {
-        tx.execute("DELETE FROM intake_items WHERE project_id=?1 AND state!='started'", [id])?;
+    // Another source: its tree is not this one's. A Ready change alone keeps
+    // the cache: the filter is evaluated when the lane is read.
+    if old.tracker != new.tracker {
+        tx.execute("DELETE FROM work_nodes WHERE project_id=?1 AND state!='started' AND source!='brief'", [id])?;
         tx.execute("DELETE FROM kv WHERE key=?1", [crate::intake::status_key(id)])?;
     }
     Ok(true)
@@ -696,6 +744,7 @@ impl Store {
             self.touch([
                 crate::intake::TOPIC.to_string(),
                 orch_protocol::Topic::Project(project.to_string()).to_string(),
+                orch_protocol::Topic::Board(project.to_string()).to_string(),
             ]);
         }
         Ok(changed)
@@ -762,7 +811,7 @@ impl Store {
             {
                 labels.clear();
                 tx.execute("UPDATE projects SET tracker=?2 WHERE id=?1", params![id, js(&t)])?;
-                tx.execute("DELETE FROM intake_items WHERE project_id=?1 AND state!='started'", [&id])?;
+                tx.execute("DELETE FROM work_nodes WHERE project_id=?1 AND state!='started'", [&id])?;
                 tx.execute("DELETE FROM kv WHERE key=?1", [crate::intake::status_key(&id)])?;
                 return Ok(true);
             }
@@ -934,14 +983,25 @@ mod tests {
         s.upsert_project(&project("p2", "/tmp/p2")).unwrap();
         let item =
             crate::IntakeUpsert { reference: "#1".into(), title: "t".into(), rev: "r".into(), ..Default::default() };
-        s.intake_apply("p1", "github", vec![item], 1).unwrap();
-        let id = s.intake_items(Some("p1")).unwrap()[0].id;
+        s.intake_apply("p1", "github", vec![item], true, 1).unwrap();
+        let id = s.work_nodes(Some("p1")).unwrap()[0].id;
         s.intake_hide(id, 5).unwrap();
         drop(s);
         // Back to the schema before the tracker, with the old columns set.
         let c = rusqlite::Connection::open(d.path().join("orch.db")).unwrap();
-        c.execute_batch("ALTER TABLE projects DROP COLUMN tracker; ALTER TABLE projects DROP COLUMN tracker_notice;")
-            .unwrap();
+        // (and before the tree: `intake_items` instead of `work_nodes`)
+        c.execute_batch(
+            "ALTER TABLE projects DROP COLUMN tracker; ALTER TABLE projects DROP COLUMN tracker_notice;
+             CREATE TABLE intake_items (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id TEXT NOT NULL,
+               source TEXT NOT NULL, ref TEXT NOT NULL, title TEXT NOT NULL, url TEXT, body TEXT NOT NULL DEFAULT '',
+               meta TEXT NOT NULL DEFAULT '{}', updated_at TEXT NOT NULL, fetched_at_ms INTEGER NOT NULL,
+               position INTEGER NOT NULL DEFAULT 0, state TEXT NOT NULL DEFAULT 'ready', started_kind TEXT,
+               started_ref TEXT, hidden_at_ms INTEGER, hidden_rev TEXT, UNIQUE(project_id, source, ref));
+             INSERT INTO intake_items(id, project_id, source, ref, title, updated_at, fetched_at_ms, state, hidden_at_ms, hidden_rev)
+               SELECT id, project_id, source, ref, title, updated_at, fetched_at_ms, state, hidden_at_ms, hidden_rev FROM work_nodes;
+             DROP TABLE work_nodes; DROP TABLE work_history; DROP TABLE programs;",
+        )
+        .unwrap();
         c.execute(
             "UPDATE projects SET intake_source=?1, task_backend=?2 WHERE id='p1'",
             [
@@ -958,7 +1018,7 @@ mod tests {
         assert_eq!(s.tracker_notice("p1").unwrap().unwrap().kind, "different_repo");
         assert_eq!(s.tracker("p2").unwrap(), TrackerSettings::default());
         assert!(s.tracker_notice("p2").unwrap().is_none());
-        let rows = s.intake_items(Some("p1")).unwrap();
+        let rows = s.work_nodes(Some("p1")).unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].state, crate::IntakeState::Hidden, "the hidden mark survives");
         // Readers see the tracker.
@@ -1108,19 +1168,20 @@ mod tests {
         s.upsert_project(&p).unwrap();
         s.set_task_sync_cursor("p1", "github:me/shop", "c").unwrap();
         let mut t = s.tracker("p1").unwrap();
-        // A Ready change keeps the sync cursor and drops cached items.
+        // A Ready change keeps the sync cursor and the cached tree (the filter is read with the lane).
         let item =
             crate::IntakeUpsert { reference: "#1".into(), title: "t".into(), rev: "r".into(), ..Default::default() };
-        s.intake_apply("p1", "github", vec![item], 1).unwrap();
+        s.intake_apply("p1", "github", vec![item], true, 1).unwrap();
         t.ready = ReadyFilter::defaults("github");
         assert!(s.set_tracker("p1", &t).unwrap());
         assert!(s.task_sync_cursor("p1").unwrap().is_some());
-        assert!(s.intake_items(Some("p1")).unwrap().is_empty());
+        assert_eq!(s.work_nodes(Some("p1")).unwrap().len(), 1);
         assert!(!s.set_tracker("p1", &t).unwrap(), "unchanged");
-        // A repo change drops the cursor.
+        // A repo change drops the cursor and the tree.
         t.tracker = Tracker::Github { repo: Some("me/web".into()), project_board: None };
         assert!(s.set_tracker("p1", &t).unwrap());
         assert!(s.task_sync_cursor("p1").unwrap().is_none());
+        assert!(s.work_nodes(Some("p1")).unwrap().is_empty());
         // A mismatch notice goes with any save; another one stays until dismissed.
         let notice = |kind: &str| MigrationNotice {
             kind: kind.into(),
@@ -1185,5 +1246,56 @@ mod tests {
         assert!(!s.tracker_ready_pending("p1").unwrap(), "the user's save settles it");
         s.resolve_tracker_ready("p1", false).unwrap();
         assert_eq!(s.tracker("p1").unwrap().ready, ReadyFilter::defaults("github"));
+    }
+
+    #[test]
+    fn ready_nodes_by_filter() {
+        let gh = |f: ReadyFilter| TrackerSettings::new(Tracker::Github { repo: None, project_board: None }, f);
+        let ghf = |labels: &[&str], milestone: Option<&str>, board: Option<&str>, ty: Option<&str>| {
+            gh(ReadyFilter::Github {
+                labels: labels.iter().map(|s| s.to_string()).collect(),
+                milestone: milestone.map(str::to_string),
+                board_status: board.map(str::to_string),
+                issue_type: ty.map(str::to_string),
+            })
+        };
+        let m = json!({"state": "open", "labels": ["Ready", "bug"], "milestone": "v2", "board_status": "Todo", "issue_type": "Epic"});
+        assert!(ghf(&["ready"], None, None, None).is_ready("issue", &m), "labels: all of them, any case");
+        assert!(ghf(&["ready", "bug"], Some("v2"), Some("todo"), Some("epic")).is_ready("issue", &m));
+        assert!(!ghf(&["ready", "feature"], None, None, None).is_ready("issue", &m));
+        assert!(!ghf(&["ready"], Some("v3"), None, None).is_ready("issue", &m));
+        assert!(!ghf(&["ready"], None, Some("Done"), None).is_ready("issue", &m));
+        assert!(!ghf(&["ready"], None, None, Some("Bug")).is_ready("issue", &m));
+        assert!(!ghf(&["ready"], None, None, None).is_ready("milestone", &m), "a container is never ready");
+        assert!(!ghf(&["ready"], None, None, None).is_ready("issue", &json!({"state": "closed", "labels": ["ready"]})));
+        assert!(!ghf(&[], None, None, None).is_ready("issue", &m), "a filter that names nothing matches nothing");
+        let lin = |types: &[&str], label: Option<&str>, project: Option<&str>, cycle: Option<&str>| {
+            TrackerSettings::new(
+                Tracker::Linear { teams: vec!["ENG".into()], projects: None },
+                ReadyFilter::Linear {
+                    state_types: types.iter().map(|s| s.to_string()).collect(),
+                    label: label.map(str::to_string),
+                    project: project.map(str::to_string),
+                    cycle: cycle.map(str::to_string),
+                },
+            )
+        };
+        let l = json!({"state": "Todo", "state_type": "unstarted", "labels": ["next"], "project_id": "p1", "cycle_kind": "current"});
+        assert!(lin(&["unstarted"], None, None, Some("current")).is_ready("issue", &l));
+        assert!(lin(&["unstarted", "backlog"], Some("Next"), Some("p1"), None).is_ready("issue", &l));
+        assert!(!lin(&["started"], None, None, None).is_ready("issue", &l));
+        assert!(!lin(&[], None, None, Some("next")).is_ready("issue", &l));
+        assert!(!lin(&[], Some("other"), None, None).is_ready("issue", &l));
+        assert!(!lin(&[], None, Some("p2"), None).is_ready("issue", &l));
+        let done = json!({"state_type": "completed", "labels": ["next"]});
+        assert!(!lin(&[], Some("next"), None, None).is_ready("issue", &done), "closed is never ready");
+        assert!(
+            lin(&[], Some("next"), None, None).is_ready("issue", &json!({"state_type": "started", "labels": ["next"]}))
+        );
+        assert!(!lin(&[], None, None, None).is_ready("issue", &l));
+        // Local: the files of a backlog glob.
+        let local = TrackerSettings::new(Tracker::Local { backlog_glob: Some("*.md".into()) }, ReadyFilter::Local);
+        assert!(local.is_ready("local", &json!({})) && !local.is_ready("issue", &json!({})));
+        assert!(!TrackerSettings::default().is_ready("local", &json!({})), "no glob, no backlog");
     }
 }

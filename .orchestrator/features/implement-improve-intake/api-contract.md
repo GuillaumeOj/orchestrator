@@ -43,7 +43,7 @@ MigrationNotice = {                  // F16; null when none or dismissed
 |---|---|---|
 | `tracker_settings` | `project` | `{ settings: TrackerSettings, migration_notice: MigrationNotice \| null }` |
 | `tracker_settings_set` | `project, settings` | same as `tracker_settings` (resolves a `mismatch` notice; triggers a refresh) |
-| `tracker_preview` | `project, settings` (dry run, nothing saved) | `{ roots, items, ready, sample: [WorkNode + breadcrumb] (≤ 5), error: SourceError \| null }` |
+| `tracker_preview` | `project, settings` (dry run, nothing saved) | `{ roots, items, ready, sample: [WorkNode + breadcrumb] (≤ 5; Local: the matched file names), error: SourceError \| null, warning: "gh_sub_issues" \| null }` |
 | `tracker_options` | `project, tracker` (partial: what is filled so far) | GitHub `{ labels[], milestones[], issue_types[], boards: [{owner, number, title, statuses[]}] }` · Linear `{ teams: [{id, key, name}], projects: [{id, name, team}], labels[], states: [{id, name, type}] }` (F17; errors as `SourceError`) |
 | `tracker_notice_dismiss` | `project` | `()` |
 
@@ -101,14 +101,15 @@ WorkFilter = {                                    // F3
   "issue_types": [], "linear_projects": [], "include_team_tasks": false, "show_hidden": false
 }
 SourceStatus = { "status": "ok"|"refreshing"|"error", "error": SourceError | null, "warning": "gh_sub_issues" | null,   // F26
-                 "offline": false, "refreshed_at_ms": 0 }                                                                  // F15
+                 "offline": false, "refreshed_at_ms": 0,
+                 "counts": { "items": 14, "roots": 3, "ready": 4 } }   // F15; counts = cached non-team-task nodes (project row, details status line)
 SourceError  = P4.5 `{ code, message, fix?, retry_at_ms? }` + codes "linear_complexity", "gh_write", "linear_write"     // F27
 ```
 
 | Command | In | Out |
 |---|---|---|
 | `work_tree` | `scope: {projects: [ids]}`, `parents: [ids] \| null` (null = roots; several = restore / reveal in one call, F37), `filter: WorkFilter`, `after: cursor \| null` (F18; only valid with `parents` null or exactly one id: it continues that list from the cursor `more` returned for it) | `{ nodes: [WorkNode], more: { "<parent id \| 'roots'>": { left: n, cursor } }, status: { "<project>": SourceStatus } }` — from the cache only. Roots paged 100, children 50. A filtered tree keeps the ancestors of matches, flagged `"ancestor_only": true` |
-| `work_search` | `scope, query, filter` | `{ nodes: [WorkNode + { breadcrumb }], total, hidden_by_filters }` (≤ 100; ref exact first, then title, then body) |
+| `work_search` | `scope, query, filter` | `{ nodes: [WorkNode + { breadcrumb, match: { field: "ref"|"title"|"body", snippet: "…" \| null } }], total, hidden_by_filters, status: { "<project>": SourceStatus } }` (`snippet` ≤ 80 chars of plain body text around the hit, for "in body: "…"") (≤ 100; ref exact first, then title, then body) |
 | `work_node` | `id, opts: { children: bool }` (F36; default `false`: no children; `true` adds `children: [WorkNode]`, first page of 50, for a node the tree has not loaded) | `WorkNode + { breadcrumb, body, body_clipped, history: [History] }` |
 | `work_reveal` | `id` | `{ chain: [ids root→node], nodes: [WorkNode] }` (the ancestors and their siblings, F37) |
 | `work_refresh` | `project \| null` | `()` returns at once; one in-flight refresh per project, callers join (F38); pushes `work.changed` |
@@ -117,8 +118,21 @@ SourceError  = P4.5 `{ code, message, fix?, retry_at_ms? }` + codes "linear_comp
 
 `History = { "at_ms": 0, "what": "started"|"program_queued"|"spec_approved"|"pr_opened"|"merged"|"skipped"|"writeback_done"|"writeback_failed"|"returned", "feature": "<slug>" | null, "program": {id, title} | null, "detail": "…" | null }` (F6; copy in F6 / notes §3).
 
+**Closed items in the cache**: sub-issues of loaded parents in every state, plus closed (GitHub) / completed or canceled (Linear) items updated in the last **90 days**; older closed history is not read. A full read on first load and after a settings save, then incremental (`since`) with an hourly full id sweep.
+
 Starting from a node goes through the existing launch / new-session commands with the P4.5 `intake` link replaced by `"source": "<WorkNode id>"`; the run then carries:
-`run.source = { node, ref, title, url, breadcrumb, tracker: "github"|"linear"|"local", program: {id, title, index, total} | null, deleted: false, closed_upstream: false, write_back: "on"|"off" }` (F23), in `now` run rows and the Feature pane. Task records keep `run` (F24) so `T-n` links open `openFeature(run, {task})`.
+`run.source = { node, ref, title, url, breadcrumb, tracker: "github"|"linear"|"local", program: {id, title, index, total} | null, deleted: false, closed_upstream: false, write_back: "on"|"off", writeback: WorkNode.writeback | null }` (F23; `writeback` carries the last write-back failure for the Feature header Retry), in `now` run rows and the Feature pane. Task records keep `run` (F24) so `T-n` links open `openFeature(run, {task})`; task hints / sync-conflict outcomes carry `run` and `tracker` ("github"|"linear"|"local") so the UI names the tracker without a lookup.
+
+### 2.1 As built by B3 (binding, details the table above)
+1. `work_node(id, {children: true})` adds `child_nodes: [WorkNode]` (first 50, lazy-fetched when missing), `children_more: n`, `children_error: SourceError | null`; `children` stays the counts. Without the flag none of the three. Every `work_node` also has `breadcrumb`, `body`, `body_clipped`, `history`, `estimate` (P4.5 item estimate; issues / local items only).
+2. `work_search.scope = { projects: [ids], root?: "<WorkNode id>" }`; `root` limits the search to that subtree (Focus here).
+3. `work_tree.more["<parent id>"] = { left?, cursor?, error?: SourceError }` (`error`: the lazy fetch of that parent's missing sub-issues failed, retried at the next call; no `loading` key, the fetch runs inside the call); `more.roots = { left, cursor }`; `after` = the cursor string, only with `parents` null or one id.
+4. Team-task fold rows: `work_tree(parents: [id], filter: { include_team_tasks: true })` appends, after the parent's last page, one row per task of the runs started from the node: `{ id: "task:<n>", team_task: true, kind: "issue", ref: "#70" | "T-n", title, url: null, parent, depth, task, run, feature, tracker, children: zeros, upstream: { state: <task status>, board_status: <task status>, assignees: [<node>], labels: [], blocked_by: [], blocking: [], linked_prs: [] }, app: { state: "none" }, ready: false, hidden: false, actions: all "hidden" }`. Never counted in `children`; `WorkNode.team_tasks` = their number.
+5. `work_search` ranking: ref exact, ref prefix, title, body; `match.snippet` for ref / title is the ref / title itself.
+6. `run.source` (shape above) is on `now` run rows and agent (solo) rows as `source`, and in outcomes as `extra.source`; `origin` kept for old readers until I1.
+7. Task links (F24): `waiting_on` of kind `task` has `run` and `tracker`; outcomes `task_done` / `sync_conflict` have `extra.run`, `extra.tracker`.
+8. Start link: `intake: { source: "<WorkNode id>" }` on launch / new session (beside `item`, `brief_decision`); **no** top-level `source`. A hidden node or one whose run merged can start; containers (milestone / project / initiative) and a node already running are refused as `stale`. `now.intake.sources[]` gain `warning`, `offline`, `counts`.
+9. History kinds from B3: `started`, `spec_approved`, `pr_opened`, `merged`, `returned`; `program_queued` / `skipped` come with B4, `writeback_*` with B5. AppState `queued` / `program_root` and roll-up `waiting` / `queued` / `failed` / `skipped` stay none / 0 until B4.
 
 ## 3. Ready lane in `now` (B2)
 
@@ -137,6 +151,8 @@ Program = {
   "edges": [{ "from": "pf-1", "to": "pf-2", "source": "tracker"|"sequential"|"user", "items": ["gh:…#13", "gh:…#14"] }],   // F10: `to` waits for `from`
   "cut": [["pf-2", "pf-3"]],                       // edges the user removed; kept on re-plan (F10)
   "new_items": ["<WorkNode id>"],                  // F7
+  "new_items_added": { "<WorkNode id>": 0 },      // when each new item appeared upstream ("added 13 Nov")
+  "include": ["<WorkNode id>"],                    // closed items the user included ("Include anyway"); kept in their feature, not left out
   "estimate": { "low_pp": 10, "high_pp": 17, "room_pp": 12, "room_scope": "shop-api", "over_room": "none"|"high"|"low" },   // F9
   "left_out": { "closed": ["<id>"], "running": [{ "id", "feature" }] },
   "created_at_ms": 0, "started_at_ms": 0 | null, "done_at_ms": 0 | null
@@ -159,7 +175,7 @@ PlanIssue = { "kind": "cycle"|"already_running"|"closed"|"no_team"|"over_room", 
 |---|---|---|
 | `program_plan` | `roots: [ids]` (one node, or ≥ 2 siblings), `grouping`, `opts: {sequential, max_parallel, cut?}` | `{ program: Program (draft), issues: [PlanIssue] }` |
 | `program_start` | `program` (the edited draft) | `{ program }` (running) or `{ issues }` (dialog stays) |
-| `program_update` | `id, patch`: `{pause}` · `{resume}` · `{skip: key}` · `{add_item: id, mode, team, after: [keys]}` · `{ignore_item: id}` · `{max_parallel: n}` · `{cancel}` | `Program` |
+| `program_update` | `id, patch`: `{pause}` · `{resume}` · `{skip: key}` · `{add_item: id, mode, team, after: [keys], slug?}` · `{ignore_item: id}` · `{max_parallel: n}` · `{cancel}` | `Program` |
 | `program` | `id` | `Program` with live states |
 
 **Engine**: a feature starts when every `depends_on` (not skipped) is `merged`, the program is `running`, fewer than `max_parallel` of its features run, and the Governor admits it (else `queued`, held by the Governor; `waiting` = a dependency not merged). Starting = the same path as a team run / solo session started from the node (spec / PR gates per feature unchanged). Upstream changes (notes §7.3): new child → `new_items` + decision; child closed → flag + decision; dependency added → edges recomputed for not-started features + decision.

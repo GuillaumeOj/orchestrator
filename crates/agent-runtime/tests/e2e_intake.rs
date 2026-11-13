@@ -24,7 +24,36 @@ struct FakeGh(Answers);
 
 impl orch_tasks::github::Gh for FakeGh {
     fn run(&self, args: &[String]) -> anyhow::Result<String> {
-        assert!(!args.iter().any(|a| a == "-X" || a.contains("mutation")), "intake writes nothing: {args:?}");
+        // Reading writes nothing; the write-back's own writes (`-X POST …`) are accepted and ignored.
+        if args.iter().any(|a| a == "-X") {
+            return Ok("{}".into());
+        }
+        assert!(!args.iter().any(|a| a.contains("mutation")), "intake reads only: {args:?}");
+        // The tree's GraphQL queries: the REST-shaped issues below, as GraphQL returns them.
+        if let Some(q) = args.iter().find_map(|a| a.strip_prefix("query=")) {
+            let a = self.0.lock().unwrap();
+            let rest = a.get("repos/acme/shop/issues").cloned().unwrap_or(json!([]));
+            if q.contains("OrchTreeMilestones") {
+                return Ok(json!({"data": {"repository": {"milestones": {"nodes": []}}}}).to_string());
+            }
+            let nodes: Vec<Value> = rest
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|i| {
+                    let l = |k: &str, key: &str| -> Vec<Value> {
+                        i[k].as_array().into_iter().flatten().map(|x| json!({key: x[key]})).collect()
+                    };
+                    json!({"number": i["number"], "title": i["title"], "body": i["body"], "url": i["html_url"],
+                        "state": "OPEN", "updatedAt": i["updated_at"], "labels": {"nodes": l("labels", "name")},
+                        "assignees": {"nodes": []}, "milestone": null, "parent": null,
+                        "subIssuesSummary": {"total": 0, "completed": 0}})
+                })
+                .collect();
+            return Ok(json!({"data": {"repository": {"url": "https://github.com/acme/shop", "issues": {
+                "pageInfo": {"hasNextPage": false, "endCursor": null}, "nodes": nodes}}}})
+            .to_string());
+        }
         // The first argument after `api` that is not a flag (`--paginate`).
         let key = args.iter().skip(1).find(|a| !a.starts_with('-')).cloned().unwrap_or_default();
         let a = self.0.lock().unwrap();
@@ -39,12 +68,20 @@ struct FakeLinear;
 
 impl Graphql for FakeLinear {
     fn call(&self, query: &str, _vars: &Value) -> Result<Value, GqlError> {
-        assert!(!query.trim_start().starts_with("mutation"), "read-only");
+        // The write-back's own calls are answered; reading is all else the intake does.
+        if query.contains("OrchWbIssue") {
+            return Ok(json!({"issue": {"id": "u1", "state": {"type": "unstarted"}, "team": {"states": {"nodes": [
+                {"id": "s1", "type": "started", "position": 1.0}]}}}}));
+        }
+        if query.trim_start().starts_with("mutation") {
+            return Ok(json!({"issueUpdate": {"success": true}, "commentCreate": {"success": true}}));
+        }
         Ok(json!({"issues": {"nodes": [
             {"id": "u1", "identifier": "ENG-42", "title": "Refunds", "description": "Refund partial orders.",
              "priority": 2, "estimate": 2, "sortOrder": 1.0, "url": "https://linear.app/acme/issue/ENG-42/refunds",
+             "state": {"name": "Todo", "type": "unstarted"}, "team": {"key": "ENG"}, "project": null,
              "updatedAt": "2026-11-01T00:00:00Z", "labels": {"nodes": [{"name": "next"}]}}
-        ]}}))
+        ]}, "projects": {"nodes": []}}))
     }
 }
 
@@ -134,7 +171,7 @@ fn a_week_of_work_started_from_intake() {
             slug: form["slug"].as_str().unwrap().into(),
             title: form["title"].as_str().unwrap().into(),
             brief: form["brief"].as_str().unwrap().into(),
-            intake: Some(IntakeLink { item: Some(it12.clone()), brief_decision: None }),
+            intake: Some(IntakeLink { item: Some(it12.clone()), ..Default::default() }),
             ..Default::default()
         })
         .unwrap();
@@ -151,7 +188,7 @@ fn a_week_of_work_started_from_intake() {
         allocation: Some(b.id.clone()),
         ..Default::default()
     };
-    rt.start_solo(&spec, &b.id, Some(&IntakeLink { item: Some(eng.clone()), brief_decision: None })).unwrap();
+    rt.start_solo(&spec, &b.id, Some(&IntakeLink { item: Some(eng.clone()), ..Default::default() })).unwrap();
     assert!(refs(&rt, &b.id).is_empty(), "ENG-42 left the lane");
     wait_for("the solo session's first turn", 30, || agent(&core.sock, &name)["turns"].as_u64() >= Some(1));
 
@@ -165,6 +202,7 @@ fn a_week_of_work_started_from_intake() {
 
     // #13 is closed upstream: it leaves the lane at the next refresh.
     gh.lock().unwrap().insert("repos/acme/shop/issues".into(), json!([issue(12, &["ready"])]));
+    rt.intake_request(Some(&a.id)); // a user's refresh: a full read
     rt.intake_refresh_project(&a.id);
     assert!(refs(&rt, &a.id).is_empty());
 
@@ -198,7 +236,7 @@ fn a_week_of_work_started_from_intake() {
             slug: form["slug"].as_str().unwrap().into(),
             title: form["title"].as_str().unwrap().into(),
             brief: form["brief"].as_str().unwrap().into(),
-            intake: Some(IntakeLink { item: None, brief_decision: Some(decision.clone()) }),
+            intake: Some(IntakeLink { brief_decision: Some(decision.clone()), ..Default::default() }),
             ..Default::default()
         })
         .unwrap();

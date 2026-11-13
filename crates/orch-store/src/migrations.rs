@@ -620,6 +620,84 @@ CREATE INDEX intake_items_project ON intake_items(project_id, position);
 ALTER TABLE projects ADD COLUMN tracker TEXT;
 ALTER TABLE projects ADD COLUMN tracker_notice TEXT;
 "#,
+    // 19 (implement-improve-intake B2): `work_nodes` replaces `intake_items`:
+    // the whole tracker tree (issues, milestones, projects…), not only the
+    // Ready items. `id` keeps the old `it_<n>` ids; the old rows get a
+    // `legacy:<source>:<ref>` node id that the first refresh adopts (their
+    // hidden / started marks survive). `deleted` flags a started node gone
+    // upstream (kept while an app link exists); `depth` is computed at write.
+    // Task sync now keeps only team tasks: the tasks mirrored from a remote
+    // issue that is not an `orch` one (no run, feature, assignee node nor
+    // pending push) are dropped; a managed one is imported again.
+    r#"
+CREATE TABLE work_nodes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id TEXT NOT NULL,
+    node_id TEXT NOT NULL,
+    source TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'issue',
+    ref TEXT NOT NULL,
+    title TEXT NOT NULL,
+    url TEXT,
+    body TEXT NOT NULL DEFAULT '',
+    meta TEXT NOT NULL DEFAULT '{}',
+    updated_at TEXT NOT NULL,
+    fetched_at_ms INTEGER NOT NULL,
+    position INTEGER NOT NULL DEFAULT 0,
+    state TEXT NOT NULL DEFAULT 'ready',
+    started_kind TEXT,
+    started_ref TEXT,
+    hidden_at_ms INTEGER,
+    hidden_rev TEXT,
+    parent_id TEXT,
+    depth INTEGER NOT NULL DEFAULT 1,
+    deleted INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(project_id, node_id)
+);
+INSERT INTO work_nodes(id, project_id, node_id, source, kind, ref, title, url, body, meta, updated_at,
+                       fetched_at_ms, position, state, started_kind, started_ref, hidden_at_ms, hidden_rev)
+  SELECT id, project_id,
+         CASE WHEN source='brief' THEN 'brief:'||ref ELSE 'legacy:'||source||':'||ref END,
+         source, CASE WHEN source='brief' THEN 'brief' ELSE 'issue' END,
+         ref, title, url, body, meta, updated_at, fetched_at_ms, position, state, started_kind, started_ref,
+         hidden_at_ms, hidden_rev
+  FROM intake_items;
+DROP TABLE intake_items;
+CREATE INDEX work_nodes_project ON work_nodes(project_id, position);
+CREATE INDEX work_nodes_parent ON work_nodes(project_id, parent_id);
+DELETE FROM tasks WHERE backend IN ('github','linear') AND external_id IS NOT NULL
+  AND team_run_id IS NULL AND feature_id IS NULL AND node IS NULL
+  AND (remote_updated_at IS NULL OR remote_updated_at NOT LIKE 'pending:%');
+"#,
+    // 20 (implement-improve-intake B3): what happened to a tracker item in the
+    // app, for the details panel ("In Orchestrator", F6): started, spec
+    // approved, PR opened, merged, returned… (`what`), newest last.
+    r#"
+CREATE TABLE work_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id TEXT NOT NULL,
+    node_id TEXT NOT NULL,
+    at_ms INTEGER NOT NULL,
+    what TEXT NOT NULL,
+    feature TEXT,
+    program TEXT,
+    detail TEXT
+);
+CREATE INDEX work_history_node ON work_history(project_id, node_id, at_ms);
+"#,
+    // 21 (implement-improve-intake B4): programs (contract §4): the whole program
+    // (features with their live states, edges, cuts…) as one JSON document per row.
+    r#"
+CREATE TABLE programs (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    data TEXT NOT NULL,
+    created_at_ms INTEGER NOT NULL,
+    updated_at_ms INTEGER NOT NULL
+);
+CREATE INDEX programs_project ON programs(project_id, status);
+"#,
 ];
 
 pub(crate) fn migrate(c: &mut Connection) -> Result<()> {
@@ -790,5 +868,60 @@ mod tests {
         for st in ["sent", "effect", "failed", "stale"] {
             assert_eq!(crate::InboxStatus::parse(st).as_str(), st);
         }
+    }
+
+    #[test]
+    fn migration_19_keeps_the_marks_of_the_intake_and_drops_the_mirrored_tasks() {
+        let d = tempfile::tempdir().unwrap();
+        let mut c = Connection::open(d.path().join("m.db")).unwrap();
+        for sql in &MIGRATIONS[..18] {
+            c.execute_batch(sql).unwrap();
+        }
+        c.pragma_update(None, "user_version", 18).unwrap();
+        c.execute_batch(
+            "INSERT INTO intake_items(id, project_id, source, ref, title, updated_at, fetched_at_ms, state, hidden_rev)
+               VALUES (7, 'p1', 'github', '#1', 'One', 'a', 1, 'hidden', 'a'),
+                      (9, 'p1', 'brief', 'dec-1', 'A brief', '', 1, 'started', NULL);
+             INSERT INTO tasks(id, project_id, backend, external_id, team_run_id, feature_id, node, title, status,
+                               created_at_ms, updated_at_ms, remote_updated_at)
+               VALUES (1, 'p1', 'github', '10', NULL, NULL, NULL, 'mirrored', 'backlog', 1, 1, 't'),
+                      (2, 'p1', 'github', '11', 'r', NULL, NULL, 'a run task', 'backlog', 1, 1, 't'),
+                      (3, 'p1', 'github', '12', NULL, NULL, 'back', 'assigned', 'backlog', 1, 1, 't'),
+                      (4, 'p1', 'github', '13', NULL, NULL, NULL, 'pending push', 'backlog', 1, 1, 'pending:t'),
+                      (5, 'p1', 'local', NULL, NULL, NULL, NULL, 'local', 'backlog', 1, 1, NULL),
+                      (6, 'p1', 'linear', 'ENG-1', NULL, NULL, NULL, 'mirrored too', 'backlog', 1, 1, 't');",
+        )
+        .unwrap();
+        migrate(&mut c).unwrap();
+        let rows: Vec<(i64, String, String, String)> = c
+            .prepare("SELECT id, node_id, kind, state FROM work_nodes ORDER BY id")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            rows,
+            [
+                (7, "legacy:github:#1".to_string(), "issue".to_string(), "hidden".to_string()),
+                (9, "brief:dec-1".to_string(), "brief".to_string(), "started".to_string())
+            ]
+        );
+        let tasks: Vec<i64> = c
+            .prepare("SELECT id FROM tasks ORDER BY id")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(tasks, [2, 3, 4, 5], "only the unassigned remote mirrors went; local and pending ones stay");
+        // The ids go on from the old ones.
+        c.execute(
+            "INSERT INTO work_nodes(project_id, node_id, source, ref, title, updated_at, fetched_at_ms)
+             VALUES ('p1', 'x', 'github', '#9', 't', '', 1)",
+            [],
+        )
+        .unwrap();
+        assert_eq!(c.last_insert_rowid(), 10);
     }
 }

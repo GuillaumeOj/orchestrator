@@ -2534,6 +2534,8 @@ impl Runtime {
                 self.teaming.store(false, Ordering::SeqCst);
             }
         }
+        // The programs in progress start what may start (B4); cheap, a pass already running makes this a no-op.
+        self.programs_tick();
         // Task backends (GitHub/Linear network calls): their own thread and
         // guard, off the delivery path (§3.6).
         if !self.syncing.load(Ordering::SeqCst) && self.task_sync_due() && !self.syncing.swap(true, Ordering::SeqCst) {

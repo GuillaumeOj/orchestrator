@@ -33,6 +33,7 @@ pub mod pr;
 pub mod preflight;
 pub mod presets;
 pub mod procs;
+pub mod program;
 pub mod project_files;
 pub mod projects;
 pub mod pty;
@@ -53,10 +54,12 @@ pub mod stuck;
 pub mod supervise;
 pub mod team;
 pub mod team_admin;
+pub mod tracker_issue;
 pub mod transcript;
 pub mod usage;
 pub mod worktree;
 pub mod worktree_watch;
+pub mod writeback;
 
 /// The chaos suite (fix-team-getting-stucked §3.8): a fake CLI in process.
 #[cfg(test)]

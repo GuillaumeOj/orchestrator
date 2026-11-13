@@ -265,7 +265,15 @@ impl Store {
             tx.execute("DELETE FROM transcript_fts WHERE project_id=?1", [&id])?;
             tx.execute("DELETE FROM transcript_files WHERE project_id=?1", [&id])?;
             tx.execute("DELETE FROM terminals WHERE project_id=?1", [&id])?;
-            tx.execute("DELETE FROM intake_items WHERE project_id=?1", [&id])?;
+            tx.execute("DELETE FROM work_nodes WHERE project_id=?1", [&id])?;
+            tx.execute("DELETE FROM programs WHERE project_id=?1", [&id])?;
+            tx.execute("DELETE FROM work_history WHERE project_id=?1", [&id])?;
+            // The viewer and the fetched-children markers of its tree (`work.viewer:<id>`, `work.children:<id>:<node>`).
+            let children = format!("work.children:{id}:");
+            tx.execute(
+                "DELETE FROM kv WHERE key=?1 OR substr(key, 1, length(?2))=?2",
+                params![format!("work.viewer:{id}"), children],
+            )?;
             tx.execute("DELETE FROM kv WHERE key=?1", [crate::intake::status_key(&id)])?;
             Store::delete_project_teams(tx, &id)?;
             tx.execute("DELETE FROM projects WHERE id=?1", [&id])?;
@@ -720,6 +728,17 @@ impl Store {
                 params![key, value],
             )?;
             Ok(())
+        })
+    }
+
+    /// The settings whose key starts with `prefix`, as `(key, value)`.
+    pub fn settings_prefixed(&self, prefix: &str) -> Result<Vec<(String, Value)>> {
+        let pat = format!("{}%", prefix.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_"));
+        self.read(move |c| {
+            let mut st = c.prepare("SELECT key, value FROM kv WHERE key LIKE ?1 ESCAPE '\\'")?;
+            let rows: Vec<(String, String)> =
+                st.query_map([pat], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
+            Ok(rows.into_iter().filter_map(|(k, v)| Some((k, serde_json::from_str(&v).ok()?))).collect())
         })
     }
 

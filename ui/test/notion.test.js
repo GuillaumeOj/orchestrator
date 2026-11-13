@@ -177,8 +177,11 @@ describe('Notion comment in the Inbox', () => {
     app.pending = [];
   });
 
-  it('a task sync conflict is a digest outcome: o opens the Board on the task', async () => {
-    app.data = fixture();
+  it('a task sync conflict is a digest outcome: o lands on the task in its Feature pane', async () => {
+    app.data = {
+      ...fixture(),
+      features: [{ id: 'shop-onb', project_id: 'shop-api', slug: 'onboarding', run: { id: 'run-1' } }],
+    };
     app.now = nowOf(app.data, {
       decisions: [],
       outcomes: [
@@ -188,25 +191,21 @@ describe('Notion comment in the Inbox', () => {
           at_ms: Date.now(),
           project: 'shop-api',
           task: 40,
+          run: 'run-1',
           text: "ENG-140 changed here and in Linear: kept Linear's",
           seen: false,
         },
       ],
     });
     app.layout = null;
-    replies.board_view = {
-      project: { id: 'shop-api', name: 'shop-api' },
-      backend: 'linear',
-      tasks: [],
-      features: [],
-      runs: [],
-    };
     const { container } = render(ChatColumn);
     await fireEvent.click(container.querySelector('[role="option"][title^="ENG-140"]'));
     await fireEvent.keyDown(container.querySelector('[data-chat-focus]'), { key: 'o' });
     await waitFor(() =>
       expect(
-        Object.values(app.panes).some((p) => p.type === 'board' && p.projectId === 'shop-api' && p.taskId === 40),
+        Object.values(app.panes).some(
+          (p) => p.type === 'feature' && p.featureId === 'shop-onb' && p.land?.task === '40' && p.land.conflict,
+        ),
       ).toBe(true),
     );
   });

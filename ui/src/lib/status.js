@@ -50,6 +50,12 @@ const DECISION = {
   rule_proposal: { label: 'Rule proposal', icon: '\u{F0BC5}', token: 'permission' },
   // A feature brief the Overwatch planned (P4.5): level 4, its colour is the rule proposal's cousin.
   brief: { label: 'Brief', icon: '\u{F0219}', color: 'var(--color-accent-default)' },
+  // Program cards (improve-intake notes §7.3): one icon (layers), the event in the label, a borrowed tone.
+  program_new_item: { label: 'Program · new item', icon: '\u{F0328}', token: 'ask' },
+  program_item_closed: { label: 'Program · item closed', icon: '\u{F0328}', token: 'ask' },
+  program_dependency_added: { label: 'Program · new order', icon: '\u{F0328}', token: 'question' },
+  program_feature_failed: { label: 'Program · failed feature', icon: '\u{F0328}', token: 'alert' },
+  program_done: { label: 'Program · done', icon: '\u{F0328}', token: 'budget' },
 };
 
 /** A decision's kind entry: icon, label and its `color.decision.*` token (a gate by its flavour). */
@@ -96,6 +102,7 @@ export const OUTCOME = {
   turn_done: '\u{F173E}',
   report_ready: '\u{F1029}',
   sync_conflict: '\u{F04E7}',
+  program: '\u{F0328}',
 };
 
 export const PRESSURE = {

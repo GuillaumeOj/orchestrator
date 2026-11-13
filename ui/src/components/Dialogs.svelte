@@ -7,11 +7,11 @@
   // (design-notes §3.3): backdrop, title bar with ×, focus trap; the keys are
   // in the buttons' tooltips.
   import { untrack } from 'svelte';
-  import { activeAgents, agent, app, contextProject, deleteAgent, deleteFeature, features, focusCard, openAgent, openFeature, openProjectSettings, openSettings, openUrl, projects, refresh, setContext, toast } from '../lib/app.svelte.js';
+  import { activeAgents, agent, app, confirm, contextProject, deleteAgent, deleteFeature, features, focusCard, openAgent, openFeature, openProjectSettings, openSettings, openUrl, projects, refresh, setContext, toast } from '../lib/app.svelte.js';
   import { designTools, effectiveServers, kindLabel, nodeList } from '../lib/ecosystem.js';
   import { clock, expandHome, shortPath } from '../lib/format.js';
   import { blockOf } from '../lib/inbox.js';
-  import { basisText, dialogEstimate, originChip, SOURCE_NAME, staleBanner, staleOf } from '../lib/intake.js';
+  import { basisText, blockedLine, dialogEstimate, originChip, ranBeforeLine, staleBanner, staleOf, subIssuesLine, trackerName } from '../lib/intake.js';
   import { endStarting } from '../lib/intake.svelte.js';
   import { errText, invoke } from '../lib/ipc.js';
   import { counts, liveText } from '../lib/now.svelte.js';
@@ -20,6 +20,7 @@
   import { PRESSURE } from '../lib/status.js';
   import { runFinished, slugify } from '../lib/teams.js';
   import { tooltip } from '../lib/tooltip.js';
+  import { openProgramPlan } from '../lib/work.js';
   import ConnBadge from './ConnBadge.svelte';
   import FloatingWindow from './FloatingWindow.svelte';
   import PlanEditor from './PlanEditor.svelte';
@@ -224,6 +225,27 @@
     return { ...n, live_cap: n.live_cap ?? snap?.live_cap };
   });
 
+  /** "Run as program instead" (notes §5.2): the plan dialog of this node; edits to the brief ask first. */
+  function runAsProgramInstead() {
+    const org = o.origin;
+    const pf = o.prefill;
+    const edited = o.kind === 'launch' ? launch.brief !== pf?.brief || launch.title !== pf?.title || launch.slug !== pf?.slug : form.message !== pf?.message;
+    const wasSession = o.kind === 'new-session';
+    const go = () => {
+      // The confirm replaced this dialog, so `close()` did not clear the item's text from the session form.
+      if (wasSession) form = { ...form, name: '', message: '' };
+      openProgramPlan([org.node], { title: org.title });
+    };
+    if (edited) {
+      endStarting();
+      confirm('Discard your edits to the brief?', null, go, 'Discard');
+    }
+    else {
+      close();
+      go();
+    }
+  }
+
   function close() {
     // Read before the overlay is cleared: `o` is derived from it.
     const prefilledSession = o?.kind === 'new-session' && !!o.prefill;
@@ -298,15 +320,25 @@
   <!-- P4.5 notes §5.1–§5.3: the origin chip, the stale banner, the estimate and the untrusted-text note. -->
   {#if o.origin}
     {@const chip = originChip(o.origin)}
-    <p class="chip" data-origin><span class="muted">{chip.text}</span>{#if chip.url}{' '}<button type="button" class="linkbtn" onclick={() => openUrl(chip.url)} aria-label="Open {chip.ref} at {SOURCE_NAME[chip.source]}">↗</button>{:else if chip.brief}{' '}<button type="button" class="linkbtn" onclick={() => { const decision = chip.decision; close(); focusCard(decision); }} aria-label="Show the brief card">↗</button>{/if}</p>
+    <p class="chip" data-origin title={chip.tip || null}><span class="muted">{chip.text}</span>{#if chip.url}{' '}<button type="button" class="linkbtn" onclick={() => openUrl(chip.url)} aria-label="Open {chip.ref} in {chip.name}">↗</button>{:else if chip.brief}{' '}<button type="button" class="linkbtn" onclick={() => { const decision = chip.decision; close(); focusCard(decision); }} aria-label="Show the brief card">↗</button>{/if}</p>
   {/if}
   {#if stale}<p class="err" role="alert" data-stale>{staleBanner(stale)}</p>{/if}
 {/snippet}
 {#snippet intakeNote(mode)}
-  {#if o.item}
-    {@const est = dialogEstimate(o.item, mode, projects().find((p) => p.id === o.item.project)?.name)}
+  {#if o.origin?.kind === 'intake'}
+    <!-- Improve-intake notes §5.2: scope line, ran before, untrusted text, blocked, write-back, estimate. -->
+    {@const org = o.origin}
+    {@const sub = subIssuesLine(org.open_sub_issues)}
+    {@const ran = ranBeforeLine(org.ran_before)}
+    {@const tname = org.tracker ?? org.source}
+    {@const blocked = blockedLine(org.blocked_by_open, tname)}
+    {@const est = o.item ? dialogEstimate(o.item, mode, projects().find((p) => p.id === o.item.project)?.name) : ''}
+    {#if sub}<p class="muted note" data-scope>{sub} <button type="button" class="linkbtn" onclick={runAsProgramInstead}>Run as program instead</button></p>{/if}
+    {#if ran}<p class="muted note" data-ran-before>{ran}</p>{/if}
+    <p class="muted note" data-untrusted>This text comes from {trackerName(tname)}. It goes to the agent as part of the brief you send.</p>
+    {#if blocked}<p class="note warnline" data-blocked><span aria-hidden="true">{'\u{F0026}'}</span> {blocked}</p>{/if}
+    {#if org.write_back_line}<p class="muted note" data-writeback>On start: {org.write_back_line}</p>{/if}
     {#if est}<p class="muted note" data-estimate>{est}</p>{/if}
-    <p class="muted note" data-untrusted>This text comes from {SOURCE_NAME[o.item.source]}. It goes to the agent as part of the brief you send.</p>
   {:else if o.origin?.kind === 'brief'}
     <!-- A brief's estimate is its cost block's (notes §5.2). -->
     {@const dec = app.now.decisions?.[o.origin.decision]}
@@ -533,6 +565,9 @@
     flex-direction: row;
     align-items: center;
     gap: var(--space-xs);
+  }
+  .warnline {
+    color: var(--color-pacing-amber);
   }
   .tools.warn {
     border-left: var(--border-width-focus) solid var(--color-status-waiting-for-you);

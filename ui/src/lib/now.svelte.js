@@ -45,6 +45,8 @@ function setSnapshot(s) {
     overwatch: s?.overwatch ?? OFF,
     // Ready to start (P4.5, api-contract §2): replaced whole; absent from an older core.
     intake: s?.intake ?? null,
+    // Programs in progress (improve-intake api-contract §4): the whole list, by id; deltas after.
+    programs: byKey(s?.programs, 'id'),
   };
 }
 
@@ -107,6 +109,12 @@ export function applyNow(ev) {
     if (ev.overwatch) n.overwatch = ev.overwatch;
     // Intake (P4.5, api-contract §2.1): sent whole, only when it changed.
     if (ev.intake) n.intake = ev.intake;
+    // Programs (api-contract §4): `{upsert, remove}` since the last push.
+    if (ev.programs) {
+      n.programs ??= {};
+      for (const r of ev.programs.upsert ?? []) n.programs[r.id] = r;
+      for (const id of ev.programs.remove ?? []) delete n.programs[id];
+    }
     // Today's chat entries (P4.3 api-contract §2.1): new and changed ones.
     if (ev.chat?.length) upsertEntries((n.chat ??= { day: null, entries: {} }), ev.chat);
     n.rev = ev.rev;

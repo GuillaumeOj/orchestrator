@@ -18,11 +18,11 @@
 
 <div class="ln" data-line={line.line} class:err={line.line === 'error'}>
   {#if line.line === 'nosource'}
-    <span>{line.nameText} {line.many ? 'have' : 'has'} no intake source</span>
+    <span>{line.nameText} {line.many ? 'have' : 'has'} no tracker</span>
     <span class="muted">·</span>
     <button class="link" tabindex="-1" use:tooltip={{ label: 'Plan with the Overwatch', key: '⏎' }} onclick={(e) => (e.stopPropagation(), onplan())}>Plan with the Overwatch{tail}</button>
     <span class="muted">·</span>
-    <button class="link" tabindex="-1" use:tooltip={{ label: 'Set up intake', key: 'e' }} onclick={(e) => (e.stopPropagation(), onsetup())}>Set up intake</button>
+    <button class="link" tabindex="-1" use:tooltip={{ label: 'Set up tracker', key: 'e' }} onclick={(e) => (e.stopPropagation(), onsetup())}>Set up tracker</button>
   {:else if line.line === 'empty'}
     <span class="muted">{line.merged ? `Nothing ready in ${line.count} projects` : `Nothing ready in ${line.src.label}`}</span>
     <span class="muted">·</span>
