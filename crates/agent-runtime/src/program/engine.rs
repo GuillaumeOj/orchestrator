@@ -131,14 +131,37 @@ impl Runtime {
             .next()
     }
 
+    /// Whether the PR of session `agent` merged. A merge stays merged: only the open ones are asked again.
+    fn solo_pr_merged(&self, agent: &str, project: &str) -> bool {
+        let Some(url) = self.solo_pr(agent) else { return false };
+        let now = orch_protocol::now_ms();
+        {
+            let mut seen = crate::intake::lock(&self.intake.pr_seen);
+            if let Some((at, merged)) = seen.get(&url)
+                && (*merged || now.saturating_sub(*at) < 60_000)
+            {
+                return *merged;
+            }
+            seen.insert(url.clone(), (now, false));
+        }
+        let Some(project) = self.db.project(project).ok().flatten() else { return false };
+        let merged =
+            orch_tasks::writeback::gh_pr_state(self.gh_in(&project).as_ref(), &url).is_ok_and(|s| s == "MERGED");
+        crate::intake::lock(&self.intake.pr_seen).insert(url, (now, merged));
+        merged
+    }
+
     /// Whether the run / session a program waits on (outside it) has finished (`run:<id>` / `agent:<id>`).
-    fn external_done(&self, key: &str) -> bool {
+    /// A solo session is done when it is archived or killed, or its PR merged (checked at most once a minute).
+    fn external_done(&self, key: &str, project: &str) -> bool {
         match key.split_once(':') {
             Some(("run", id)) => self.db.run(id).ok().flatten().is_none_or(|r| r.status == RunState::Done),
-            Some(("agent", id)) => self
-                .store
-                .read(|s| s.agents.get(id).map(|a| a.tracker.state))
-                .is_none_or(|st| matches!(st, AgentState::Archived | AgentState::Killed)),
+            Some(("agent", id)) => {
+                self.store
+                    .read(|s| s.agents.get(id).map(|a| a.tracker.state))
+                    .is_none_or(|st| matches!(st, AgentState::Archived | AgentState::Killed))
+                    || self.solo_pr_merged(id, project)
+            }
             _ => true,
         }
     }
@@ -186,11 +209,12 @@ impl Runtime {
         // 2. Not started: waiting for a dependency, or planned.
         let merged: HashSet<String> =
             p.features.iter().filter(|f| f.state == "merged").map(|f| f.key.clone()).collect();
+        let project = p.project.clone();
         for f in p.features.iter_mut().filter(|f| !f.skip && f.run.is_none() && f.agent.is_none()) {
             if matches!(f.state.as_str(), "planned" | "waiting") {
                 // A dependency is a feature that merged, or `x:…` an item running outside the program that finished.
                 let met = |d: &String| match d.strip_prefix("x:") {
-                    Some(ext) => self.external_done(ext),
+                    Some(ext) => self.external_done(ext, &project),
                     None => merged.contains(d),
                 };
                 f.state = if f.depends_on.iter().all(met) { "planned".into() } else { "waiting".into() };

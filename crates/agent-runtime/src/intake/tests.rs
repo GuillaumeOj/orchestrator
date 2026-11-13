@@ -1988,7 +1988,8 @@ fn at_most_max_parallel_run_pause_skip_cancel_and_a_failed_feature_waits_the_oth
     assert_eq!(failed.len(), 1, "posted once");
     // The decision: open the feature, or skip it (its dependents stop waiting).
     let n = f.rt.store.read(|s| s.inbox.iter().find(|i| i.kind == "program").map(|i| i.id).unwrap());
-    assert_eq!(f.rt.program_decision_act(n, "open").unwrap()["open"], "feature");
+    let open = f.rt.program_decision_act(n, "open").unwrap();
+    assert_eq!((open["open"].as_str(), open["project"].as_str()), (Some("feature"), Some(f.project.id.as_str())));
     assert_eq!(f.rt.program_decision_act(n, "skip").unwrap()["effect"], "skipped");
     assert_eq!(f.rt.program(&id).unwrap()["features"][0]["state"], "skipped");
     // Pause: nothing new starts while paused; running ones go on.
@@ -2825,4 +2826,28 @@ fn exit_criterion_a_linear_project_with_two_milestones_runs_and_completes() {
         sent.iter().any(|(q, v)| q.contains("projectUpdate") && v["id"] == "pr1" && v["input"]["state"] == "completed"),
         "the project is completed with the program"
     );
+}
+
+#[test]
+fn a_program_stops_waiting_for_a_solo_session_when_its_pr_merges() {
+    let f = program_fixture();
+    fake_start(&f);
+    let mut a = crate::runtime::tests::test_agent(f._d.path());
+    a.repo = f.project.path.clone();
+    f.rt.store.write(|s| s.agents.insert("solo-13".into(), a)).unwrap();
+    // #13 runs as a solo session with an open PR; #14 (blocked by it) waits on `x:agent:…`.
+    let row = f.rt.db.work_node_rows("gh:acme/shop#13").unwrap().remove(0).id;
+    f.rt.db.intake_mark_started(row, "agent", "solo-13").unwrap();
+    f.rt.event("solo-13", "run.pr_opened", json!({"url": "https://github.com/acme/shop/pull/61"}));
+    f.rt.db.flush().unwrap();
+    let v = plan(&f, json!([ROOT]), "child", json!({}));
+    assert_eq!(v["program"]["edges"][0]["from"], "x:agent:solo-13");
+    let id = f.rt.program_start(&v["program"]).unwrap()["program"]["id"].as_str().unwrap().to_string();
+    f.answer("view", json!({"state": "OPEN"}));
+    f.rt.programs_tick();
+    assert_eq!(state(&f, &id)[0], s("payment-step", "waiting"));
+    f.answer("view", json!({"state": "MERGED"}));
+    *crate::intake::lock(&f.rt.intake.pr_seen) = Default::default();
+    f.rt.programs_tick();
+    assert_eq!(state(&f, &id)[0], s("payment-step", "running"), "the merged PR releases the wait");
 }

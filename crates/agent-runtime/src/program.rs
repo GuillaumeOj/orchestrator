@@ -955,9 +955,9 @@ impl Runtime {
                 self.program_close_one(n, "keep");
                 Ok(json!({"ok": true, "effect": "kept", "decision": id}))
             }
-            ("program_feature_failed", "open") => {
-                Ok(json!({"ok": true, "open": "feature", "program": program, "feature": pl["slug"]}))
-            }
+            ("program_feature_failed", "open") => Ok(
+                json!({"ok": true, "open": "feature", "program": program, "feature": pl["slug"], "project": pl["project"]}),
+            ),
             ("writeback_failing", "settings") => {
                 Ok(json!({"ok": true, "open": "settings", "section": "tracker", "project": pl["project"]}))
             }

@@ -77,6 +77,8 @@ pub struct Refresher {
     /// Tests start features without a terminal: `(kind, id)` of what they started.
     #[cfg(test)]
     pub(crate) test_starter: Mutex<Option<TestStarter>>,
+    /// PR url -> (when it was last asked, merged): the PRs of solo sessions a program waits on.
+    pub(crate) pr_seen: Mutex<BTreeMap<String, (u64, bool)>>,
     /// One program pass at a time (B4).
     pub(crate) prog_lock: Mutex<()>,
     /// The `now.programs` rows last sent, by id (B4).
