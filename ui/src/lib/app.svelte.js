@@ -1033,10 +1033,11 @@ export function askRemoveProject(projectId) {
 /** P2: a feature's pane (docs, tasks, team, timeline), one per feature. */
 export function openFeature(featureId, doc = null, anchor = null, timeline = null, land = null) {
   const existing = findPane((s) => s.type === 'feature' && s.featureId === featureId);
+  const landReq = land && { ...land, seq: Date.now() };
   if (existing) {
     if (doc) app.panes[existing] = { ...app.panes[existing], doc, anchor };
     if (timeline) app.panes[existing].timeline = timeline;
-    if (land) app.panes[existing] = { ...app.panes[existing], land: { ...land, seq: Date.now() } };
+    if (landReq) app.panes[existing] = { ...app.panes[existing], land: landReq };
     return showPane(existing);
   }
   const f = features().find((x) => x.id === featureId);
@@ -1046,7 +1047,7 @@ export function openFeature(featureId, doc = null, anchor = null, timeline = nul
     projectId: f?.project_id,
     ...(doc ? { doc, anchor } : {}),
     ...(timeline ? { timeline } : {}),
-    ...(land ? { land: { ...land, seq: Date.now() } } : {}),
+    ...(landReq ? { land: landReq } : {}),
   });
 }
 
@@ -1084,11 +1085,9 @@ async function taskFeature(projectId, id, hint) {
     hint.feature && all.find((f) => f.id === hint.feature || (f.project_id === projectId && f.slug === hint.feature));
   if (named) return named;
   if (hint.run) return null;
-  for (const f of all.filter((x) => x.project_id === projectId && x.run)) {
-    const v = await invoke('feature_view', { feature: f.id }).catch(() => null);
-    if (v?.tasks?.some((t) => String(t.id) === id)) return f;
-  }
-  return null;
+  const cands = all.filter((x) => x.project_id === projectId && x.run);
+  const views = await Promise.all(cands.map((f) => invoke('feature_view', { feature: f.id }).catch(() => null)));
+  return cands.find((_, i) => views[i]?.tasks?.some((t) => String(t.id) === id)) ?? null;
 }
 
 /** The first time an old Board path is used (Feature `b`, the inspector): one toast, then never (notes §1.3). */
