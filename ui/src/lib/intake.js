@@ -260,7 +260,11 @@ export function originChip(origin) {
   const tracker = origin.tracker ?? (origin.source === 'repo_docs' ? 'local' : origin.source);
   const name = origin.tracker ? trackerName(tracker) : (SOURCE_NAME[origin.source] ?? origin.source);
   const from = `From ${origin.ref}${origin.title ? ` ${origin.title}` : ''}`;
-  const crumb = crumbLine(origin.breadcrumb);
+  // The parent alone; under a Linear milestone, "project › milestone" (§5.2).
+  const bc = origin.breadcrumb ?? [];
+  const crumb = crumbLine(bc.at(-1)?.id?.startsWith('lin-milestone:') ? bc.slice(-2) : bc, {
+    parentOnly: bc.at(-1)?.id?.startsWith('lin-milestone:') !== true,
+  });
   return {
     text: [from, crumb && `in ${crumb}`, name].filter(Boolean).join(' · '),
     tip: crumbTip(origin.breadcrumb),

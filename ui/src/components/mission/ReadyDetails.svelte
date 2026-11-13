@@ -33,7 +33,7 @@
   const clamped = $derived(!more && lines.length > 12);
   const shown = $derived(clamped ? lines.slice(0, 12).join('\n') : text);
   const up = $derived(full?.upstream ?? {});
-  const info = $derived({ updated_at_ms: up.updated_at_ms ?? item.updated_at_ms });
+  const updatedAt = $derived(up.updated_at_ms ?? item.updated_at_ms);
   const est = $derived(item.estimate);
   const room = $derived(est?.room_pp != null ? `${Number(est.room_pp).toFixed(1)} pp left this week${est.room_scope === 'allocation' ? ` for ${name}` : ''}` : '');
   const labels = $derived(item.labels ?? []);
@@ -71,7 +71,7 @@
     {#if labels.length}<dt>Labels</dt><dd>{labels.join(' · ')}</dd>{/if}
     {#each rows as [k, v] (k)}<dt>{k}</dt><dd>{v}</dd>{/each}
     {#if front}<dt>Front matter</dt><dd>{front}</dd>{/if}
-    {#if info.updated_at_ms}<dt>Updated</dt><dd>{ageText(info.updated_at_ms, now)} <span class="muted">({dayTime(info.updated_at_ms)})</span></dd>{/if}
+    {#if updatedAt}<dt>Updated</dt><dd>{ageText(updatedAt, now)} <span class="muted">({dayTime(updatedAt)})</span></dd>{/if}
   </dl>
   <div class="acts">
     <button class="btn ghost" tabindex="-1" use:tooltip={{ label: 'Open source', key: 'o' }} onclick={(e) => (e.stopPropagation(), onsource())}>Open source ↗</button>

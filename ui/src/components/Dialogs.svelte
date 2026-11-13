@@ -229,8 +229,13 @@
   function runAsProgramInstead() {
     const org = o.origin;
     const pf = o.prefill;
-    const edited = o.kind === 'launch' ? launch.brief !== pf?.brief : form.message !== pf?.message;
-    const go = () => openProgramPlan([org.node], { title: org.title });
+    const edited = o.kind === 'launch' ? launch.brief !== pf?.brief || launch.title !== pf?.title || launch.slug !== pf?.slug : form.message !== pf?.message;
+    const wasSession = o.kind === 'new-session';
+    const go = () => {
+      // The confirm replaced this dialog, so `close()` did not clear the item's text from the session form.
+      if (wasSession) form = { ...form, name: '', message: '' };
+      openProgramPlan([org.node], { title: org.title });
+    };
     if (edited) {
       endStarting();
       confirm('Discard your edits to the brief?', null, go, 'Discard');
@@ -562,7 +567,7 @@
     gap: var(--space-xs);
   }
   .warnline {
-    color: var(--color-status-waiting-for-you);
+    color: var(--color-pacing-amber);
   }
   .tools.warn {
     border-left: var(--border-width-focus) solid var(--color-status-waiting-for-you);
