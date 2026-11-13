@@ -56,6 +56,8 @@ const ALLOWED = {
   'components/ShortcutsSheet.svelte': /<dd><Kbd/,
   'components/StatusBar.svelte': /\{#if app\.leader\}<span class="leader"[\s\S]*<Kbd/,
   'panes/TeamCanvasPane.svelte': /role="menuitem"[^\n]*<span class="key"><Kbd/,
+  // The Work pane's hint row (improve-intake notes §2.1): keys as text, no control beside them.
+  'components/work/HintRow.svelte': /<span class="h"><Kbd/,
 };
 
 describe('sources', () => {

@@ -48,9 +48,6 @@
     return { col: col < 0 ? 1 : col, row: 0 };
   }
 
-  /** Whether focus is inside this section (the pane leaves its own e / m / p to it). */
-  export const hasFocus = () => !!root && root.contains(document.activeElement);
-
   async function update(t, patch) {
     try {
       await invoke('task_update', { id: t.id, status: patch.status ?? null, node: patch.node ?? null, note: patch.note ?? null, title: patch.title ?? null, body: patch.body ?? null });
@@ -86,6 +83,7 @@
     root?.focus();
   }
 
+  const closeForm = () => ((form = null), root?.focus());
   const openRemote = (t) => t?.remote_url && openUrl(t.remote_url);
   const startEdit = (t) => t && (form = { kind: 'edit', task: t, title: t.title ?? '', body: t.body ?? '' });
   const startAssign = (t) => t && (form = { kind: 'assign', task: t, node: t.node ?? '' });
@@ -191,7 +189,7 @@
       <textarea class="field body" rows="3" bind:value={form.body} placeholder="Description (optional) — ⌘⏎ to create" aria-label="Description"></textarea>
       <Select bind:value={form.node} options={nodeOptions('unassigned')} aria-label="Node" noun="node" />
       <button class="btn primary" onclick={create}>Create</button>
-      <button class="btn ghost" onclick={() => ((form = null), root?.focus())}>Cancel</button>
+      <button class="btn ghost" onclick={() => closeForm()}>Cancel</button>
     </div>
   {:else if form?.kind === 'edit'}
     <div class="form">
@@ -200,7 +198,7 @@
       <input class="field grow" autofocus bind:value={form.title} placeholder="Task title" onkeydown={(e) => e.key === 'Enter' && !e.metaKey && (e.preventDefault(), saveEdit())} />
       <textarea class="field body" rows="3" bind:value={form.body} placeholder="Description — ⌘⏎ to save" aria-label="Description"></textarea>
       <button class="btn primary" onclick={saveEdit}>Save</button>
-      <button class="btn ghost" onclick={() => ((form = null), root?.focus())}>Cancel</button>
+      <button class="btn ghost" onclick={() => closeForm()}>Cancel</button>
     </div>
   {:else if form?.kind === 'assign'}
     <div class="form">
@@ -208,7 +206,7 @@
       <span use:focusBox>
         <Select value={form.node} options={nodeOptions()} placeholder="node…" aria-label="Node" noun="node" onchange={(node) => (update(form.task, { node }), (form = null), root?.focus())} />
       </span>
-      <button class="btn ghost" onclick={() => ((form = null), root?.focus())}>Cancel</button>
+      <button class="btn ghost" onclick={() => closeForm()}>Cancel</button>
     </div>
   {/if}
 
