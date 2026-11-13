@@ -95,7 +95,7 @@ describe('Notion publish', () => {
       expect(item(await menuItems(container), 'Publish to Notion').getAttribute('aria-disabled')).toBeNull(),
     );
     await fireEvent.keyDown(container.querySelector('.feature'), { key: 'N' });
-    await waitFor(() => getByText('◷ Publishing 4 docs…'));
+    await waitFor(() => getByText('Publishing 4 docs…'));
     done();
     await waitFor(() => getByText(/Published to Notion/));
     const rows = await menuItems(container);

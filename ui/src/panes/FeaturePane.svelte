@@ -17,7 +17,7 @@
   import { app, confirm, openAgent, openBoard, openCanvas, openEditor, openUrl, refresh, toast } from '../lib/app.svelte.js';
   import { deliveryMark } from '../lib/delivery.js';
   import { isDesign } from '../lib/ecosystem.js';
-  import { ago, dayHm } from '../lib/format.js';
+  import { ago, dayHm, plural } from '../lib/format.js';
   import { errText, invoke } from '../lib/ipc.js';
   import { isTypingTarget } from '../lib/keyboard.js';
   import { backendLabel, remoteName } from '../lib/linear.js';
@@ -57,6 +57,20 @@
   // The run's phase as the core's run record has it (a finished run has none: its status).
   const rr = $derived(run ? runAttention(run.id) : null);
   const phase = $derived(runPhase(run));
+  /** Row 2 of the header: the pieces present, joined by ` · ` (the branch piece is always there). */
+  const metaText = $derived(
+    v
+      ? [
+          v.team ? `${v.team.name} v${v.team.version}` : null,
+          `\u{E725} ${v.feature.integration_worktree ? `orch/${v.feature.slug}/integration` : '—'}`,
+          run ? `started ${ago(run.started_at_ms)}` : null,
+        ]
+          .filter(Boolean)
+          .join(' · ')
+      : '',
+  );
+  /** A tooltip param read when the tooltip shows: the full text, only when the element is cut (ellipsis). */
+  const ifCut = (text) => (node) => (node.scrollWidth > node.clientWidth ? text : null);
 
   const byStatus = (s) => (v?.tasks ?? []).filter((t) => t.status === s);
   const events = $derived((v?.timeline ?? []).filter(timelineFilter(tl)).slice(0, 60));
@@ -269,21 +283,24 @@
     <p class="muted pad">Loading…</p>
   {:else}
     <header class="fh">
-      <span class="slug">{v.feature.slug}</span>
-      {#if phase}<span class="pill" style:color={runStateColor(phase)} style:border-color={runStateColor(phase)} use:tooltip={rr ? `since ${ago(rr.phase_since_ms)}` : null}>{runStateLabel(phase)}</span>{/if}
-      <span class="muted">{v.team?.name ?? ''}{v.team ? ` v${v.team.version}` : ''} · {'\u{E725}'} {v.feature.integration_worktree ? `orch/${v.feature.slug}/integration` : '—'}{run ? ` · started ${ago(run.started_at_ms)}` : ''}</span>
-      <span class="grow"></span>
-      {#if publishing}
-        <span class="muted">◷ Publishing {v.docs.length} doc{v.docs.length === 1 ? '' : 's'}…</span>
-      {/if}
-      <span class="head-acts">
-        {#if run && !runFinished(run.status)}
-          <button type="button" class="icon-btn" aria-label={paused ? 'Resume team' : 'Pause team'} use:tooltip={{ label: paused ? 'Resume team' : 'Pause team', key: 'p' }} onclick={() => act(paused ? 'resume' : 'pause')}>{paused ? '\u{F040A}' : '\u{F03E4}'}</button>
-          <button type="button" class="icon-btn" aria-label="Stop the team…" use:tooltip={'Stop the team…'} onclick={stop}>{'\u{F04DB}'}</button>
+      <div class="row1">
+        <span class="slug" use:tooltip={ifCut(v.feature.slug)}>{v.feature.slug}</span>
+        {#if phase}<span class="pill" style:color={runStateColor(phase)} style:border-color={runStateColor(phase)} use:tooltip={rr ? `since ${ago(rr.phase_since_ms)}` : null}>{runStateLabel(phase)}</span>{/if}
+        <span class="grow"></span>
+        {#if publishing}
+          {@const pubText = `Publishing ${plural(v.docs.length, 'doc')}…`}
+          <span class="muted pub"><span class="glyph" aria-hidden="true">◷</span><span class="pubtxt" use:tooltip={ifCut(pubText)}>{pubText}</span></span>
         {/if}
-        <button type="button" class="icon-btn danger" aria-label="Delete feature…" use:tooltip={'Delete feature…'} onclick={() => (app.overlay = { kind: 'delete-feature', featureId: v.feature.id })}>{'\u{F01B4}'}</button>
-        <Menu items={menu} label="More actions" />
-      </span>
+        <span class="head-acts">
+          {#if run && !runFinished(run.status)}
+            <button type="button" class="icon-btn" aria-label={paused ? 'Resume team' : 'Pause team'} use:tooltip={{ label: paused ? 'Resume team' : 'Pause team', key: 'p' }} onclick={() => act(paused ? 'resume' : 'pause')}>{paused ? '\u{F040A}' : '\u{F03E4}'}</button>
+            <button type="button" class="icon-btn" aria-label="Stop the team…" use:tooltip={'Stop the team…'} onclick={stop}>{'\u{F04DB}'}</button>
+          {/if}
+          <button type="button" class="icon-btn danger" aria-label="Delete feature…" use:tooltip={'Delete feature…'} onclick={() => (app.overlay = { kind: 'delete-feature', featureId: v.feature.id })}>{'\u{F01B4}'}</button>
+          <Menu items={menu} label="More actions" />
+        </span>
+      </div>
+      <div class="row2 muted" use:tooltip={ifCut(metaText)}>{metaText}</div>
     </header>
 
     {#if notionReady && !notionReady.ok && !notion?.page_url}<p class="nline muted">{notionReady.why}</p>{/if}
@@ -438,7 +455,6 @@
     outline: none;
     font: var(--text-label);
   }
-  .fh,
   .cardh,
   .tt,
   .ev,
@@ -448,11 +464,55 @@
     align-items: center;
     gap: var(--space-sm);
   }
+  .fh {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-xxs);
+  }
+  .row1 {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    min-height: var(--size-control);
+  }
+  /* One line, cut with an ellipsis (the tooltip shows the full text when it is cut). */
+  .row2,
+  .slug,
+  .pubtxt {
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+  .row2 {
+    font: var(--text-caption);
+  }
   .slug {
     font: var(--text-heading);
     color: var(--color-text-primary);
+    /* Shrinks first: the Publishing text only gives way once the slug is down to its minimum. */
+    flex: 0 100 auto;
+    min-width: 0;
+  }
+  .pill,
+  .head-acts {
+    flex: none;
+  }
+  .pub {
+    display: flex;
+    gap: var(--space-xs);
+    /* Always room for the ◷ glyph; only the text after it ellipsizes. */
+    min-width: 1.5em;
+    flex: 0 1 auto;
+  }
+  .glyph {
+    flex: none;
+  }
+  .pubtxt {
+    flex: 0 1 auto;
+    min-width: 0;
   }
   .pill {
+    white-space: nowrap;
     padding: var(--space-xxs) var(--space-sm);
     border: var(--border-width-default) solid;
     border-radius: var(--radius-sm);
