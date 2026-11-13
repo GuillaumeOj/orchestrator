@@ -16,6 +16,7 @@
   import { fixSource } from '../lib/intake.svelte.js';
   import { errText, invoke, listen } from '../lib/ipc.js';
   import { keyIgnored } from '../lib/keyboard.js';
+  import { liveCapText } from '../lib/program.js';
   import { breakpoint } from '../lib/tokens.js';
   import { tooltip } from '../lib/tooltip.js';
   import { openProgram, openProgramPlan } from '../lib/work.js';
@@ -201,6 +202,7 @@
   });
 
   /** The Ready filter in words, per project (the ready chip's tooltip). */
+  const liveCap = $derived(liveCapText(app.now.counts?.global));
   const readyTip = (n) => view.scope.find((p) => p.id === n?.project)?.ready ?? '';
 
   const projectTail = (p) => {
@@ -683,7 +685,7 @@
           {:else}Searching…{/if}
         </p>
         {#each results as r (r.key)}
-          {@const chip = chipOf(r.node, { short: narrow, readyTip: readyTip(r.node) })}
+          {@const chip = chipOf(r.node, { short: narrow, readyTip: readyTip(r.node), liveCap })}
           <!-- svelte-ignore a11y_click_events_have_key_events -->
           <div class="result" class:focused={view.focused === r.key} role="treeitem" tabindex="-1" aria-selected={view.focused === r.key} data-key={r.key} onclick={() => activate(r)} ondblclick={() => activate(r, true)}>
             <KindGlyph node={r.node} />

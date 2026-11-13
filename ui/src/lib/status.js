@@ -55,6 +55,7 @@ const DECISION = {
   program_item_closed: { label: 'Program · item closed', icon: '\u{F0328}', token: 'ask' },
   program_dependency_added: { label: 'Program · new order', icon: '\u{F0328}', token: 'question' },
   program_feature_failed: { label: 'Program · failed feature', icon: '\u{F0328}', token: 'alert' },
+  writeback_failing: { label: 'Write-back failing', icon: '\u{F11CF}', token: 'alert' },
   program_done: { label: 'Program · done', icon: '\u{F0328}', token: 'budget' },
 };
 

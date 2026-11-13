@@ -4,7 +4,7 @@
   // children progress · app-state chip (fixed column). Lines (loading, error, more, source status) share the
   // indent. Buttons inside are not Tab stops: the pane's keys reach them.
   import { tooltip } from '../../lib/tooltip.js';
-  import { closedMark, depMark, GLYPH, isClosed, isContainer, labelsOf, loadErrorText, progressText, refOf, rightOf, selectable, tailOf, titleOf, trackerName, upstreamText } from '../../lib/workmodel.js';
+  import { closedMark, depMark, GLYPH, isClosed, isContainer, labelsOf, loadErrorText, progressText, refOf, rightOf, selectable, tailOf, taskLineOf, titleOf, trackerName, upstreamText } from '../../lib/workmodel.js';
   import AppChip from './AppChip.svelte';
   import KindGlyph from './KindGlyph.svelte';
 
@@ -128,7 +128,7 @@
   <div class="row task" class:focused role="treeitem" tabindex="-1" aria-level={lineLevel} aria-selected={focused} data-key={row.key} onclick={onrow}>
     {@render guides(row.indent)}
     <span class="disc" aria-hidden="true"></span>
-    <span class="up">{[`${n.ref} ${n.title}`, n.upstream?.board_status ?? n.upstream?.state, n.upstream?.assignees?.[0]].filter(Boolean).join(' · ')}</span>
+    <span class="up">{taskLineOf(n)}</span>
   </div>
 {:else}
   <!-- svelte-ignore a11y_click_events_have_key_events -->

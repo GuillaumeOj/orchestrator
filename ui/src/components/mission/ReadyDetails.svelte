@@ -76,7 +76,7 @@
   <div class="acts">
     <button class="btn ghost" tabindex="-1" use:tooltip={{ label: 'Open source', key: 'o' }} onclick={(e) => (e.stopPropagation(), onsource())}>Open source ↗</button>
     {#if hidden}
-      <button class="btn" tabindex="-1" use:tooltip={{ label: 'Unhide', key: 'x' }} onclick={(e) => (e.stopPropagation(), onunhide())}>Unhide</button>
+      <button class="btn" tabindex="-1" use:tooltip={{ label: 'Unhide', key: '⌫' }} onclick={(e) => (e.stopPropagation(), onunhide())}>Unhide</button>
     {:else}
       {#if item.can_team !== false}<button class="btn" tabindex="-1" use:tooltip={{ label: 'Start team run', key: 't' }} onclick={(e) => (e.stopPropagation(), onstart('team'))}>Start team run</button>{/if}
       <button class="btn" tabindex="-1" use:tooltip={{ label: 'Start solo', key: 'a' }} onclick={(e) => (e.stopPropagation(), onstart('solo'))}>Start solo</button>

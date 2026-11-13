@@ -46,6 +46,7 @@
   const isUrl = (x) => /^(https?:\/\/|git@|ssh:\/\/)/.test(x.trim());
 
   // Roles for the New session dialog (a role's settings for a solo session).
+  let kept = null; // the overlay put back by a declined confirmation (its form is not reset)
   let prefilled = null; // the new-session overlay whose prefill was applied
   let roles = $state([]);
   let roleId = $state('');
@@ -80,6 +81,8 @@
     // with the poll, nor depend on what it writes).
     const ov = o;
     if (ov?.kind !== 'launch') return;
+    // Back from a declined confirmation: the form keeps its edits.
+    if (ov === kept) return;
     untrack(() => {
       const pf = ov.prefill;
       const project_id = pf?.project_id ?? ov.projectId ?? contextProject()?.id ?? '';
@@ -238,7 +241,9 @@
     };
     if (edited) {
       endStarting();
-      confirm('Discard your edits to the brief?', null, go, 'Discard');
+      // Cancel returns to this dialog, edits kept (its form state stays).
+      const back = app.overlay;
+      confirm('Discard your edits to the brief?', null, go, 'Discard', 'Cancel', () => ((kept = back), (app.overlay = back)));
     }
     else {
       close();
@@ -307,6 +312,11 @@
     const yes = o?.onYes;
     close();
     yes?.();
+  }
+  function decline() {
+    const no = o?.kind === 'confirm' ? o.onNo : null;
+    close();
+    no?.();
   }
 
   // Esc is the window's (it closes the dialog through `close`).
@@ -521,11 +531,11 @@
       <PlanEditor onSaved={close} onCancel={close} />
     </FloatingWindow>
   {:else}
-    <FloatingWindow title={o.text} role="alertdialog" size={SMALL} minW={DIALOG_MIN_W} onclose={close} onkeydown={(e) => onKey(e, accept)}>
+    <FloatingWindow title={o.text} role="alertdialog" size={SMALL} minW={DIALOG_MIN_W} onclose={decline} onkeydown={(e) => onKey(e, accept)}>
     <form onsubmit={(e) => (e.preventDefault(), accept())}>
       <p class="secondary detail">{o.detail}</p>
       <div class="foot">
-        <button type="button" class="btn ghost" onclick={close} use:tooltip={{ label: o.no ?? 'Cancel', key: 'esc' }}>{o.no ?? 'Cancel'}</button>
+        <button type="button" class="btn ghost" onclick={decline} use:tooltip={{ label: o.no ?? 'Cancel', key: 'esc' }}>{o.no ?? 'Cancel'}</button>
         <!-- svelte-ignore a11y_autofocus -->
         <button type="submit" class="btn primary" autofocus use:tooltip={{ label: o.yes, key: '⏎' }}>{o.yes}</button>
       </div>

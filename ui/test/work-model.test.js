@@ -31,6 +31,7 @@ import {
   selectionText,
   statusLine,
   tailOf,
+  taskLineOf,
   titleOf,
   toggleSelect,
   upstreamText,
@@ -119,6 +120,18 @@ describe('app-state chip (§2.5)', () => {
   ])('%#: tone and long / short text', (node, tone, long, short) => {
     expect(chipOf(node)).toMatchObject({ tone, text: long });
     expect(chipOf(node, { short: true }).text).toBe(short);
+  });
+
+  it('a queued chip names the live cap in its tip; a team-task line has the status in words and the assignee node', () => {
+    expect(chipOf(n15, { liveCap: '2/2' }).tip).toBe('In program Checkout v2: queued by the Governor (live cap 2/2)');
+    expect(chipOf(n15).tip).toBe('In program Checkout v2: queued by the Governor');
+    expect(
+      taskLineOf({
+        ref: '#70',
+        title: 'Postcode API client',
+        upstream: { state: 'in_progress', assignees: ['back-1'] },
+      }),
+    ).toBe('#70 Postcode API client · in progress · back-1');
   });
 
   it('tooltips name the program, the phase, the Ready filter', () => {

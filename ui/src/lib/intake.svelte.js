@@ -5,7 +5,7 @@
 
 import { app, askOverwatch, openProjectSettings, openSettings, openUrl, projects, toast } from './app.svelte.js';
 import { UNDO_MS } from './inbox.js';
-import { GH_SCOPE_COMMAND, integrationsRow, staleOf, staleToast } from './intake.js';
+import { docPath, GH_SCOPE_COMMAND, integrationsRow, staleOf, staleToast } from './intake.js';
 import { errText, invoke } from './ipc.js';
 
 /** Session-only state of the lane and of planning (notes §1.1, §8.1). */
@@ -154,7 +154,7 @@ export async function undoHide(h = intakeUi.lastHide) {
 export async function openSource(item, openEditor) {
   if (item.url) return openUrl(item.url);
   const p = projects().find((x) => x.id === item.project);
-  if (p) openEditor?.(item.ref, null, { projectId: p.id });
+  if (p) openEditor?.(docPath(item), null, { projectId: p.id });
 }
 
 // ---------------------------------------------------------------- errors, set up

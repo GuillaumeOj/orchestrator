@@ -143,9 +143,9 @@ const PHASE_SHORT = { executing: 'exec.', planning: 'plan.', integrating: 'integ
 /**
  * The app-state chip of a node, or null. `tone` picks the status token
  * (ready | waiting | queued | working | pr | done | program). `short`: the 1280 text.
- * `readyTip`: what the Ready filter is ("label ready"). `click`: what a click opens.
+ * `readyTip`: what the Ready filter is ("label ready"). `liveCap`: "2/2", named in a queued chip's tip. `click`: what a click opens.
  */
-export function chipOf(node, { short = false, readyTip = '' } = {}) {
+export function chipOf(node, { short = false, readyTip = '', liveCap = null } = {}) {
   const a = node?.app ?? { state: 'none' };
   switch (a.state) {
     case 'queued': {
@@ -161,7 +161,7 @@ export function chipOf(node, { short = false, readyTip = '' } = {}) {
         : {
             tone: 'queued',
             text: short ? 'queued' : `queued · ${prog}`,
-            tip: `In program ${prog}: queued by the Governor`,
+            tip: `In program ${prog}: queued by the Governor${liveCap ? ` (live cap ${liveCap})` : ''}`,
             click: { kind: 'program', id: a.program?.id },
           };
     }
@@ -769,3 +769,9 @@ export function bodyLines(body, all = false) {
 /** Pairs for the "Blocking" / "Blocked by" rows; items outside the tracker are not openable in the tree. */
 export const depLines = (list) =>
   (list ?? []).map((d) => ({ ...d, outside: !d.id, text: `${d.ref}${d.title ? ` ${d.title}` : ''}` }));
+
+/** A team-task fold line: "#70 Postcode API client · in progress · back-1" (the task's status in words, its assignee node). */
+export const taskLineOf = (n) =>
+  [`${n.ref} ${n.title}`, String(n.upstream?.state ?? '').replaceAll('_', ' '), n.upstream?.assignees?.[0]]
+    .filter(Boolean)
+    .join(' · ');

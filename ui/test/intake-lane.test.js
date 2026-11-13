@@ -1027,6 +1027,21 @@ describe('the prefilled dialogs (notes §5)', () => {
     expect(intakeUi.starting).toBeNull();
   });
 
+  it('Cancel on the discard confirmation returns to the start dialog with the edits kept', async () => {
+    app.overlay = launchOverlay({ origin: nodeOrigin({ open_sub_issues: 1 }) });
+    const { container: c } = render(Dialogs);
+    await settle();
+    await settle();
+    await fireEvent.input(c.querySelector('textarea'), { target: { value: 'my own brief' } });
+    click(c.querySelector('[data-scope] button'));
+    await settle();
+    expect(app.overlay).toMatchObject({ kind: 'confirm' });
+    click([...document.body.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Cancel'));
+    await settle();
+    expect(app.overlay).toMatchObject({ kind: 'launch' });
+    expect(c.querySelector('textarea').value).toBe('my own brief');
+  });
+
   it('launch: a stale answer keeps the dialog with a banner and Close', async () => {
     app.overlay = launchOverlay();
     replies.team_launch = new Error(

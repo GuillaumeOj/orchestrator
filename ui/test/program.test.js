@@ -27,6 +27,7 @@ const P = await import('../src/lib/program.js');
 const { lanes } = await import('../src/lib/mission.js');
 const { applyNow } = await import('../src/lib/now.svelte.js');
 const { keyIntent, intentFor } = await import('../src/lib/inbox.js');
+const { decisionKind } = await import('../src/lib/status.js');
 const { originText, staleOf } = await import('../src/lib/intake.js');
 const { openProgram, openProgramPlan } = await import('../src/lib/work.js');
 const { default: ProgramPlanDialog } = await import('../src/components/ProgramPlanDialog.svelte');
@@ -517,6 +518,15 @@ describe('plan dialog (§6)', () => {
     expect(rows()).toHaveLength(3);
   });
 
+  it('a row is not merged into a skipped previous row', async () => {
+    const { dlg } = await openPlan();
+    key(dlg, 'x'); // row 1 skipped
+    key(dlg, 'j');
+    key(dlg, 'M', { shiftKey: true });
+    await settle();
+    expect(rows()).toHaveLength(3);
+  });
+
   it('a loop blocks Start; Remove a dependency… cuts one edge and Start comes back', async () => {
     const loop = checkout({
       edges: [
@@ -551,6 +561,28 @@ describe('plan dialog (§6)', () => {
     await settle();
     expect(dlg.querySelector('[data-issue="cycle"]')).toBeNull();
     expect(startBtn().disabled).toBe(false);
+  });
+
+  it('closed item: Include anyway adds it to include, and program_start sends it', async () => {
+    const closed = {
+      kind: 'closed',
+      blocking: false,
+      items: [N(16)],
+      features: [],
+      feature: null,
+      edges: [],
+      message: '',
+    };
+    const { dlg } = await openPlan({ program: checkout(), issues: [closed] });
+    expect(text(dlg.querySelector('[data-issue="closed"]'))).toContain('It is left out.');
+    /** @type {HTMLElement} */ (dlg.querySelector('[data-fix="include"]')).click();
+    await settle();
+    expect(text(dlg.querySelector('[data-issue="closed"]'))).toContain('It stays in its feature.');
+    expect(dlg.querySelector('[data-fix="include"]')).toBeNull();
+    replies.program_start = (a) => ({ program: { ...a.program, id: 'prg-9', status: 'running' } });
+    key(dlg, 'Enter', { metaKey: true });
+    await settle();
+    expect(called('program_start')[0].program.include).toEqual([N(16)]);
   });
 
   it('no team: Make it solo fixes the row; Create a team opens the canvas', async () => {
@@ -825,6 +857,38 @@ describe('Program view', () => {
     expect(app.toasts.at(-1).text).toBe('Added #19 to Checkout v2');
   });
 
+  it('a new item shows when it was added, and the row editor sends a typed slug', async () => {
+    replies.program_update = () => running();
+    const at = new Date(2026, 10, 13, 12).getTime();
+    const { c, pv } = await mount(running({ new_items: [N(19)], new_items_added: { [N(19)]: at } }));
+    await settle();
+    expect(text(c.querySelector('[data-new-item]'))).toContain(
+      'under #12 · added 13 Nov)'.replace('under #12', 'sub-issue of #12'),
+    );
+    key(pv, 'a');
+    await settle();
+    const ed = c.querySelector('[data-add-editor]');
+    await fireEvent.input(ed.querySelector('input[aria-label="Slug"]'), { target: { value: 'gift-cards' } });
+    /** @type {HTMLElement} */ ([...ed.querySelectorAll('button')].find((b) => text(b) === 'Add')).click();
+    await settle();
+    expect(called('program_update').at(-1).patch.slug).toBe('gift-cards');
+  });
+
+  it('refetches only when a programs delta upserts or removes its id', async () => {
+    const { c } = await mount(running());
+    await settle();
+    const n = () => called('program').length;
+    const before = n();
+    app.now.rev = 10;
+    applyNow({ rev: 11, topics: ['programs'], programs: { upsert: [row({ id: 'prg-other' })], remove: [] } });
+    await settle();
+    expect(n()).toBe(before);
+    applyNow({ rev: 12, topics: ['programs'], programs: { upsert: [row()], remove: [] } });
+    await settle();
+    expect(n()).toBe(before + 1);
+    expect(c).toBeTruthy();
+  });
+
   it('done and cancelled are read-only', async () => {
     const done = checkout({ id: 'prg-1', status: 'done', done_at_ms: new Date(2026, 10, 13, 18, 20).getTime() });
     for (const f of done.features) f.state = 'merged';
@@ -897,6 +961,10 @@ describe('program cards', () => {
     expect(Object.values(app.panes).find((s) => s.type === 'program').land).toMatchObject({ add: N(19) });
     A.routeOpen({ open: 'feature', program: 'prg-1', feature: 'checkout' }, 'shop-api');
     expect(Object.values(app.panes).some((s) => s.type === 'feature' && s.featureId === 'f-co')).toBe(true);
+    // The reply's own project wins over the card's.
+    for (const k of Object.keys(app.panes)) delete app.panes[k];
+    A.routeOpen({ open: 'feature', program: 'prg-1', feature: 'checkout', project: 'blog' }, 'shop-api');
+    expect(Object.values(app.panes).some((s) => s.type === 'feature')).toBe(false);
   });
 
   it('spec / PR cards of a program feature carry the tag; approving one chains to the next spec', async () => {
@@ -939,5 +1007,35 @@ describe('program cards', () => {
     openProgram('prg-1', 'Checkout v2');
     openProgram('prg-1', 'Checkout v2');
     expect(Object.values(app.panes).filter((s) => s.type === 'program')).toHaveLength(1);
+  });
+});
+
+describe('F6 follow-ups (X1)', () => {
+  it('writeback_failing: its own kind label; Open settings is answered at once and lands on the Write back block', async () => {
+    expect(decisionKind({ kind: 'writeback_failing' }).label).toBe('Write-back failing');
+    expect(intentFor({ kind: 'writeback_failing', actions: [] }, 'settings')).toEqual({
+      kind: 'core',
+      action: 'settings',
+    });
+    expect(intentFor({ kind: 'writeback_failing', actions: [] }, 'turn_off')).toEqual({
+      kind: 'decide',
+      action: 'turn_off',
+    });
+    replies.inbox_act = () => ({ open: 'settings' });
+    await A.coreAct({ id: 'd-1', kind: 'writeback_failing', subject: { project: 'shop-api' } }, 'settings');
+    expect(app.window).toMatchObject({
+      kind: 'project-settings',
+      projectId: 'shop-api',
+      section: 'tracker',
+      block: 'write_back',
+    });
+  });
+
+  it('palette: Start team run for a ready item', () => {
+    app.now.intake = {
+      items: [{ id: 'it_1', node: N(12), ref: '#12', title: 'Checkout v2', actions: { team: 'ok', program: 'ok' } }],
+      sources: [],
+    };
+    expect(A.commands().map((x) => x.label)).toContain('Start team run: #12 Checkout v2');
   });
 });
