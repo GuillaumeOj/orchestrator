@@ -958,4 +958,19 @@ mod tests {
         s.set_tracker("p1", &t).unwrap();
         assert!(s.work_nodes(Some("p1")).unwrap().is_empty());
     }
+
+    #[test]
+    fn programs_are_stored_whole_listed_by_project_and_deleted_with_it() {
+        let (_d, s) = store();
+        s.upsert_program("prg-1", "p1", "running", &json!({"id": "prg-1", "title": "A"}), 1).unwrap();
+        s.upsert_program("prg-2", "p2", "draft", &json!({"id": "prg-2"}), 2).unwrap();
+        s.upsert_program("prg-1", "p1", "done", &json!({"id": "prg-1", "title": "B"}), 3).unwrap();
+        assert_eq!(s.program("prg-1").unwrap().unwrap()["title"], "B");
+        assert!(s.program("nope").unwrap().is_none());
+        assert_eq!(s.programs(None).unwrap().len(), 2);
+        assert_eq!(s.programs(Some("p1")).unwrap().len(), 1);
+        s.delete_project("p1").unwrap();
+        assert!(s.programs(Some("p1")).unwrap().is_empty());
+        assert_eq!(s.programs(None).unwrap().len(), 1);
+    }
 }
