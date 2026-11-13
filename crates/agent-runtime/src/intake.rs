@@ -691,7 +691,7 @@ impl Runtime {
         // Items of a program in progress are its features', not Ready.
         let in_program: std::collections::HashSet<(String, String)> = self
             .db
-            .programs(None)
+            .programs_in_progress(None)
             .unwrap_or_default()
             .into_iter()
             .filter_map(|v| serde_json::from_value::<crate::program::Program>(v).ok())

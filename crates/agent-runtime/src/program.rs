@@ -502,7 +502,7 @@ impl Runtime {
         // Already the root of a program in progress: stale (notes §6.5).
         if let Some(running) = self
             .db
-            .programs(Some(&project))?
+            .programs_in_progress(Some(&project))?
             .into_iter()
             .filter_map(|v| serde_json::from_value::<Program>(v).ok())
             .find(|q| matches!(q.status.as_str(), "running" | "paused") && q.root.iter().any(|r| ids.contains(r)))
@@ -633,17 +633,18 @@ impl Runtime {
         }
         let ctx = self.program_ctx(&p.project)?;
         // The roots must still exist and not be a program in progress.
+        let in_progress: Vec<Program> = self
+            .db
+            .programs_in_progress(Some(&p.project))?
+            .into_iter()
+            .filter_map(|v| serde_json::from_value::<Program>(v).ok())
+            .filter(|q| q.id != p.id && matches!(q.status.as_str(), "running" | "paused"))
+            .collect();
         for r in &p.root {
             if ctx.index(r).is_none() {
                 return Err(stale("the root is gone upstream", json!({})));
             }
-            if let Some(q) = self
-                .db
-                .programs(Some(&p.project))?
-                .into_iter()
-                .filter_map(|v| serde_json::from_value::<Program>(v).ok())
-                .find(|q| q.id != p.id && matches!(q.status.as_str(), "running" | "paused") && q.root.contains(r))
-            {
+            if let Some(q) = in_progress.iter().find(|q| q.root.contains(r)) {
                 return Err(stale(&format!("already in program {}", q.title), json!({"program": q.id})));
             }
         }
@@ -746,10 +747,17 @@ impl Runtime {
 
     /// `program_update(id, patch)`: pause · resume · skip · add_item · ignore_item · max_parallel · cancel.
     pub fn program_update(&self, id: &str, patch: &Value) -> Result<Value> {
+        // Serialised with the engine's pass and the refresh: each loads, edits and stores the whole
+        // document, so an edit in between would be lost (a pause undone, a started feature started twice).
+        let guard = self.intake.prog_lock.lock().unwrap_or_else(|e| e.into_inner());
         let mut p = self.program_get(id)?;
         let live = matches!(p.status.as_str(), "running" | "paused");
         let obj = patch.as_object().ok_or_else(|| bad("patch", "an object with one edit"))?;
-        let Some((op, arg)) = obj.iter().next() else { return Err(bad("patch", "one edit")) };
+        // (the edit is the known key; `add_item` carries `mode` / `team` / `after` beside it)
+        const OPS: [&str; 7] = ["pause", "resume", "max_parallel", "skip", "ignore_item", "add_item", "cancel"];
+        let Some((op, arg)) = obj.iter().find(|(k, _)| OPS.contains(&k.as_str())).or_else(|| obj.iter().next()) else {
+            return Err(bad("patch", "one edit"));
+        };
         if !live && p.status != "draft" {
             return Err(stale("the program is over", json!({"status": p.status})));
         }
@@ -764,7 +772,10 @@ impl Runtime {
             "skip" => {
                 let key = arg.as_str().ok_or_else(|| bad("skip", "a feature key"))?;
                 let f = p.features.iter_mut().find(|f| f.key == key).ok_or_else(|| bad("skip", "no such feature"))?;
-                if !matches!(f.state.as_str(), "planned" | "waiting" | "queued" | "failed") {
+                // (a "queued" feature held by the Governor already has its run: skipping it would orphan it)
+                if !matches!(f.state.as_str(), "planned" | "waiting" | "queued" | "failed")
+                    || (f.state == "queued" && (f.run.is_some() || f.agent.is_some()))
+                {
                     return Err(bad("skip", "only a feature that has not started can be skipped"));
                 }
                 f.skip = true;
@@ -801,6 +812,7 @@ impl Runtime {
             other => return Err(bad("patch", format!("{other} is not a program edit"))),
         }
         self.program_save(&p)?;
+        drop(guard);
         self.programs_tick();
         self.program_view(id)
     }
@@ -978,7 +990,7 @@ impl Runtime {
     /// The programs in progress, as rows by id.
     fn programs_rows(&self) -> BTreeMap<String, Value> {
         self.db
-            .programs(None)
+            .programs_in_progress(None)
             .unwrap_or_default()
             .into_iter()
             .filter_map(|v| serde_json::from_value::<Program>(v).ok())
@@ -1012,7 +1024,7 @@ impl Runtime {
         let Ok(_guard) = self.intake.prog_lock.lock() else { return };
         let progs: Vec<Program> = self
             .db
-            .programs(Some(project))
+            .programs_in_progress(Some(project))
             .unwrap_or_default()
             .into_iter()
             .filter_map(|v| serde_json::from_value::<Program>(v).ok())
@@ -1035,7 +1047,9 @@ impl Runtime {
         // A child added under a root, not in any feature (F7).
         let roots: Vec<usize> = p.root.iter().filter_map(|r| ctx.index(r)).collect();
         let mut scope = Scope::default();
-        let all: Vec<usize> = groups(ctx, &roots, "single", &mut scope).into_iter().flatten().collect();
+        // (the program's own grouping: a "grandchild" plan leaves the child items that have sub-issues
+        // out of every feature, and they are not new)
+        let all: Vec<usize> = groups(ctx, &roots, &p.grouping, &mut scope).into_iter().flatten().collect();
         let known: HashSet<&str> = p
             .features
             .iter()

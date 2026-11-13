@@ -257,7 +257,7 @@ impl Ctx {
     /// What the programs of the project say of their items: waiting / queued in a
     /// program, failed, skipped, and the roots that are a program's.
     fn overlay_programs(&mut self, rt: &Runtime) {
-        for v in rt.db.programs(Some(&self.project.id)).unwrap_or_default() {
+        for v in rt.db.programs_in_progress(Some(&self.project.id)).unwrap_or_default() {
             let Ok(p) = serde_json::from_value::<crate::program::Program>(v) else { continue };
             if !matches!(p.status.as_str(), "running" | "paused") {
                 continue;

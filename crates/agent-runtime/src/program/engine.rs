@@ -94,7 +94,7 @@ impl Runtime {
     /// A pass already running makes this one a no-op.
     pub fn programs_tick(&self) {
         let Ok(_guard) = self.intake.prog_lock.try_lock() else { return };
-        for v in self.db.programs(None).unwrap_or_default() {
+        for v in self.db.programs_in_progress(None).unwrap_or_default() {
             let Ok(mut p) = serde_json::from_value::<Program>(v) else { continue };
             if !matches!(p.status.as_str(), "running" | "paused") {
                 continue;
@@ -290,8 +290,7 @@ impl Runtime {
         if let (Some(o), Some(e)) = (payload.as_object_mut(), extra.as_object()) {
             o.extend(e.clone());
         }
-        let level = if matches!(kind, "program_dependency_added" | "program_done") { 4 } else { 3 };
-        if let Err(e) = self.add_item_in(None, "program", format!("{title}\n{text}"), payload, 10 - level, None) {
+        if let Err(e) = self.add_item_in(None, "program", format!("{title}\n{text}"), payload, 0, None) {
             eprintln!("warn: program decision {kind} not posted: {e:#}");
         }
     }

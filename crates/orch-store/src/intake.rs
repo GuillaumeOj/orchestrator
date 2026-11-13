@@ -336,6 +336,20 @@ impl Store {
         })
     }
 
+    /// The programs in progress (running or paused) of one project (all when `None`): what every
+    /// tick and snapshot reads, without parsing the finished ones.
+    pub fn programs_in_progress(&self, project: Option<&str>) -> Result<Vec<Value>> {
+        let p = project.map(str::to_string);
+        self.read(move |c| {
+            let mut st = c.prepare(
+                "SELECT data FROM programs WHERE status IN ('running','paused') AND (?1 IS NULL OR project_id=?1)
+                 ORDER BY created_at_ms, id",
+            )?;
+            let rows: Vec<String> = st.query_map([p], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
+            Ok(rows.into_iter().filter_map(|s| serde_json::from_str(&s).ok()).collect())
+        })
+    }
+
     /// Every node's place in its tree (no body, no facts), of every project.
     pub fn work_index(&self) -> Result<Vec<WorkIndex>> {
         self.read(|c| {
