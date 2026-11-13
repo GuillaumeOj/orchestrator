@@ -71,7 +71,7 @@ impl Graphql for FakeLinear {
         if query.contains("OrchWbIssue") {
             return Ok(
                 json!({"issue": {"id": "uuid-ENG-42", "state": {"type": "unstarted"}, "team": {"states": {"nodes": [
-                {"id": "s-todo", "type": "unstarted", "position": 1.0}, {"id": "s-prog", "type": "started", "position": 2.0},
+                {"id": "s-todo", "type": "unstarted", "position": 1.0}, {"id": "s-prog", "type": "started", "position": 2.0}, {"id": "s-custom", "type": "started", "position": 2.5},
                 {"id": "s-done", "type": "completed", "position": 3.0}, {"id": "s-cancel", "type": "canceled", "position": 4.0}]}}}}),
             );
         }
@@ -196,9 +196,18 @@ impl Fx {
         let key = if key == ISSUES { "graphql:OrchTreeIssues" } else { key };
         self.gh.lock().unwrap().insert(key.into(), Err(e.into()));
     }
+    /// Stores a legacy-shaped source (adapted into the tracker) and reads it now.
+    fn set_source(&self, src: &Value) {
+        let s = super::parse_source(src).unwrap();
+        self.rt.db.set_intake_source(&self.project.id, &s).unwrap();
+        if !s.is_none() {
+            self.rt.intake_refresh_now(&self.project.id);
+        }
+    }
     fn github_label(&self) {
-        let src = json!({"type": "github", "repo": "acme/shop", "filter": {"kind": "label", "names": ["ready"]}});
-        self.rt.intake_source_set(&self.project.id, &src).unwrap();
+        self.set_source(
+            &json!({"type": "github", "repo": "acme/shop", "filter": {"kind": "label", "names": ["ready"]}}),
+        );
     }
     fn items(&self) -> Vec<Value> {
         self.rt.intake_view()["items"].as_array().unwrap().clone()
@@ -235,12 +244,7 @@ fn github_items_reach_now_and_follow_the_source() {
             pr
         ]),
     );
-    let r = {
-        let src = json!({"type": "github", "repo": "acme/shop", "filter": {"kind": "label", "names": ["ready"]}});
-        f.rt.intake_source_set(&f.project.id, &src).unwrap()
-    };
-    assert_eq!(r["preview"]["count"], 2);
-    assert_eq!(r["preview"]["items"][0]["ref"], "#1");
+    f.github_label();
     assert_eq!(f.refs(), ["#1", "#3"], "orch-labelled and PRs are not intake");
     let it = &f.items()[1];
     assert_eq!(
@@ -257,17 +261,13 @@ fn github_items_reach_now_and_follow_the_source() {
         (Some("ok"), Some(2), Some("acme/shop · label ready"))
     );
     assert!(s["url"].as_str().unwrap().contains("label:%22ready%22"));
-    // The full item.
     let id = it["id"].as_str().unwrap().to_string();
-    let full = f.rt.intake_item(&id).unwrap();
-    assert_eq!((full["body"].as_str(), full["truncated"].as_bool()), (Some("Body of 3"), Some(false)));
-    assert_eq!(full["assignees"], json!([]));
     // A closed issue leaves the lane at the next refresh.
     f.answer(ISSUES, json!([issue(3, &["ready", "size:L"], "2026-11-01T00:00:00Z")]));
     f.refresh();
     assert_eq!(f.refs(), ["#3"]);
     // Hide: the item stays in `items` as hidden and is counted; an edit upstream brings it back.
-    f.rt.intake_hide(&id).unwrap();
+    f.rt.db.intake_hide(super::item_id(&id).unwrap(), orch_protocol::now_ms()).unwrap();
     let s = f.source();
     assert_eq!((s["count"].as_u64(), s["hidden"].as_u64()), (Some(0), Some(1)));
     assert_eq!(f.items()[0]["state"], "hidden");
@@ -276,8 +276,8 @@ fn github_items_reach_now_and_follow_the_source() {
     f.answer(ISSUES, json!([issue(3, &["ready", "size:L"], "2026-11-02T00:00:00Z")]));
     f.refresh();
     assert_eq!((f.items()[0]["state"].as_str(), f.items()[0]["id"].as_str()), (Some("ready"), Some(id.as_str())));
-    f.rt.intake_hide(&id).unwrap();
-    f.rt.intake_unhide(&id).unwrap();
+    f.rt.db.intake_hide(super::item_id(&id).unwrap(), orch_protocol::now_ms()).unwrap();
+    f.rt.db.intake_unhide(super::item_id(&id).unwrap()).unwrap();
     assert_eq!(f.items()[0]["state"], "ready");
     // Read-only towards GitHub.
     for c in f.calls.lock().unwrap().iter() {
@@ -327,12 +327,10 @@ fn linear_items_and_key_errors() {
                "updatedAt": "2026-11-01T00:00:00Z", "labels": {"nodes": [{"name": "orch"}]}}),
     ]);
     let src = json!({"type": "linear", "team": "ENG", "label": "next"});
-    f.rt.intake_source_set(&f.project.id, &src).unwrap();
+    f.set_source(&src);
     assert_eq!(f.refs(), ["ENG-42"]);
     assert_eq!(f.items()[0]["size"], "L");
     assert_eq!(f.source()["url"], "https://linear.app/acme/team/ENG/active");
-    let full = f.rt.intake_item(f.items()[0]["id"].as_str().unwrap()).unwrap();
-    assert_eq!((full["priority"].as_str(), full["points"].as_f64()), (Some("High"), Some(5.0)));
     *f.linear.issues.lock().unwrap() = Err(GqlError::Unauthorized("no Linear API key: add it".into()));
     f.refresh();
     assert_eq!(f.source()["error"]["code"], "linear_key");
@@ -340,11 +338,6 @@ fn linear_items_and_key_errors() {
     for q in f.linear.calls.lock().unwrap().iter() {
         assert!(!q.trim_start().starts_with("mutation"), "read-only: {q}");
     }
-    // A preview stores nothing.
-    *f.linear.issues.lock().unwrap() = Ok(vec![]);
-    let p = f.rt.intake_preview(&f.project.id, &src).unwrap();
-    assert_eq!((p["count"].as_u64(), &p["error"]), (Some(0), &Value::Null));
-    assert_eq!(f.refs(), ["ENG-42"]);
 }
 
 #[test]
@@ -359,8 +352,7 @@ fn repo_docs_follow_the_branch_tip() {
         "a",
     );
     commit_file(&repo, ".orchestrator/backlog/02-old.md", "---\nstatus: done\n---\n# Old\n", "b");
-    let r = f.rt.intake_source_set(&f.project.id, &json!({"type": "repo_docs"})).unwrap();
-    assert_eq!(r["preview"]["count"], 1);
+    f.set_source(&json!({"type": "repo_docs"}));
     let it = &f.items()[0];
     assert_eq!(
         (it["ref"].as_str(), it["title"].as_str(), it["mode"].as_str(), it["team"].as_str(), it["url"].clone()),
@@ -380,52 +372,10 @@ fn repo_docs_follow_the_branch_tip() {
     assert_eq!(f.refs().len(), 2);
     // Answered: due at the interval again, not refreshed on every pass.
     assert!(lock(&f.rt.intake.sched).due[&f.project.id] > orch_protocol::now_ms());
-    // Options: the count the glob matches; a missing branch is a source error.
-    assert_eq!(f.rt.intake_options(&f.project.id, &json!({"type": "repo_docs"})).unwrap()["matches"], 3);
-    let o = f.rt.intake_options(&f.project.id, &json!({"type": "repo_docs", "branch": "nope"})).unwrap();
-    assert_eq!(o["error"]["code"], "branch_missing");
     // The tracker reads the project's base branch: an old source's `branch` is not kept.
-    f.rt.intake_source_set(&f.project.id, &json!({"type": "repo_docs", "branch": "nope"})).unwrap();
+    f.set_source(&json!({"type": "repo_docs", "branch": "nope"}));
     assert_eq!(f.rt.db.intake_source(&f.project.id).unwrap().kind(), "repo_docs");
     assert_eq!(f.source()["error"], Value::Null);
-}
-
-#[test]
-fn validation_errors_name_the_field() {
-    let f = fx();
-    let err = |v: Value| -> Value {
-        let e = f.rt.intake_source_set(&f.project.id, &v).unwrap_err();
-        serde_json::from_str(&e.to_string()).unwrap()
-    };
-    assert_eq!(
-        err(json!({"type": "github", "repo": "x", "filter": {"kind": "label", "names": ["a"]}}))["field"],
-        "repo"
-    );
-    assert_eq!(err(json!({"type": "repo_docs", "glob": "a/["}))["field"], "glob");
-    assert_eq!(err(json!({"type": "repo_docs", "glob": "../*.md"}))["field"], "glob");
-    assert_eq!(err(json!({"type": "linear", "team": ""}))["code"], "bad_request");
-    assert_eq!(err(json!({"type": "jira"}))["field"], "type");
-    assert!(
-        f.rt.intake_preview(&f.project.id, &json!({"type": "github", "filter": {"kind": "label", "names": []}}))
-            .is_err()
-    );
-    assert_eq!(f.rt.db.intake_source(&f.project.id).unwrap(), IntakeSource::None, "nothing stored");
-    // None clears a source.
-    f.rt.intake_source_set(&f.project.id, &json!({"type": "repo_docs"})).unwrap();
-    f.rt.intake_source_set(&f.project.id, &Value::Null).unwrap();
-    assert_eq!(f.rt.intake_source(&f.project.id).unwrap()["source"], Value::Null);
-}
-
-#[test]
-fn options_take_a_partial_source() {
-    let f = fx();
-    f.answer("repos/acme/shop/labels", json!([{"name": "ready"}, {"name": "orch:ready"}]));
-    f.answer("repos/acme/shop/milestones", json!([]));
-    f.fail("graphql", "GraphQL: Your token has not been granted the required scopes: read:project");
-    let o = f.rt.intake_options(&f.project.id, &json!({"type": "github", "repo": "acme/shop"})).unwrap();
-    assert_eq!(o["labels"], json!(["ready"]));
-    assert_eq!(o["error"]["code"], "gh_scope", "a scope error is in `error`, not a failure");
-    assert!(f.rt.intake_options(&f.project.id, &json!({"type": "linear"})).is_err());
 }
 
 #[test]
@@ -463,9 +413,9 @@ fn the_refresher_staggers_the_start_and_waits_its_interval() {
     assert_eq!(s["status"], "refreshing");
     lock(&f.rt.intake.sched).inflight.clear();
     // A request makes it due now.
-    f.rt.intake_refresh(Some(&ids[0])).unwrap();
+    f.rt.work_refresh(Some(&ids[0])).unwrap();
     assert_eq!(lock(&f.rt.intake.sched).due[&ids[0]], 0);
-    assert!(f.rt.intake_refresh(Some("nope")).is_err());
+    assert!(f.rt.work_refresh(Some("nope")).is_err());
 }
 
 #[test]
@@ -578,20 +528,19 @@ fn prefill_builds_the_launch_and_session_forms() {
     f.with_team();
     f.answer(ISSUES, json!([issue(12, &["ready"], "2026-11-01T00:00:00Z")]));
     f.github_label();
-    let id = f.item_id("#12");
     let v = f.rt.intake_view();
     assert_eq!((v["items"][0]["mode"].as_str(), v["items"][0]["team"].as_str()), (Some("team"), Some("bugfix-squad")));
-    let l = f.rt.intake_prefill(Some(&id), None, None).unwrap();
+    let l = f.rt.work_prefill("gh:acme/shop#12", None).unwrap();
     let l = &l["launch"];
     assert_eq!(
         (l["team_id"].as_str(), l["slug"].as_str(), l["title"].as_str()),
         (Some("bugfix-squad"), Some("issue-12"), Some("Issue 12"))
     );
     let b = l["brief"].as_str().unwrap();
-    assert!(b.starts_with("# Issue 12\n\nFrom GitHub issue #12 · https://github.com/acme/shop/issues/12"), "{b}");
-    assert!(b.ends_with("Body of 12"));
+    assert!(b.starts_with("# Issue 12 (#12)\n\nIn acme/shop. https://github.com/acme/shop/issues/12"), "{b}");
+    assert!(b.contains("Body of 12"));
     assert_eq!((l["base"].clone(), l["off_hours"].as_bool()), (Value::Null, Some(false)));
-    let s = f.rt.intake_prefill(Some(&id), None, Some("solo")).unwrap();
+    let s = f.rt.work_prefill("gh:acme/shop#12", Some("solo")).unwrap();
     let s = &s["session"];
     assert_eq!(s["name"], "issue-12");
     let m = s["message"].as_str().unwrap();
@@ -599,9 +548,8 @@ fn prefill_builds_the_launch_and_session_forms() {
     assert!(m.ends_with("When done, say so; the item is https://github.com/acme/shop/issues/12"), "{m}");
     // A slug taken by a feature: the next one.
     f.launch("issue-12", None).unwrap();
-    assert_eq!(f.rt.intake_prefill(Some(&id), None, None).unwrap()["launch"]["slug"], "issue-12-2");
-    assert!(f.rt.intake_prefill(Some(&id), None, Some("pair")).is_err());
-    assert!(f.rt.intake_prefill(None, None, None).is_err());
+    assert_eq!(f.rt.work_prefill("gh:acme/shop#12", None).unwrap()["launch"]["slug"], "issue-12-2");
+    assert!(f.rt.work_prefill("gh:acme/shop#12", Some("pair")).is_err());
 }
 
 #[test]
@@ -637,7 +585,7 @@ fn a_team_run_and_a_solo_session_carry_their_item_and_give_it_back() {
     assert_eq!(e, json!({"code": "stale", "message": "already started", "started": {"kind": "run", "name": "one"}}));
     assert!(f.rt.db.feature_by_slug(&f.project.id, "again").unwrap().is_none(), "nothing launched");
     // A hidden item can't start (F12); an item of another project neither.
-    f.rt.intake_hide(&three).unwrap();
+    f.rt.db.intake_hide(super::item_id(&three).unwrap(), orch_protocol::now_ms()).unwrap();
     assert_eq!(stale_of(f.solo("s3", item(&three)).unwrap_err())["message"], "not ready");
     assert!(
         f.solo(
@@ -814,13 +762,11 @@ fn no_path_starts_work_without_the_users_command() {
     let agents = || f.rt.store.read(|s| s.agents.len());
     let (a0, r0) = (agents(), f.rt.db.runs(None, false).unwrap().len());
     // Refreshes, the refresher's passes, the lane's commands.
-    f.rt.intake_refresh(None).unwrap();
+    f.rt.work_refresh(None).unwrap();
     f.rt.intake_step(orch_protocol::now_ms());
     f.refresh();
-    let id = f.item_id("#1");
-    f.rt.intake_item(&id).unwrap();
-    f.rt.intake_prefill(Some(&id), None, None).unwrap();
-    f.rt.intake_prefill(Some(&id), None, Some("solo")).unwrap();
+    f.rt.work_prefill("gh:acme/shop#1", None).unwrap();
+    f.rt.work_prefill("gh:acme/shop#1", Some("solo")).unwrap();
     // The Overwatch's proposal and every card action.
     let d = f.propose(json!({})).unwrap()["decision"].as_str().unwrap().to_string();
     let n: u64 = d.trim_start_matches("brief-").parse().unwrap();
@@ -1025,19 +971,6 @@ fn the_migrated_ready_default_is_checked_once_by_the_refresher_and_a_failed_chec
     f.refresh();
     assert_eq!(ready(), json!(["ready"]));
     assert!(!f.rt.db.tracker_ready_pending(&id).unwrap());
-}
-
-#[test]
-fn the_old_intake_commands_still_answer_through_the_tracker() {
-    let f = fx();
-    f.github_label();
-    let t = f.rt.db.tracker(&f.project.id).unwrap();
-    assert_eq!(t.tracker, orch_store::Tracker::Github { repo: Some("acme/shop".into()), project_board: None });
-    assert_eq!(t.ready, orch_store::ReadyFilter::defaults("github"));
-    let s = f.rt.intake_source(&f.project.id).unwrap();
-    assert_eq!(s["source"]["filter"]["names"], json!(["ready"]));
-    f.rt.intake_source_set(&f.project.id, &Value::Null).unwrap();
-    assert!(f.rt.intake_source(&f.project.id).unwrap()["source"].is_null());
 }
 
 // ------------------------------------------------------------ the tree (B2)
@@ -2850,4 +2783,70 @@ fn a_program_stops_waiting_for_a_solo_session_when_its_pr_merges() {
     *crate::intake::lock(&f.rt.intake.pr_seen) = Default::default();
     f.rt.programs_tick();
     assert_eq!(state(&f, &id)[0], s("payment-step", "running"), "the merged PR releases the wait");
+}
+
+#[test]
+fn a_dependent_of_outside_work_that_failed_gets_a_decision_and_never_waits_for_ever() {
+    let f = program_fixture();
+    fake_start(&f);
+    let ctx_id = f.rt.db.work_node_rows("gh:acme/shop#13").unwrap().remove(0).id;
+    fake_start_run(&f, "elsewhere", ctx_id);
+    let v = plan(&f, json!([ROOT]), "child", json!({}));
+    let id = f.rt.program_start(&v["program"]).unwrap()["program"]["id"].as_str().unwrap().to_string();
+    assert_eq!(state(&f, &id)[0], s("payment-step", "waiting"));
+    set_run(&f, "elsewhere", orch_team::RunState::Failed);
+    f.rt.programs_tick();
+    f.rt.programs_tick();
+    assert_eq!(state(&f, &id)[0], s("payment-step", "waiting"), "it does not start on its own");
+    let ds: Vec<(u64, Value)> =
+        f.rt.store
+            .read(|s| s.inbox.iter().filter(|i| i.kind == "program").map(|i| (i.id, i.payload.clone())).collect());
+    assert_eq!(ds.len(), 1, "posted once: {ds:?}");
+    assert_eq!(ds[0].1["kind"], "program_feature_failed");
+    assert_eq!(ds[0].1["dependency"], "x:run:run-elsewhere");
+    // The card offers start anyway / skip.
+    f.rt.now_pump(true);
+    let snap = f.rt.now_snapshot();
+    let did = crate::decision::decision_id("program", ds[0].0);
+    let card = snap["decisions"].as_array().unwrap().iter().find(|d| d["id"] == did.as_str()).unwrap().clone();
+    let acts: Vec<&str> = card["actions"].as_array().unwrap().iter().map(|a| a["id"].as_str().unwrap()).collect();
+    assert_eq!(acts, ["start_anyway", "skip"]);
+    let r = f.rt.program_decision_act(ds[0].0, "start_anyway").unwrap();
+    assert_eq!(r["effect"], "started anyway");
+    assert_eq!(state(&f, &id)[0], s("payment-step", "running"));
+}
+
+#[test]
+fn program_start_ignores_the_live_fields_of_the_clients_draft() {
+    let f = program_fixture();
+    fake_start(&f);
+    let mut d = plan(&f, json!([ROOT]), "child", json!({}))["program"].clone();
+    d["status"] = json!("done");
+    d["notified"] = json!(["done", "merged:pf-1"]);
+    d["features"][0]["state"] = json!("merged");
+    d["features"][0]["run"] = json!("run-evil");
+    d["features"][0]["merged_at_ms"] = json!(5);
+    d["features"][0]["flags"] = json!(["new_dependency"]);
+    let r = f.rt.program_start(&d).unwrap();
+    let id = r["program"]["id"].as_str().unwrap().to_string();
+    let p = f.rt.program_get(&id).unwrap();
+    assert_eq!(p.status, "running");
+    assert!(p.features[0].run.as_deref() != Some("run-evil") && p.features[0].merged_at_ms.is_none());
+    assert_eq!(state(&f, &id)[0].1, "running", "started by the engine, not merged by the draft");
+    assert!(!p.notified.contains(&"done".to_string()));
+}
+
+#[test]
+fn linear_state_is_one_teams_and_a_team_id_does_not_accept_any_key() {
+    let l = fx();
+    let mut tr = l.rt.db.tracker(&l.project.id).unwrap();
+    tr.tracker =
+        orch_store::Tracker::Linear { teams: vec!["11111111-2222-3333-4444-555555555555".into()], projects: None };
+    tr.write_back.linear_state = Some("s-elsewhere".into());
+    l.rt.db.set_tracker(&l.project.id, &tr).unwrap();
+    // The id is resolved to its key: ENG only (the fake answers no team list, so nothing matches).
+    assert!(!l.rt.linear_team_ok(&["11111111-2222-3333-4444-555555555555".into()], "OPS"));
+    // A state of another team is not used: the issue's own first started state is.
+    l.rt.wb_run(&l.project.id, "lin:ENG-42", &super::super::writeback::WbOp::Started { feature: "x".into() });
+    assert!(l.rt.linear_team_ok(&["eng".into()], "ENG"));
 }

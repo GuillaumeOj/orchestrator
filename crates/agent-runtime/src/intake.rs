@@ -79,6 +79,8 @@ pub struct Refresher {
     pub(crate) test_starter: Mutex<Option<TestStarter>>,
     /// PR url -> (when it was last asked, merged): the PRs of solo sessions a program waits on.
     pub(crate) pr_seen: Mutex<BTreeMap<String, (u64, bool)>>,
+    /// Linear team id -> key, once known.
+    pub(crate) team_keys: Mutex<BTreeMap<String, String>>,
     /// One program pass at a time (B4).
     pub(crate) prog_lock: Mutex<()>,
     /// The `now.programs` rows last sent, by id (B4).
@@ -183,17 +185,6 @@ fn excerpt(body: &str) -> String {
     }
 }
 
-/// Linear's priority as its label (F5).
-fn priority_label(p: &Value) -> Value {
-    match p.as_u64() {
-        Some(1) => json!("Urgent"),
-        Some(2) => json!("High"),
-        Some(3) => json!("Medium"),
-        Some(4) => json!("Low"),
-        _ => Value::Null,
-    }
-}
-
 /// Facts of a project the items' JSON needs.
 struct ProjectFacts {
     default_team: Option<String>,
@@ -260,20 +251,6 @@ impl<'a> ItemFields<'a> {
             body: &r.body,
             meta: &r.meta,
             state: r.state,
-        }
-    }
-
-    fn of_upsert(u: &'a orch_store::IntakeUpsert, project: &'a str, source: &'a str) -> ItemFields<'a> {
-        ItemFields {
-            id: None,
-            project,
-            source,
-            reference: &u.reference,
-            title: &u.title,
-            url: u.url.as_deref(),
-            body: &u.body,
-            meta: &u.meta,
-            state: IntakeState::Ready,
         }
     }
 }
@@ -784,112 +761,8 @@ impl Runtime {
         self.db.project(project)?.ok_or_else(|| anyhow!("no project {project}"))
     }
 
-    /// `intake_source`: the stored source and the defaults the form shows.
-    pub fn intake_source(&self, project: &str) -> Result<Value> {
-        let p = self.intake_project(project)?;
-        let s = self.db.intake_source(project)?;
-        Ok(json!({
-            "source": (!s.is_none()).then_some(s),
-            "default_glob": orch_store::DEFAULT_INTAKE_GLOB,
-            "default_branch": base_branch(&p),
-            "known_repo": crate::github_issue::known_repo(&p),
-        }))
-    }
-
-    /// `intake_source_set`: validates, stores, refreshes at once and
-    /// returns the preview of what the cache now holds.
-    pub fn intake_source_set(&self, project: &str, source: &Value) -> Result<Value> {
-        let p = self.intake_project(project)?;
-        let s = parse_source(source)?;
-        self.db.set_intake_source(&p.id, &s)?;
-        if !s.is_none() {
-            self.intake_refresh_now(&p.id);
-        }
-        let status = self.db.intake_status(&p.id)?;
-        let facts = self.project_facts(&p);
-        let rows: Vec<IntakeRow> = self.db.intake_listed(Some(&p.id))?;
-        let ready: Vec<&IntakeRow> = rows.iter().filter(|r| r.state == IntakeState::Ready).collect();
-        let more = ready.len().saturating_sub(src::CAP) + status.more;
-        let est = self.intake_est();
-        let items: Vec<Value> =
-            ready.iter().take(PREVIEW).map(|r| item_json(&ItemFields::of_row(r), &facts, &est)).collect();
-        Ok(
-            json!({"preview": {"count": ready.len().min(src::CAP), "more": more, "partial": status.partial && status.error.is_none(), "items": items, "error": status.error}}),
-        )
-    }
-
-    /// `intake_preview`: a dry run of `source` (nothing stored).
-    pub fn intake_preview(&self, project: &str, source: &Value) -> Result<Value> {
-        let p = self.intake_project(project)?;
-        let s = parse_source(source)?;
-        Ok(self.preview_source(&p, &self.db.tracker(project)?.with_intake(&s)))
-    }
-
-    /// `intake_options`: what the settings form offers for a (partial,
-    /// F23) source: GitHub `repo`, Linear `team`, repo docs `glob`/`branch`.
-    pub fn intake_options(&self, project: &str, source: &Value) -> Result<Value> {
-        let p = self.intake_project(project)?;
-        let str_of = |k: &str| source[k].as_str().map(str::trim).filter(|s| !s.is_empty());
-        let err = |e: SourceError| json!({"error": e.json()});
-        Ok(match source["type"].as_str().unwrap_or("") {
-            "github" => {
-                let repo = str_of("repo");
-                if let Some(r) = repo
-                    && !orch_store::valid_repo(r)
-                {
-                    return Err(bad_request("repo", "the repository must be owner/name"));
-                }
-                match self.intake_repo(&p, repo) {
-                    Ok(repo) => src::github_options(self.gh_in(&p).as_ref(), &repo).unwrap_or_else(err),
-                    Err(e) => err(e),
-                }
-            }
-            "linear" => {
-                let team = str_of("team").ok_or_else(|| bad_request("team", "choose a Linear team"))?;
-                let gql = self.linear_transport();
-                src::linear_options(gql.as_ref(), &self.intake.backoff(&p.id), orch_protocol::now_ms(), team)
-                    .unwrap_or_else(err)
-            }
-            "repo_docs" => {
-                let glob = str_of("glob").unwrap_or(orch_store::DEFAULT_INTAKE_GLOB);
-                parse_source(&json!({"type": "repo_docs", "glob": glob}))?;
-                let branch = str_of("branch").map(str::to_string).unwrap_or_else(|| base_branch(&p));
-                match src::repo_docs_matches(&p.path, glob, &branch) {
-                    Ok(n) => json!({"matches": n}),
-                    Err(e) => json!({"matches": 0, "error": e.json()}),
-                }
-            }
-            other => return Err(bad_request("type", format!("no options for source type {other:?}"))),
-        })
-    }
-
-    /// `intake_refresh`: one project, or every project with a source.
-    pub fn intake_refresh(&self, project: Option<&str>) -> Result<Value> {
-        if let Some(p) = project {
-            self.intake_project(p)?;
-        }
-        self.intake_request(project);
-        Ok(json!({}))
-    }
-
     fn intake_row(&self, item: &str) -> Result<IntakeRow> {
         self.db.intake_item(item_id(item)?)?.ok_or_else(|| anyhow!("no intake item {item:?}"))
-    }
-
-    /// `intake_item`: the item with its full body (F5 extras).
-    pub fn intake_item(&self, item: &str) -> Result<Value> {
-        let r = self.intake_row(item)?;
-        let p = self.intake_project(&r.project_id)?;
-        let m = &r.meta;
-        Ok(json!({
-            "item": item_json(&ItemFields::of_row(&r), &self.project_facts(&p), &self.intake_est()),
-            "body": r.body,
-            "truncated": m["truncated"].as_bool().unwrap_or(false),
-            "milestone": m["milestone"],
-            "priority": priority_label(&m["priority"]),
-            "assignees": m["assignees"].as_array().cloned().unwrap_or_default(),
-            "points": m["estimate"],
-        }))
     }
 
     /// The estimate of a cached item, as `now.intake` shows it.
@@ -897,18 +770,6 @@ impl Runtime {
         let Ok(p) = self.intake_project(&r.project_id) else { return Value::Null };
         let mode = suggested_mode(&r.meta, &self.project_facts(&p));
         estimate::estimate(&self.intake_est(), &r.project_id, r.meta["size"].as_str(), mode)
-    }
-
-    pub fn intake_hide(&self, item: &str) -> Result<Value> {
-        let r = self.intake_row(item)?;
-        self.db.intake_hide(r.id, orch_protocol::now_ms())?;
-        Ok(json!({}))
-    }
-
-    pub fn intake_unhide(&self, item: &str) -> Result<Value> {
-        let r = self.intake_row(item)?;
-        self.db.intake_unhide(r.id)?;
-        Ok(json!({}))
     }
 }
 

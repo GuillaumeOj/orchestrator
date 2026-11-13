@@ -656,6 +656,20 @@ impl Runtime {
         if p.features.is_empty() {
             return Err(bad("program", "nothing to run: the program has no feature"));
         }
+        // Serialised with the engine's pass and the other edits (the same-root check below, then the save).
+        let guard = self.intake.prog_lock.lock().unwrap_or_else(|e| e.into_inner());
+        // Only the user's edits count: everything live comes from the engine, never from the client's draft
+        // (`left_out` is the plan's own note of what it left out, shown by name; start only adds to it).
+        p.notified.clear();
+        p.new_items.clear();
+        p.new_items_added.clear();
+        (p.done_at_ms, p.started_at_ms, p.created_at_ms) = (None, None, 0);
+        for f in &mut p.features {
+            (f.run, f.agent, f.pr, f.merged_at_ms, f.actual_pp, f.error, f.phase) =
+                (None, None, None, None, None, None, None);
+            f.flags.clear();
+            f.state = "planned".into();
+        }
         let ctx = self.program_ctx(&p.project)?;
         // The roots must still exist and not be a program in progress.
         let in_progress: Vec<Program> = self
@@ -746,6 +760,7 @@ impl Runtime {
             }
         }
         self.event("-", "program.started", json!({"id": p.id, "project": p.project}));
+        drop(guard);
         self.programs_tick();
         Ok(json!({"program": self.program_view(&p.id)?}))
     }
@@ -781,7 +796,8 @@ impl Runtime {
         let live = matches!(p.status.as_str(), "running" | "paused");
         let obj = patch.as_object().ok_or_else(|| bad("patch", "an object with one edit"))?;
         // (the edit is the known key; `add_item` carries `mode` / `team` / `after` beside it)
-        const OPS: [&str; 7] = ["pause", "resume", "max_parallel", "skip", "ignore_item", "add_item", "cancel"];
+        const OPS: [&str; 8] =
+            ["pause", "resume", "max_parallel", "skip", "ignore_item", "add_item", "start_anyway", "cancel"];
         let Some((op, arg)) = obj.iter().find(|(k, _)| OPS.contains(&k.as_str())).or_else(|| obj.iter().next()) else {
             return Err(bad("patch", "one edit"));
         };
@@ -821,6 +837,20 @@ impl Runtime {
                 self.program_close_decisions(&p, "ignore", |k| k == format!("new:{item}"));
             }
             "add_item" => self.program_add_item(&mut p, arg, obj)?,
+            "start_anyway" => {
+                let key = arg.as_str().ok_or_else(|| bad("start_anyway", "a feature key"))?;
+                if !p.features.iter().any(|f| f.key == key) {
+                    return Err(bad("start_anyway", "no such feature"));
+                }
+                // Every outside dependency of it is dropped (`x:` edges; the failed one is why it waits).
+                for e in p.edges.iter().filter(|e| e.to == key && e.from.starts_with("x:")) {
+                    if !p.cut.iter().any(|c| c[0] == e.from && c[1] == e.to) {
+                        p.cut.push([e.from.clone(), e.to.clone()]);
+                    }
+                }
+                set_depends(&mut p);
+                self.program_close_decisions(&p, "start_anyway", |k| k == format!("ext:{key}"));
+            }
             "cancel" => {
                 // Running features go on as normal features; the ones waiting are dropped.
                 for f in &mut p.features {
@@ -950,6 +980,11 @@ impl Runtime {
             ("program_item_closed", "skip") | ("program_feature_failed", "skip") => {
                 self.program_update(&program, &json!({"skip": pl["feature"]}))?;
                 Ok(json!({"ok": true, "effect": "skipped", "decision": id}))
+            }
+            // The feature goes without the outside work it waited for (that edge is cut).
+            ("program_feature_failed", "start_anyway") => {
+                self.program_update(&program, &json!({"start_anyway": pl["feature"]}))?;
+                Ok(json!({"ok": true, "effect": "started anyway", "decision": id}))
             }
             ("program_item_closed", "keep") => {
                 self.program_close_one(n, "keep");

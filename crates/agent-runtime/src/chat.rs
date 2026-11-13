@@ -103,6 +103,7 @@ pub fn verb(d: &Decision) -> &'static str {
         ("program_new_item", "ignore") => "ignored",
         ("program_item_closed" | "program_feature_failed", "skip") => "skipped",
         ("program_item_closed", "keep") => "kept",
+        ("program_feature_failed", "start_anyway") => "started anyway",
         ("program_feature_failed" | "program_done" | "program_dependency_added", "open") => "opened",
         ("writeback_failing", "turn_off") => "turned off",
         (_, _) if by == "expired" => "expired",

@@ -75,7 +75,7 @@ impl Runtime {
             bail!("this project's tracker is not Linear: {ident} cannot be used here");
         };
         let key = ident.rsplit_once('-').map_or("", |(k, _)| k);
-        if !crate::writeback::linear_team_ok(teams, key) {
+        if !self.linear_team_ok(teams, key) {
             bail!("only issues of {} can be used from this project", teams.join(", "));
         }
         Ok((p, t))

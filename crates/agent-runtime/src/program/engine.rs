@@ -151,37 +151,61 @@ impl Runtime {
         merged
     }
 
-    /// Whether the run / session a program waits on (outside it) has finished (`run:<id>` / `agent:<id>`).
-    /// A solo session is done when it is archived or killed, or its PR merged (checked at most once a minute).
-    fn external_done(&self, key: &str, project: &str) -> bool {
+    /// Where the run / session a program waits on (outside it) stands (`run:<id>` / `agent:<id>`):
+    /// `done` (merged, archived, or its PR merged), `failed` (failed, killed, or gone: it will never merge), else `waiting`.
+    /// A solo session's PR is checked at most once a minute.
+    fn external_state(&self, key: &str, project: &str) -> &'static str {
         match key.split_once(':') {
-            Some(("run", id)) => self.db.run(id).ok().flatten().is_none_or(|r| r.status == RunState::Done),
-            Some(("agent", id)) => {
-                self.store
-                    .read(|s| s.agents.get(id).map(|a| a.tracker.state))
-                    .is_none_or(|st| matches!(st, AgentState::Archived | AgentState::Killed))
-                    || self.solo_pr_merged(id, project)
-            }
-            _ => true,
+            Some(("run", id)) => match self.db.run(id).ok().flatten().map(|r| r.status) {
+                Some(RunState::Done) => "done",
+                Some(RunState::Failed) | None => "failed",
+                Some(_) => "waiting",
+            },
+            Some(("agent", id)) => match self.store.read(|s| s.agents.get(id).map(|a| a.tracker.state)) {
+                Some(AgentState::Archived) => "done",
+                Some(AgentState::Killed) | None => "failed",
+                Some(_) if self.solo_pr_merged(id, project) => "done",
+                Some(_) => "waiting",
+            },
+            _ => "done",
         }
     }
 
     /// One pass over every program in progress (also kicked by run events and refreshes).
     /// A pass already running makes this one a no-op.
     pub fn programs_tick(&self) {
-        let Ok(_guard) = self.intake.prog_lock.try_lock() else { return };
+        let _guard = match self.intake.prog_lock.try_lock() {
+            Ok(g) => g,
+            Err(std::sync::TryLockError::WouldBlock) => return,
+            // A pass that panicked poisoned the lock: go on (each pass loads the stored documents anew).
+            Err(std::sync::TryLockError::Poisoned(e)) => e.into_inner(),
+        };
         for v in self.db.programs_in_progress(None).unwrap_or_default() {
             let Ok(mut p) = serde_json::from_value::<Program>(v) else { continue };
             if !matches!(p.status.as_str(), "running" | "paused") {
                 continue;
             }
             let before = p.clone();
-            self.program_step(&mut p);
+            // One program's panic must not stop the others (nor this one's next pass).
+            if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.program_step(&mut p))).is_err() {
+                self.event("-", "program.error", json!({"id": p.id, "project": p.project, "error": "pass panicked"}));
+                continue;
+            }
             if p != before
                 && let Err(e) = self.program_save(&p)
             {
                 eprintln!("warn: program {} not saved: {e:#}", p.id);
             }
+        }
+    }
+
+    /// [`Self::programs_tick`] off the caller's path (its `gh` and launch work is slow); inline in tests.
+    pub(crate) fn programs_kick(&self) {
+        #[cfg(test)]
+        self.programs_tick();
+        #[cfg(not(test))]
+        if let Some(me) = self.me.upgrade() {
+            std::thread::spawn(move || me.programs_tick());
         }
     }
 
@@ -210,15 +234,41 @@ impl Runtime {
         let merged: HashSet<String> =
             p.features.iter().filter(|f| f.state == "merged").map(|f| f.key.clone()).collect();
         let project = p.project.clone();
+        let mut stuck: Vec<(String, String, String)> = vec![];
         for f in p.features.iter_mut().filter(|f| !f.skip && f.run.is_none() && f.agent.is_none()) {
             if matches!(f.state.as_str(), "planned" | "waiting") {
                 // A dependency is a feature that merged, or `x:…` an item running outside the program that finished.
                 let met = |d: &String| match d.strip_prefix("x:") {
-                    Some(ext) => self.external_done(ext, &project),
+                    Some(ext) => match self.external_state(ext, &project) {
+                        "done" => true,
+                        // It will never merge: the user decides (start anyway, or skip), the feature does not wait for ever.
+                        "failed" => {
+                            stuck.push((f.key.clone(), f.slug.clone(), d.clone()));
+                            false
+                        }
+                        _ => false,
+                    },
                     None => merged.contains(d),
                 };
                 f.state = if f.depends_on.iter().all(met) { "planned".into() } else { "waiting".into() };
             }
+        }
+        for (key, slug, dep) in stuck {
+            if p.notified.contains(&format!("ext:{key}:{dep}")) {
+                continue;
+            }
+            p.notified.push(format!("ext:{key}:{dep}"));
+            self.program_decision(
+                p,
+                "program_feature_failed",
+                &format!("{slug} waits for work that did not finish"),
+                &format!(
+                    "{} failed or was cancelled outside the program: start {slug} anyway, or skip it.",
+                    dep.trim_start_matches("x:")
+                ),
+                json!({"feature": key, "slug": slug, "dependency": dep}),
+                &format!("ext:{key}"),
+            );
         }
         // 3. Start what may, in order, while there is room (a paused program starts nothing).
         if p.status == "running" {
@@ -333,8 +383,10 @@ impl Runtime {
                 let by = json!({"id": p.id, "title": p.title});
                 for id in f.items.iter().skip(1) {
                     if let Ok(r) = self.node_row(&p.project, id) {
+                        // (only a node whose earlier run merged starts again: one running elsewhere keeps its own)
                         let linked = self.db.intake_mark_started(r.id, kind, &reference).unwrap_or(false)
-                            || self.db.intake_restart(r.id, kind, &reference).unwrap_or(false);
+                            || (self.node_ran_before(&r)
+                                && self.db.intake_restart(r.id, kind, &reference).unwrap_or(false));
                         if linked {
                             let e = orch_store::WorkEvent {
                                 at_ms: orch_protocol::now_ms(),
@@ -423,6 +475,7 @@ impl Runtime {
             "keep" => "kept",
             "open" => "opened",
             "turn_off" => "turned off",
+            "start_anyway" => "started anyway",
             _ => "dismissed",
         };
         if self.close_item(id, orch_store::InboxStatus::Decided, word, "user").is_some() {
