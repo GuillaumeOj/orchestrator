@@ -20,7 +20,8 @@ vi.mock('../src/lib/ipc.js', () => ({
 }));
 
 const { default: ProjectSettingsWindow } = await import('../src/components/ProjectSettingsWindow.svelte');
-const { readySummary, writeBackLines, noticeInfo, switchKind, stateColumn } = await import('../src/lib/tracker.js');
+const { readySummary, writeBackLines, noticeInfo, switchKind, stateColumn, toggleType, hasParentPart, stateRows } =
+  await import('../src/lib/tracker.js');
 
 const wb = { enabled: true, assign_me: false, running_label: 'orch:running', board_status: null, linear_state: null };
 const local = () =>
@@ -417,7 +418,7 @@ describe('Tracker › errors', () => {
   it('gh_write: Turn off write-back switches it off', async () => {
     const { container, getByRole } = await run({ code: 'gh_write', message: 'forbidden' });
     expect(txt(container.querySelector('[data-preview]'))).toContain(
-      "GitHub refused the change: your login can't write to this repository.",
+      "GitHub refused the change: your login can't write to this project's repository.",
     );
     await fireEvent.click(getByRole('button', { name: 'Turn off write-back' }));
     expect(container.querySelector('[data-write-back-off]')).toBeTruthy();
@@ -522,6 +523,126 @@ describe('Tracker › migration notices', () => {
     await findByRole('radiogroup', { name: 'Kind' });
     expect(txt(container.querySelector('[data-notice]'))).toContain(
       "Intake's repo docs folder is now the Local tracker's backlog.",
+    );
+  });
+});
+
+describe('Tracker › review follow-ups', () => {
+  const sets = async (r, v) => fireEvent.input(await r.findByLabelText('Repository'), { target: { value: v } });
+
+  it('helpers: types keep unknown ones, glob rule is per path component, kind switch drops the target, core default column', () => {
+    expect(toggleType(['started', 'unstarted'], 'backlog', true)).toEqual(['backlog', 'unstarted', 'started']);
+    expect(toggleType(['unstarted', 'started'], 'unstarted', false)).toEqual(['started']);
+    expect(hasParentPart('docs/v1..v2/*.md')).toBe(false);
+    expect(hasParentPart('../x')).toBe(true);
+    expect(hasParentPart('a/../x')).toBe(true);
+    const f = switchKind(
+      github({
+        write_back: { enabled: true, assign_me: false, running_label: 'x', board_status: 'Doing', linear_state: 's3' },
+      }),
+      'linear',
+    );
+    expect(f.write_back).toMatchObject({ board_status: null, linear_state: null });
+    expect(stateColumn({ name: 'Doing', type: 'started', default_column: 'review' })).toBe('review');
+    expect(stateRows([{ id: 'x', name: 'Odd', type: 'started', default_column: null }], null)[0].column).toBeNull();
+    expect(readySummary({ kind: 'linear', state_types: [], label: 'bug', project: null, cycle: null })).toBe(
+      'Issues labelled bug',
+    );
+  });
+
+  it('stale preview: amber line with a Preview again link, the block is not dimmed', async () => {
+    replies.tracker_preview = { roots: 1, items: 1, ready: 0, sample: [], more: 0 };
+    const r = open(github());
+    await fireEvent.click(await r.findByRole('button', { name: 'Preview' }));
+    await waitFor(() => expect(r.container.querySelector('[data-preview-count]')).toBeTruthy());
+    await sets(r, 'acme/web');
+    expect(r.container.querySelector('[data-stale]')?.textContent).toContain('Changed since this preview ·');
+    await fireEvent.click(r.getByRole('button', { name: 'Preview again' }));
+    await waitFor(() => expect(called('tracker_preview')).toHaveLength(2));
+  });
+
+  it('preview: "+ N more"; Local has no "at the top" and rows are file name + title', async () => {
+    replies.tracker_preview = {
+      roots: 2,
+      items: 7,
+      ready: 1,
+      more: 2,
+      sample: [{ id: 'local:a.md', ref: 'a.md', title: 'Dark mode', ready: true }],
+    };
+    const r = open(local());
+    await fireEvent.click(await r.findByRole('button', { name: 'Preview' }));
+    await waitFor(() => expect(r.container.querySelector('[data-preview-more]')?.textContent).toBe('+ 2 more'));
+    expect(txt(r.container.querySelector('[data-preview-count]'))).toBe('7 items · 1 ready in .orchestrator/backlog');
+    expect(txt(r.container.querySelector('.srow.local'))).toContain('a.md Dark mode');
+  });
+
+  it('gh_sub_issues arrives as a warning: counts stay, muted line, Retry', async () => {
+    replies.tracker_preview = { roots: 3, items: 14, ready: 1, sample: [], warning: 'gh_sub_issues' };
+    const r = open(github({ tracker: { kind: 'github', repo: 'acme/shop', project_board: null } }));
+    await fireEvent.click(await r.findByRole('button', { name: 'Preview' }));
+    await waitFor(() => expect(r.container.querySelector('[data-preview-warning]')).toBeTruthy());
+    expect(txt(r.container.querySelector('[data-preview]'))).toContain('14 items');
+    expect(txt(r.container.querySelector('[data-preview-warning]'))).toContain(
+      "GitHub didn't return sub-issues for acme/shop. Work shows issues without hierarchy.",
+    );
+    expect(r.container.querySelector('[data-preview] [role="alert"]')).toBeNull();
+  });
+
+  it('gh_scope: error, command line and a Copy command button', async () => {
+    replies.tracker_options = { error: { code: 'gh_scope', message: 'scope' } };
+    const r = open(github());
+    await waitFor(() => expect(r.container.querySelector('[data-gh-scope]')).toBeTruthy());
+    const box = r.container.querySelector('[data-gh-scope]');
+    expect(txt(box)).toContain('GitHub needs the read:project scope to read the board.');
+    expect(box.querySelector('button.btn')?.textContent).toBe('Copy command');
+  });
+
+  it('a field error without a line (running_label) shows with the save error', async () => {
+    replies.tracker_settings_set = () =>
+      Promise.reject({ code: 'bad_request', field: 'running_label', message: 'Running label is empty' });
+    const r = open(github());
+    await sets(r, 'acme/web');
+    await fireEvent.click(r.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(txt(r.container)).toContain('Could not save: Running label is empty'));
+  });
+
+  it('Use <alternative>: the notice is dismissed only once the form is saved; Revert brings it back', async () => {
+    const kept = { kind: 'github', repo: 'acme/shop', project_board: null };
+    const alt = { kind: 'github', repo: 'acme/web', project_board: null };
+    const notice = {
+      kind: 'different_repo',
+      from: { intake_source: { type: 'github' } },
+      kept,
+      alternative: alt,
+      dismissed: false,
+    };
+    const r = open(github({ tracker: kept }), notice);
+    await fireEvent.click(await r.findByRole('button', { name: 'Use acme/web instead' }));
+    expect(r.container.querySelector('[data-notice]')).toBeNull();
+    expect(called('tracker_notice_dismiss')).toHaveLength(0);
+    await fireEvent.click(r.getByRole('button', { name: 'Revert' }));
+    await waitFor(() => expect(r.container.querySelector('[data-notice]')).toBeTruthy());
+    await fireEvent.click(await r.findByRole('button', { name: 'Use acme/web instead' }));
+    await fireEvent.click(r.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(called('tracker_notice_dismiss')).toHaveLength(1));
+  });
+
+  it('Linear options error: the states area shows the error with Retry, which reads again; unmapped states warn', async () => {
+    replies.tracker_options = { error: { code: 'failed', message: 'boom' } };
+    const r = open(linear());
+    await r.findByLabelText('Teams');
+    el(r.container.querySelector('details.adv')).open = true;
+    await waitFor(() => expect(r.container.querySelector('[data-states-error]')).toBeTruthy());
+    expect(txt(r.container.querySelector('[data-states-error]'))).not.toContain('Loading states');
+    const before = called('tracker_options').length;
+    replies.tracker_options = {
+      ...LIN_OPTS,
+      states: [{ id: 's9', name: 'Weird', type: 'started', default_column: null }],
+    };
+    await fireEvent.click(r.getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(called('tracker_options').length).toBeGreaterThan(before));
+    await waitFor(() =>
+      expect(r.container.querySelector('[data-unmapped]')?.textContent).toContain('State "Weird" isn\'t mapped.'),
     );
   });
 });

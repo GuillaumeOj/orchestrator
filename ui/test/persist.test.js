@@ -99,7 +99,7 @@ describe('restoreLayout: workspace.project (rules 5, 6)', () => {
   const panes = {
     p1: { type: 'mission', title: 'Mission control' },
     p2: { type: 'project', projectId: 'blog', title: 'blog' },
-    p3: { type: 'board', projectId: 'shop-api', title: 'shop-api tasks' },
+    p3: { type: 'project', projectId: 'shop-api', title: 'shop-api' },
   };
   const layout = { kind: 'leaf', id: 'l1', tabs: ['p1', 'p2', 'p3'], active: 'p3' };
 

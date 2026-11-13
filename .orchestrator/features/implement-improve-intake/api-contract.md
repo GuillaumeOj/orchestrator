@@ -43,7 +43,7 @@ MigrationNotice = {                  // F16; null when none or dismissed
 |---|---|---|
 | `tracker_settings` | `project` | `{ settings: TrackerSettings, migration_notice: MigrationNotice \| null }` |
 | `tracker_settings_set` | `project, settings` | same as `tracker_settings` (resolves a `mismatch` notice; triggers a refresh) |
-| `tracker_preview` | `project, settings` (dry run, nothing saved) | `{ roots, items, ready, sample: [WorkNode + breadcrumb] (≤ 5), error: SourceError \| null }` |
+| `tracker_preview` | `project, settings` (dry run, nothing saved) | `{ roots, items, ready, sample: [WorkNode + breadcrumb] (≤ 5; Local: the matched file names), error: SourceError \| null, warning: "gh_sub_issues" \| null }` |
 | `tracker_options` | `project, tracker` (partial: what is filled so far) | GitHub `{ labels[], milestones[], issue_types[], boards: [{owner, number, title, statuses[]}] }` · Linear `{ teams: [{id, key, name}], projects: [{id, name, team}], labels[], states: [{id, name, type}] }` (F17; errors as `SourceError`) |
 | `tracker_notice_dismiss` | `project` | `()` |
 
@@ -101,14 +101,15 @@ WorkFilter = {                                    // F3
   "issue_types": [], "linear_projects": [], "include_team_tasks": false, "show_hidden": false
 }
 SourceStatus = { "status": "ok"|"refreshing"|"error", "error": SourceError | null, "warning": "gh_sub_issues" | null,   // F26
-                 "offline": false, "refreshed_at_ms": 0 }                                                                  // F15
+                 "offline": false, "refreshed_at_ms": 0,
+                 "counts": { "items": 14, "roots": 3, "ready": 4 } }   // F15; counts = cached non-team-task nodes (project row, details status line)
 SourceError  = P4.5 `{ code, message, fix?, retry_at_ms? }` + codes "linear_complexity", "gh_write", "linear_write"     // F27
 ```
 
 | Command | In | Out |
 |---|---|---|
 | `work_tree` | `scope: {projects: [ids]}`, `parents: [ids] \| null` (null = roots; several = restore / reveal in one call, F37), `filter: WorkFilter`, `after: cursor \| null` (F18; only valid with `parents` null or exactly one id: it continues that list from the cursor `more` returned for it) | `{ nodes: [WorkNode], more: { "<parent id \| 'roots'>": { left: n, cursor } }, status: { "<project>": SourceStatus } }` — from the cache only. Roots paged 100, children 50. A filtered tree keeps the ancestors of matches, flagged `"ancestor_only": true` |
-| `work_search` | `scope, query, filter` | `{ nodes: [WorkNode + { breadcrumb }], total, hidden_by_filters }` (≤ 100; ref exact first, then title, then body) |
+| `work_search` | `scope, query, filter` | `{ nodes: [WorkNode + { breadcrumb, match: { field: "ref"|"title"|"body", snippet: "…" \| null } }], total, hidden_by_filters }` (`snippet` ≤ 80 chars of plain body text around the hit, for "in body: "…"") (≤ 100; ref exact first, then title, then body) |
 | `work_node` | `id, opts: { children: bool }` (F36; default `false`: no children; `true` adds `children: [WorkNode]`, first page of 50, for a node the tree has not loaded) | `WorkNode + { breadcrumb, body, body_clipped, history: [History] }` |
 | `work_reveal` | `id` | `{ chain: [ids root→node], nodes: [WorkNode] }` (the ancestors and their siblings, F37) |
 | `work_refresh` | `project \| null` | `()` returns at once; one in-flight refresh per project, callers join (F38); pushes `work.changed` |
@@ -117,8 +118,10 @@ SourceError  = P4.5 `{ code, message, fix?, retry_at_ms? }` + codes "linear_comp
 
 `History = { "at_ms": 0, "what": "started"|"program_queued"|"spec_approved"|"pr_opened"|"merged"|"skipped"|"writeback_done"|"writeback_failed"|"returned", "feature": "<slug>" | null, "program": {id, title} | null, "detail": "…" | null }` (F6; copy in F6 / notes §3).
 
+**Closed items in the cache**: sub-issues of loaded parents in every state, plus closed (GitHub) / completed or canceled (Linear) items updated in the last **90 days**; older closed history is not read. A full read on first load and after a settings save, then incremental (`since`) with an hourly full id sweep.
+
 Starting from a node goes through the existing launch / new-session commands with the P4.5 `intake` link replaced by `"source": "<WorkNode id>"`; the run then carries:
-`run.source = { node, ref, title, url, breadcrumb, tracker: "github"|"linear"|"local", program: {id, title, index, total} | null, deleted: false, closed_upstream: false, write_back: "on"|"off" }` (F23), in `now` run rows and the Feature pane. Task records keep `run` (F24) so `T-n` links open `openFeature(run, {task})`.
+`run.source = { node, ref, title, url, breadcrumb, tracker: "github"|"linear"|"local", program: {id, title, index, total} | null, deleted: false, closed_upstream: false, write_back: "on"|"off", writeback: WorkNode.writeback | null }` (F23; `writeback` carries the last write-back failure for the Feature header Retry), in `now` run rows and the Feature pane. Task records keep `run` (F24) so `T-n` links open `openFeature(run, {task})`; task hints / sync-conflict outcomes carry `run` and `tracker` ("github"|"linear"|"local") so the UI names the tracker without a lookup.
 
 ## 3. Ready lane in `now` (B2)
 
