@@ -569,8 +569,6 @@ pub async fn notion_status(core: CoreState<'_>, feature: String) -> Res<Value> {
     blocking(core, move |c| c.notion_status(&feature)).await
 }
 
-// ---- P4.5 intake (api-contract §3.1)
-
 // ---- implement-improve-intake B1: tracker settings (api-contract §1)
 
 #[tauri::command]

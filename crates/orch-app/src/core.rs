@@ -1987,10 +1987,6 @@ pub(crate) mod tests {
         core.shutdown();
     }
 
-    /// The Board links a GitHub task to its issue.
-    /// The Board never runs `gh` to find the repository: with none configured
-    /// there is no link until a sync resolved it.
-    /// D8 and the Board on a Linear-backed project (api-contract §7).
     /// api-contract `pacing_settings` / `pacing_settings_set`: the keys, the
     /// fresh-install values, a set returning the new view, a field error.
     #[test]
