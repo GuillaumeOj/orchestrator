@@ -539,11 +539,10 @@ pub(crate) fn migrate_settings(backend: &TaskBackendConfig, intake: &IntakeSourc
         notice,
     };
     match (backend, intake) {
-        (b, IntakeSource::None) => {
+        (_, IntakeSource::None) => {
             // No intake filter: the Ready defaults, no notice.
             let s = with_defaults(base);
-            let pending = matches!(b, TaskBackendConfig::Github { .. });
-            done(s, None, pending)
+            done(s, None, true)
         }
         // The intake's repo docs folder is the Local tracker's backlog.
         (TaskBackendConfig::Local, IntakeSource::RepoDocs { .. }) => {

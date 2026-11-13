@@ -18,7 +18,10 @@ const PROJECT_COLS: &str = "id, name, path, default_branch, remotes, worktree_ro
 
 /// The columns [`row_project`] reads: the stored ones and the tracker, whose
 /// task backend is the project's `task_backend` (the old column is unread).
-const PROJECT_SELECT: &str = "id, name, path, default_branch, remotes, worktree_root, task_backend, track_orchestrator_dir, settings, created_at_ms, last_active_at_ms, last_fetch_at_ms, last_fetch_error, archived, tracker";
+const PROJECT_SELECT: &str = concat!(
+    "id, name, path, default_branch, remotes, worktree_root, task_backend, track_orchestrator_dir, settings, created_at_ms, last_active_at_ms, last_fetch_at_ms, last_fetch_error, archived",
+    ", tracker"
+);
 
 fn row_project(r: &rusqlite::Row) -> rusqlite::Result<Project> {
     let task_backend = r.get::<_, String>(6)?;
