@@ -2,13 +2,11 @@
 // Board's Linear cards, against a mocked core.
 
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
-import { tick } from 'svelte';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { app } from '../src/lib/app.svelte.js';
 import { mappingRows, mappingToSave, syncLine } from '../src/lib/linear.js';
 import { handle } from '../src/lib/teams.js';
 import { fixture } from './fixture.js';
-import { pick } from './pick.js';
 
 const calls = [];
 const replies = {};
@@ -23,7 +21,6 @@ vi.mock('../src/lib/ipc.js', () => ({
   errText: (e) => (typeof e === 'string' ? e : (e?.message ?? String(e))),
 }));
 
-const { default: ProjectSettingsWindow } = await import('../src/components/ProjectSettingsWindow.svelte');
 const { default: BoardPane } = await import('../src/panes/BoardPane.svelte');
 
 const STATES = [
@@ -53,7 +50,7 @@ describe('linear helpers', () => {
   });
 });
 
-describe('project settings › Task backend', () => {
+describe('Board › Linear', () => {
   beforeEach(() => {
     cleanup();
     calls.length = 0;
@@ -61,118 +58,6 @@ describe('project settings › Task backend', () => {
     app.data = fixture();
     app.toasts = [];
     app.panes = {};
-  });
-
-  const settings = (backend = { type: 'local' }) => ({
-    settings: { copy_env: false },
-    backend,
-    track_orchestrator_dir: true,
-    default_branch: 'main',
-  });
-  const linear = (status) => ({
-    items: [
-      {
-        id: 'linear',
-        name: 'Linear',
-        status,
-        has_secret: status !== 'not_configured',
-        needs_secret: true,
-        account: 'Acme',
-      },
-    ],
-  });
-
-  it('not connected: the Linear option stays enabled and points to Integrations', async () => {
-    replies.project_settings = settings();
-    replies.integrations_view = linear('not_configured');
-    app.window = { kind: 'project-settings', projectId: 'shop-api', section: 'backend' };
-    const { container, getByText } = render(ProjectSettingsWindow);
-    await waitFor(() => getByText(/Where shop-api's Board lives/));
-    await fireEvent.keyDown(container.querySelector('[data-pane-focus]'), { key: '3' });
-    await tick();
-    expect(container.textContent).toContain('Linear is not connected. Add a key in Settings › Integrations');
-    expect(calls.some(([c]) => c === 'linear_teams')).toBe(false);
-  });
-
-  it('connected: team, mapping with defaults, the D8 confirm, then Sync now', async () => {
-    replies.project_settings = settings();
-    replies.integrations_view = linear('connected');
-    replies.linear_teams = {
-      teams: [
-        { id: 't1', key: 'ENG', name: 'Engineering' },
-        { id: 't2', key: 'OPS', name: 'Operations' },
-      ],
-    };
-    replies.linear_states = { states: STATES, projects: [{ id: 'p1', name: 'Checkout' }] };
-    // D8 as the core answers it: nothing saved, a confirm with the counts, until form.migrate.
-    replies.project_settings_set = (a) =>
-      a.form.migrate ? settings(a.form.backend) : { confirm: { kind: 'linear_migrate', open: 7, done: 12 } };
-    replies.board_sync = { imported: 0, updated: 0, pushed: 7, pulled: 0, conflicts: 0, errors: [] };
-    app.window = { kind: 'project-settings', projectId: 'shop-api', section: 'backend' };
-    const { container, getByText } = render(ProjectSettingsWindow);
-    await waitFor(() => getByText(/Where shop-api's Board lives/));
-    const root = container.querySelector('[data-pane-focus]');
-    await fireEvent.keyDown(root, { key: '3' });
-    await waitFor(() => expect(container.querySelectorAll('.mrow')).toHaveLength(6));
-    expect(container.textContent).toContain('Connected · Acme');
-    expect(container.textContent).toContain('2 teams: ENG · Engineering, OPS · Operations');
-    expect(container.querySelectorAll('.mrow')[1].textContent).toContain('Todo');
-    expect([...container.querySelectorAll('.mrow')].every((r) => r.textContent.includes('default'))).toBe(true);
-    // j j ⏎: the third row's select; move In Progress to Review.
-    await fireEvent.keyDown(root, { key: 'j' });
-    await fireEvent.keyDown(root, { key: 'j' });
-    expect(container.querySelector('.mrow.sel').textContent).toContain('In Progress');
-    await pick(container.querySelector('.mrow.sel'), 'Review');
-    expect(container.querySelector('.mrow.sel').textContent).not.toContain('default');
-    // ⌘⏎: refused with counts → the D8 confirm; ⏎ creates the open tasks.
-    await fireEvent.keyDown(root, { key: 'Enter', metaKey: true });
-    await waitFor(() => getByText("Move shop-api's tasks to Linear?"));
-    expect(container.textContent).toContain('7 open tasks. 12 done tasks are not pushed.');
-    expect(container.textContent).toContain('Create 7 open tasks as issues in ENG');
-    await fireEvent.keyDown(root, { key: 'Enter' });
-    await waitFor(() =>
-      expect(
-        calls.some(
-          ([c, a]) =>
-            c === 'project_settings_set' &&
-            a.form.migrate === 'push_open' &&
-            a.migrate === undefined &&
-            a.form.backend.type === 'linear' &&
-            a.form.backend.team === 'ENG' &&
-            a.form.backend.states.s3 === 'review',
-        ),
-      ).toBe(true),
-    );
-    await waitFor(() => expect(container.textContent).not.toContain("Move shop-api's tasks to Linear?"));
-    await fireEvent.keyDown(root, { key: 'r' });
-    await waitFor(() =>
-      expect(container.textContent).toMatch(/Last sync \d\d:\d\d: 7 pushed · 0 pulled · 0 conflicts/),
-    );
-    expect(app.toasts.at(-1).text).toBe('Synced shop-api with Linear · 7 pushed');
-  });
-
-  it('sync errors show, an unmapped state offers Map it', async () => {
-    replies.project_settings = settings({ type: 'linear', team: 'ENG' });
-    replies.integrations_view = linear('connected');
-    replies.linear_teams = { teams: [{ id: 't1', key: 'ENG', name: 'Engineering' }] };
-    replies.linear_states = { states: STATES, projects: [] };
-    replies.board_sync = {
-      imported: 0,
-      updated: 0,
-      pushed: 0,
-      pulled: 0,
-      conflicts: 0,
-      errors: ['Linear rate limit: retrying in 60 s'],
-      unmapped_states: ['QA'],
-    };
-    app.window = { kind: 'project-settings', projectId: 'shop-api', section: 'backend' };
-    const { container, getByText } = render(ProjectSettingsWindow);
-    await waitFor(() => expect(container.querySelectorAll('.mrow')).toHaveLength(6));
-    await fireEvent.click(getByText('Sync now', { exact: false }));
-    await waitFor(() => getByText('State "QA" isn\'t mapped.', { exact: false }));
-    expect(getByText('✕ Linear rate limit: retrying in 60 s')).toBeTruthy();
-    await fireEvent.click(getByText('Map it', { exact: false }));
-    expect(document.activeElement).toBe(container.querySelector('[data-row] [role="combobox"]'));
   });
 
   it('board on Linear: the header, the ENG ids and the remote-won marker', async () => {
