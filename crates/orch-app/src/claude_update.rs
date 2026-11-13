@@ -216,6 +216,14 @@ struct View<'a> {
 struct Supported {
     min: String,
     tested_max: String,
+    /// How to verify a newer version (api-contract §2): the command and the doc.
+    verify: Verify,
+}
+
+#[derive(Serialize)]
+struct Verify {
+    command: &'static str,
+    doc: &'static str,
 }
 
 #[derive(Serialize)]
@@ -323,7 +331,11 @@ impl ClaudeUpdater {
             check: &check,
             install,
             channel,
-            supported: Supported { min: r.min.to_string(), tested_max: r.tested_max.to_string() },
+            supported: Supported {
+                min: r.min.to_string(),
+                tested_max: r.tested_max.to_string(),
+                verify: Verify { command: preflight::VERIFY_COMMAND, doc: preflight::VERIFY_DOC },
+            },
             update: UpdateView {
                 state,
                 latest: i.latest.as_deref(),
@@ -897,6 +909,8 @@ esac
         );
         assert_eq!((v["update"]["latest"].as_str(), v["update"]["available"].as_bool()), (Some("2.1.330"), Some(true)));
         assert_eq!(v["supported"]["min"], preflight::SUPPORTED_CLAUDE.min.to_string());
+        assert_eq!(v["supported"]["verify"]["command"], "make contract");
+        assert_eq!(v["supported"]["verify"]["doc"], "docs/app/CONTRACT-TESTS.md");
         let v = update(&r);
         let u = &v["update"];
         assert_eq!(v["version"], "2.1.330", "{v:#}");

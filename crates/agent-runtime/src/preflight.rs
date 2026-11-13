@@ -30,8 +30,9 @@ impl Version {
 }
 
 /// The supported Claude Code range. Below `min`: refuse. Above `tested_max`:
-/// warn (hooks, flags and statusline formats can change; run the contract
-/// tests, R2) unless `strict`.
+/// warn (hooks, flags and statusline formats can change) unless `strict`.
+/// `make contract` checks a newer version and `make contract-accept` raises
+/// `tested_max` to it; see [`VERIFY_DOC`].
 #[derive(Clone, Copy, Debug)]
 pub struct VersionRange {
     pub min: Version,
@@ -39,9 +40,25 @@ pub struct VersionRange {
     pub strict: bool,
 }
 
-/// P0 baseline: 2.1.302.
+/// `min` is the P0 baseline (2.1.302). `tested_max` is the newest version the
+/// contract tests passed on: `scripts/contract.sh --accept` rewrites it.
 pub const SUPPORTED_CLAUDE: VersionRange =
-    VersionRange { min: Version(2, 1, 302), tested_max: Version(2, 1, 302), strict: false };
+    VersionRange { min: Version(2, 1, 302), tested_max: Version(2, 1, 323), strict: false };
+
+/// How to verify a Claude Code version newer than `tested_max`: the command to
+/// run in a checkout, and the doc that says what it checks and costs.
+pub const VERIFY_COMMAND: &str = "make contract";
+pub const VERIFY_DOC: &str = "docs/app/CONTRACT-TESTS.md";
+
+/// The warning for a `claude` newer than the last tested version, shown at
+/// start-up and in Setup. The prefix `claude <v> is newer than the last tested
+/// version` is matched by the app (`setup::is_runtime_version_warning`).
+pub fn untested_warning(v: Version, tested_max: Version) -> String {
+    format!(
+        "claude {v} is newer than the last tested version ({tested_max}). Agents still run. \
+         To verify it, run `{VERIFY_COMMAND}` in an Orchestrator checkout (`{VERIFY_DOC}`)."
+    )
+}
 
 pub const MIN_GIT: Version = Version(2, 48, 0);
 
@@ -144,6 +161,17 @@ pub fn install_helpers(from_dir: &Path, bin_dir: &Path) -> Result<HelperPaths> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn untested_warning_text_is_the_contract() {
+        assert_eq!(
+            untested_warning(Version(2, 1, 323), Version(2, 1, 302)),
+            "claude 2.1.323 is newer than the last tested version (2.1.302). Agents still run. \
+             To verify it, run `make contract` in an Orchestrator checkout (`docs/app/CONTRACT-TESTS.md`)."
+        );
+        let doc = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").join(VERIFY_DOC);
+        assert!(doc.exists(), "{VERIFY_DOC} is what the warning points to");
+    }
 
     #[test]
     fn parses_versions() {

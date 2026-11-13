@@ -166,20 +166,56 @@ export function installedHeader(c) {
   };
 }
 
-/** Compatibility rows and notes: `{ supported, notes: [{ tone: 'amber' | 'red', text }] }` (ux-brief §2.1.5). */
+const VERIFY_FALLBACK = { command: 'make contract', doc: 'docs/app/CONTRACT-TESTS.md' };
+
+/** `{ command, doc }` to verify a newer version: from `supported.verify`, else the default. */
+export const verifySpec = (s) => ({ ...VERIFY_FALLBACK, ...s?.verify });
+
+/** True for the core's "claude <v> is newer than the last tested version" warning (api-contract §1). */
+export const isVersionWarning = (w) => /^claude \S+ is newer than the last tested version/.test(String(w ?? ''));
+
+/** Splits text on backticks: `[{ text, code }]`, code spans are the odd pieces (rendered mono). */
+export function codeSpans(text) {
+  return String(text ?? '')
+    .split('`')
+    .map((t, i) => ({ text: t, code: i % 2 === 1 }))
+    .filter((p) => p.text);
+}
+
+/**
+ * Compatibility rows and notes (ux-brief §2): `{ supported, notes: [{ tone: 'amber' | 'red', text }], verify }`.
+ * Note text may carry backticked code. `verify` is `{ command, doc, line }` when the installed or the
+ * latest version is newer than the last tested one, else null (in range, or too old).
+ */
 export function compat(c) {
   const s = c?.supported;
   const notes = [];
-  if (!s) return { supported: null, notes };
-  const newer = 'Agents run, with a warning.';
-  if (c.problem_kind === 'version' || cmpVersion(c.version, s.min) === -1)
-    notes.push({ tone: 'red', text: 'Too old. The app is read-only until Claude Code is updated.' });
-  if (cmpVersion(c.version, s.tested_max) === 1)
-    notes.push({ tone: 'amber', text: `Newer than the last tested version. ${newer}` });
+  if (!s) return { supported: null, notes, verify: null };
+  const v = verifySpec(s);
+  const tooOld = c.problem_kind === 'version' || cmpVersion(c.version, s.min) === -1;
+  if (tooOld) notes.push({ tone: 'red', text: 'Too old. The app is read-only until Claude Code is updated.' });
+  const installedNewer = cmpVersion(c.version, s.tested_max) === 1;
+  if (installedNewer)
+    notes.push({ tone: 'amber', text: `${c.version} is newer than the last tested version. Agents still run.` });
   const latest = c.update?.latest;
-  if (c.update?.available && cmpVersion(latest, s.tested_max) === 1)
-    notes.push({ tone: 'amber', text: `${latest} is newer than the last tested version. ${newer}` });
-  return { supported: `${s.min} (minimum) – ${s.tested_max} (last tested)`, notes };
+  const latestNewer = !!c.update?.available && cmpVersion(latest, s.tested_max) === 1;
+  if (latestNewer)
+    notes.push({
+      tone: 'amber',
+      text: `${latest} is newer than the last tested version. Updating is fine: agents still run. Verify after updating with \`${v.command}\`.`,
+    });
+  return {
+    supported: `${s.min} (minimum) – ${s.tested_max} (last tested)`,
+    notes,
+    verify:
+      !tooOld && (installedNewer || latestNewer)
+        ? {
+            command: v.command,
+            doc: v.doc,
+            line: 'Runs the contract tests against this Claude Code (a few cents of plan quota).',
+          }
+        : null,
+  };
 }
 
 /** The Account rows: `{ login, note }`. */
