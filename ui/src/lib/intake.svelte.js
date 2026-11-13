@@ -150,12 +150,12 @@ export async function fixSource(src, refresh = () => refreshIntake([src.project]
       toast(`Run it in a terminal, then Refresh: ${GH_SCOPE_COMMAND}`);
     }
   } else if (fix === 'integrations') openSettings('integrations', integrationsRow(code));
-  else if (fix === 'settings') openProjectSettings(src.project, 'intake');
+  else if (fix === 'settings') openProjectSettings(src.project, 'tracker');
   else return refresh();
 }
 
 /** Set up intake (e): Project settings › Intake. */
-export const setUpIntake = (project) => openProjectSettings(project, 'intake');
+export const setUpIntake = (project) => openProjectSettings(project, 'tracker');
 
 // ---------------------------------------------------------------- Plan with the Overwatch (notes §8.1)
 

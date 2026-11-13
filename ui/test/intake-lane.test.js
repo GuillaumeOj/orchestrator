@@ -676,7 +676,7 @@ describe('Mission control: the Ready to start lane', () => {
     );
     click(row(c, 'intake:error:shop-api').querySelector('.link'));
     await settle();
-    expect(app.window).toMatchObject({ kind: 'project-settings', projectId: 'shop-api', section: 'intake' });
+    expect(app.window).toMatchObject({ kind: 'project-settings', projectId: 'shop-api', section: 'tracker' });
   });
 
   it('a collapsed lane keeps the failure visible in its header', async () => {

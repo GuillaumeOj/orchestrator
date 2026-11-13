@@ -101,7 +101,7 @@ describe('Project settings › Files', () => {
   it('sits second in the nav and lists rows with ~ paths, missing badge and hints', async () => {
     const { container, getByText } = await open();
     const nav = [...container.querySelectorAll('[role="tab"]')].map((b) => b.textContent.trim());
-    expect(nav.slice(0, 3)).toEqual(['General', 'Files', 'Task backend']);
+    expect(nav.slice(0, 3)).toEqual(['General', 'Files', 'Tracker']);
     expect(rows(container)).toHaveLength(3);
     expect(container.textContent).toContain('~/Brand');
     expect(container.textContent).toContain('▲ missing');
@@ -111,11 +111,12 @@ describe('Project settings › Files', () => {
     expect(rows(container)[0].querySelector('[aria-label="Open in editor"]')).toBeNull();
   });
 
-  it('keeps Task backend as the default section', async () => {
-    replies.project_settings = { backend: { type: 'local' }, settings: {}, track_orchestrator_dir: false };
+  it('keeps Tracker as the default section', async () => {
     app.window = { kind: 'project-settings', projectId: 'shop-api' };
     const { findByText } = render(ProjectSettingsWindow);
-    await findByText(/Where shop-api's Board lives/);
+    await findByText(/Where this project's work lives/, {}, { timeout: 2000 }).catch(() =>
+      findByText(/Could not read shop-api's tracker/),
+    );
   });
 
   it('hides the write hint when all rows are read only and the live note at 0 agents', async () => {
@@ -202,7 +203,7 @@ describe('Project settings › Files', () => {
 
   it('listens to drops only while the section is shown', async () => {
     const { container } = await open();
-    await fireEvent.click(btn(container, /^Task backend$/));
+    await fireEvent.click(btn(container, /^Tracker$/));
     await waitFor(() => expect(drag.off).toHaveBeenCalled());
   });
 
