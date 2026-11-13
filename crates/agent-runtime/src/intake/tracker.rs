@@ -53,22 +53,21 @@ pub(crate) fn actions_json(can_team: bool, has_children: bool) -> Value {
 struct Preview<'a> {
     tree: &'a src::Tree,
     ready: Vec<usize>,
+    /// Node id → index, and each node's cached facts, read once.
+    by_id: std::collections::HashMap<&'a str, usize>,
+    metas: Vec<Value>,
 }
 
 impl<'a> Preview<'a> {
     fn new(t: &TrackerSettings, tree: &'a src::Tree) -> Preview<'a> {
-        let ready = (0..tree.nodes.len())
-            .filter(|i| {
-                let n = &tree.nodes[*i];
-                t.is_ready(n.kind, &n.upsert().meta)
-            })
-            .collect();
-        Preview { tree, ready }
+        let metas: Vec<Value> = tree.nodes.iter().map(|n| n.upsert().meta).collect();
+        let ready = (0..tree.nodes.len()).filter(|i| t.is_ready(tree.nodes[*i].kind, &metas[*i])).collect();
+        let by_id = tree.nodes.iter().enumerate().map(|(i, n)| (n.id.as_str(), i)).collect();
+        Preview { tree, ready, by_id, metas }
     }
 
     fn roots(&self) -> usize {
-        let ids: std::collections::HashSet<&str> = self.tree.nodes.iter().map(|n| n.id.as_str()).collect();
-        self.tree.nodes.iter().filter(|n| n.parent.as_deref().is_none_or(|p| !ids.contains(p))).count()
+        self.tree.nodes.iter().filter(|n| n.parent.as_deref().is_none_or(|p| !self.by_id.contains_key(p))).count()
     }
 
     fn items(&self) -> usize {
@@ -77,10 +76,8 @@ impl<'a> Preview<'a> {
 
     /// The ancestors of node `i`, root first.
     fn breadcrumb(&self, i: usize) -> Vec<Value> {
-        let by_id: std::collections::HashMap<&str, usize> =
-            self.tree.nodes.iter().enumerate().map(|(i, n)| (n.id.as_str(), i)).collect();
         let (mut chain, mut at) = (vec![], i);
-        while let Some(p) = self.tree.nodes[at].parent.as_deref().and_then(|p| by_id.get(p)).copied() {
+        while let Some(p) = self.tree.nodes[at].parent.as_deref().and_then(|p| self.by_id.get(p)).copied() {
             if chain.len() > 50 {
                 break;
             }
@@ -95,16 +92,19 @@ impl<'a> Preview<'a> {
     /// A preview row: the WorkNode shape of the tree (contract §2) as far as a read knows it.
     fn sample(&self, p: &Project, i: usize, can_team: bool) -> Value {
         let n = &self.tree.nodes[i];
-        let meta = n.upsert().meta;
+        let meta = &self.metas[i];
         let kids: Vec<&src::Node> = self.tree.nodes.iter().filter(|c| c.parent.as_deref() == Some(&n.id)).collect();
-        let open = kids.iter().filter(|c| c.upsert().meta["state"].as_str().unwrap_or("open") == "open").count();
+        let open = kids
+            .iter()
+            .filter(|c| self.metas[self.by_id[c.id.as_str()]]["state"].as_str().unwrap_or("open") == "open")
+            .count();
         let breadcrumb = self.breadcrumb(i);
         json!({
             "id": n.id, "project": p.id, "kind": n.kind, "ref": n.f.reference, "title": n.f.title, "url": n.f.url,
             "parent": n.parent, "depth": breadcrumb.len() + 1,
             "children": {"total": kids.len(), "open": open, "done": kids.len() - open},
             "team_tasks": meta["team_tasks"].as_u64().unwrap_or(0),
-            "upstream": upstream_json(&meta, n.f.updated_at_ms),
+            "upstream": upstream_json(meta, n.f.updated_at_ms),
             "app": {"state": "none"}, "rollup": null, "ready": true, "hidden": false, "writeback": null,
             "actions": actions_json(can_team, !kids.is_empty()),
             "breadcrumb": breadcrumb,
