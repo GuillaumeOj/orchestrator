@@ -34,7 +34,7 @@ Section numbers follow ux-brief §2 (1–12). Fixtures are in §0.2; every board
 
 | Node | Type | Upstream | Labels | Children | Dependencies | App state |
 |---|---|---|---|---|---|---|
-| Milestone **v2** | milestone | open, due 1 Dec | | 2 issues | | rollup "1 running · 2 waiting · 1 merged" (ready is not an app count, §2.6) |
+| Milestone **v2** | milestone | open, due 1 Dec | | 2 issues | | rollup "1 running · 3 more" (descendants: 1 running, 1 waiting, 1 queued, 1 merged; > 3 parts shorten as §2.6; ready is not an app count) |
 | └ **#12 Checkout v2** | Epic | open | `checkout` | 3 sub-issues, 0 done | | program root: chip "program · 0 of 3 merged" (roll-up in details, §2.6) |
 | &nbsp;&nbsp;└ **#13 Address step** | Feature | open | `checkout`, `ready` | 2 sub-issues, 1 done | blocking #14 | **running · checkout-address · executing** |
 | &nbsp;&nbsp;&nbsp;&nbsp;└ #16 Postcode lookup | Task | closed (completed) | | | | done (merged PR #58) |
@@ -384,7 +384,7 @@ Skipped: none · Left out: none                                         [Cancel]
 | Graph strip | 80 px, nodes numbered circles by order, arrows for edges, skipped dashed; read-only; hidden when no edges. Hover a node highlights its row |
 | Totals | "Total ≈ 10–17 pp of the week" + room: "12 pp left this week for shop-api" + "· over at the high end" (high > room) / "· over this week's room" (low > room). Muted warning text, never blocks (P4.5 §2.1) |
 | Gates line | "Each feature still asks you to approve its spec and its PR." (always) |
-| Write-back line | when on: the §10.4 sentences joined as one line, start sentence first, with "#12 closes when all are done" for the program parent |
+| Write-back line | when on, one line that says items are written when **their** feature starts, not at program start (lead, D4): "When each feature starts, its item gets the label orch:running and a comment in GitHub. #12 closes when all are done." (board / Linear variants use the §10.4 verbs) |
 | Left out line | "Closed sub-issues left out: #16" · "Already running, left out: #13 (checkout-address)" — muted |
 | Start program | primary, accent fill, `⌘⏎`. Disabled while blocking issues remain (6.4), tooltip "Fix 1 thing first". Label with count: "Start program · 3 features" |
 
