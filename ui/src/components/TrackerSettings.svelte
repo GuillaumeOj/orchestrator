@@ -752,13 +752,13 @@
     border: 0;
     border-top: var(--border-width-default) solid var(--color-border-subtle);
   }
-  .lead,
-  .hint {
+  .lead {
     font: var(--text-caption);
   }
   /* Beats the global `.hint` (app.css): muted, one line of its own. */
   .hint {
     display: block;
+    font: var(--text-caption);
     color: var(--color-text-muted);
   }
   .dot {
