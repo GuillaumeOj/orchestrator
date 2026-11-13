@@ -7,6 +7,7 @@
   import DiffPane from '../panes/DiffPane.svelte';
   import FeaturePane from '../panes/FeaturePane.svelte';
   import MissionPane from '../panes/MissionPane.svelte';
+  import ProgramPane from '../panes/ProgramPane.svelte';
   import ProjectPane from '../panes/ProjectPane.svelte';
   import ReportPane from '../panes/ReportPane.svelte';
   import SetupPane from '../panes/SetupPane.svelte';
@@ -31,6 +32,7 @@
     {:else if spec.type === 'feature'}<FeaturePane {paneId} />
     {:else if spec.type === 'report'}<ReportPane {paneId} />
     {:else if spec.type === 'work'}<WorkPane {paneId} />
+    {:else if spec.type === 'program'}<ProgramPane {paneId} />
     {:else if spec.type === 'setup'}<SetupPane />{/if}
   </div>
 {/if}

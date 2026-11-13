@@ -655,13 +655,14 @@ describe('Mission control: the Ready to start lane', () => {
     const mc = await select(c, 'ready:it_1');
     key(mc, 'p');
     await settle();
-    expect(app.toasts.at(-1).text).toContain('Run as program · Title of it_1');
+    expect(app.overlay).toMatchObject({ kind: 'program-plan', title: 'Title of it_1' });
+    app.overlay = null;
     expect(calls).toEqual([]);
     app.toasts = [];
     await select(c, 'ready:it_2');
     key(mc, 'p');
     await settle();
-    expect(app.toasts).toEqual([]);
+    expect(app.overlay).toBeNull();
     // The menu of the parent row has the entry; the leaf's does not.
     const labels = async (k) => {
       click(row(c, k).querySelector('.menuwrap button'));
@@ -1008,8 +1009,7 @@ describe('the prefilled dialogs (notes §5)', () => {
     await settle();
     click(c.querySelector('[data-scope] button'));
     await settle();
-    expect(app.overlay).toBeNull();
-    expect(app.toasts.at(-1).text).toContain('Run as program · Address step');
+    expect(app.overlay).toMatchObject({ kind: 'program-plan', title: 'Address step' });
     // Edited: the confirmation comes first.
     app.toasts = [];
     app.overlay = launchOverlay({ origin: nodeOrigin({ open_sub_issues: 1 }) });
@@ -1023,7 +1023,7 @@ describe('the prefilled dialogs (notes §5)', () => {
     expect(app.toasts).toEqual([]);
     app.overlay.onYes();
     await settle();
-    expect(app.toasts.at(-1).text).toContain('Run as program · Address step');
+    expect(app.overlay).toMatchObject({ kind: 'program-plan', title: 'Address step' });
     expect(intakeUi.starting).toBeNull();
   });
 

@@ -57,6 +57,9 @@
   .done {
     --tone: var(--color-status-done);
   }
+  .paused {
+    --tone: var(--color-status-paused);
+  }
   .program {
     --tone: var(--color-status-working);
     background: none;

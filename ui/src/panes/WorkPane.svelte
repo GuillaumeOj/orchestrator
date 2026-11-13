@@ -675,6 +675,7 @@
           </p>
         </div>
       {:else if searching}
+        {#each view.searchLines(now) as l (l.pid)}<p class="rhead err" data-search-status={l.pid}>{l.text}</p>{/each}
         <p class="rhead muted" data-results>
           {#if view.results}
             {resultsText(view.results, view.query.trim(), scopeNames)} · title first, then body · ⏎ reveals in the tree
@@ -898,6 +899,9 @@
   }
   .rhead {
     margin: var(--space-xs) var(--space-sm);
+  }
+  .rhead.err {
+    color: var(--color-status-error);
   }
   .result {
     display: flex;
