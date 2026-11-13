@@ -25,7 +25,7 @@
   import { isTypingTarget } from '../lib/keyboard.js';
   import { onTopics, runAttention, runPhase, statusOf } from '../lib/now.svelte.js';
   import { docRepoPath, runFinished, runStateColor, runStateLabel, TL_FILTERS, timelineFilter, timelineText } from '../lib/teams.js';
-  import { tooltip } from '../lib/tooltip.js';
+  import { ifCut, tooltip } from '../lib/tooltip.js';
   import { openWork } from '../lib/work.js';
 
   let { paneId } = $props();
@@ -73,8 +73,6 @@
           .join(' · ')
       : '',
   );
-  /** A tooltip param read when the tooltip shows: the full text, only when the element is cut (ellipsis). */
-  const ifCut = (text) => (node) => (node.scrollWidth > node.clientWidth ? text : null);
 
   const events = $derived((v?.timeline ?? []).filter(timelineFilter(tl)).slice(0, 60));
   const lead = $derived(v?.team?.nodes?.find((n) => n.is_lead)?.id ?? 'lead');

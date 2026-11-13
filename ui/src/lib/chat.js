@@ -153,6 +153,7 @@ const EFFECT_VERB = {
   'started anyway': 'started anyway',
   opened: 'opened',
   resolved: 'resolved',
+  'turned off': 'turned off',
 };
 const ASK_VERB = { applied: 'run now', skipped: 'kept queued', queued: 'kept queued' };
 const KIND_VERB = { permission: 'allowed', gate: 'approved', ask: 'run now' };

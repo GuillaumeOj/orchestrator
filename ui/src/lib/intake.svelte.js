@@ -159,10 +159,10 @@ export async function openSource(item, openEditor) {
 
 // ---------------------------------------------------------------- errors, set up
 
-/** The error line's Fix (notes §4.2): where `fix` sends the user; Copy command for `gh_scope`. */
 /** Source errors whose Fix is in Project settings › Tracker (notes §10.7). */
 const TRACKER_FIXES = { linear_complexity: true, gh_write: true, linear_write: true };
 
+/** The error line's Fix (notes §4.2): where `fix` sends the user; Copy command for `gh_scope`. */
 export async function fixSource(src, refresh = () => refreshIntake([src.project])) {
   const code = src.error?.code;
   const fix = src.error?.fix;

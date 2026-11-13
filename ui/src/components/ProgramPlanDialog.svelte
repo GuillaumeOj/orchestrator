@@ -210,7 +210,7 @@
     { id: 'skip', label: f.skip ? 'Unskip' : 'Skip', key: 'x', run: () => skip(f.key) },
     { id: 'merge', label: 'Merge into previous', key: '⇧M', disabled: !canMerge(draft, f.key), reason: P.numberOf(draft, f.key) > 1 && !f.skip ? 'The previous feature is skipped' : undefined, run: () => merge(f.key) },
     { id: 'brief', label: 'Edit brief', key: 'e', run: () => openBrief(f) },
-    ...P.depsOf(draft, f.key).map((d) => ({ id: `cut-${d.key}`, label: `Remove dependency on ${d.external ? d.ref : d.n}`, run: () => edit((p) => P.cutEdge(p, d.key, f.key)) })),
+    ...P.depsOf(draft, f.key).map((d) => ({ id: `cut-${d.key}`, label: `Remove dependency on ${d.external ? d.ref || 'the running item' : d.n}`, run: () => edit((p) => P.cutEdge(p, d.key, f.key)) })),
   ];
 
   // ---- issue fixes (§6.4)

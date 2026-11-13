@@ -8,7 +8,7 @@
   import { GH_SCOPE_COMMAND, integrationsRow } from '../lib/intake.js';
   import { errText, invoke } from '../lib/ipc.js';
   import { BOARD_COLUMNS } from '../lib/options.js';
-  import { tooltip } from '../lib/tooltip.js';
+  import { ifCut, tooltip } from '../lib/tooltip.js';
   import {
     CYCLES,
     DEFAULT_GLOB,
@@ -104,8 +104,6 @@
   const linearTarget = $derived(started.find((s) => s.id === form?.write_back.linear_state) ?? started[0] ?? null);
   const targetName = $derived(kind === 'github' ? (form?.write_back.board_status ?? defaultStatus) : (linearTarget?.name ?? null));
   const lines = $derived(form && kind !== 'local' ? writeBackLines(form, known, targetName) : []);
-  /** A tooltip param: the full text, only when the element cuts it. */
-  const ifCut = (text) => (/** @type {HTMLElement} */ node) => (node.scrollWidth > node.clientWidth ? text : null);
   const projectName = (id) => (opts?.projects ?? []).find((p) => p.id === id)?.name ?? id;
   const summary = $derived(form ? readySummary(form.ready, projectName) : '');
   // A team is stored by key or id (`tracker_options` projects carry the team's key).

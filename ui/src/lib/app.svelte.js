@@ -2218,7 +2218,6 @@ export function commands() {
   return list;
 }
 
-/** The project Work opens on from the leader / palette: the focused pane's, else the context's, else all. */
 /** The palette's ⌘; b entry (notes §1.3): "Open Work (shop-api)" on the context, "Open Work (3 projects)", else "Work browser". */
 function workLabel(ids) {
   if (!ids?.length) return 'Work browser';
@@ -2226,6 +2225,7 @@ function workLabel(ids) {
   return `Open Work (${projects().find((p) => p.id === ids[0])?.name ?? ids[0]})`;
 }
 
+/** The project Work opens on from the leader / palette: the focused pane's, else the context's, else all. */
 function workContext() {
   // A Work tab in focus keeps its own scope (several projects, or all).
   const s = focusedSpec();

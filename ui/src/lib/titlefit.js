@@ -14,6 +14,23 @@ export function compactRow({ room, natural, chars, extra = 0, min = MIN_TITLE_CH
   return full / (natural / chars) < min;
 }
 
+// One observer for every row (a tree has hundreds): each row's callback by its node.
+/** @type {ResizeObserver | null} */
+let shared = null;
+/** @type {WeakMap<Element, () => void>} */
+const onResize = new WeakMap();
+function observe(node, cb) {
+  shared ??= new ResizeObserver((entries) => {
+    for (const e of entries) onResize.get(e.target)?.();
+  });
+  onResize.set(node, cb);
+  shared.observe(node);
+  return () => {
+    shared?.unobserve(node);
+    onResize.delete(node);
+  };
+}
+
 /**
  * Action on a tree row: measures its `.title` and its `[data-fold]` slots (full labels and dependency text,
  * or their compact forms) at each resize and data change, and calls `set(compact)`. Off: always false.
@@ -48,8 +65,7 @@ export function titleFit(node, opts) {
   const schedule = () => {
     if (!frame) frame = requestAnimationFrame(measure);
   };
-  const ro = new ResizeObserver(schedule);
-  ro.observe(node);
+  const unobserve = observe(node, schedule);
   schedule();
   return {
     update(next) {
@@ -57,7 +73,7 @@ export function titleFit(node, opts) {
       schedule();
     },
     destroy() {
-      ro.disconnect();
+      unobserve();
       if (frame) cancelAnimationFrame(frame);
     },
   };

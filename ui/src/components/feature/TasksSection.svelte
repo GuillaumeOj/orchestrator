@@ -9,7 +9,7 @@
   import { remoteName } from '../../lib/linear.js';
   import { taskMarks, tasksSummary } from '../../lib/source.js';
   import { blockedBy, COLUMNS, editPatch, handle, moveCursor, remoteLinkLabel, runFinished, shiftStatus } from '../../lib/teams.js';
-  import { tooltip } from '../../lib/tooltip.js';
+  import { ifCut, tooltip } from '../../lib/tooltip.js';
   import AgentChip from '../AgentChip.svelte';
   import Menu from '../Menu.svelte';
   import Select from '../Select.svelte';
@@ -38,8 +38,6 @@
   const nodes = $derived((v.team?.nodes ?? []).filter((n) => !n.is_lead));
   const nodeOptions = (none) => [...(none ? [{ value: '', label: none }] : []), ...nodes.map((n) => ({ value: n.id, label: n.id }))];
   const focusBox = (node) => node.querySelector('button')?.focus();
-  /** The full title in a tooltip, only when the card cuts it. */
-  const ifCut = (text) => (/** @type {HTMLElement} */ node) => (node.scrollWidth > node.clientWidth ? text : null);
   const roleOf = (t) => v.team?.nodes?.find((n) => n.id === t.node)?.role_id ?? t.node;
 
   export function focus() {

@@ -25,10 +25,12 @@ export function portal(node) {
 export function placePopover(r, w, h, vw, vh, align = 'start', bounds = null) {
   const below = vh - r.bottom - GAP - EDGE;
   const aboveRoom = r.top - GAP - EDGE;
-  const lo = bounds ? Math.min(bounds.bottom, vh) - r.bottom - GAP : below;
-  const hi = bounds ? r.top - Math.max(bounds.top, 0) - GAP : aboveRoom;
+  const lo = bounds ? Math.min(bounds.bottom - r.bottom - GAP, below) : below;
+  const hi = bounds ? Math.min(r.top - bounds.top - GAP, aboveRoom) : aboveRoom;
   // Measured before its max-height applies: what shows is at most POPOVER_MAX_H.
-  const above = Math.min(h, POPOVER_MAX_H) > lo && hi > lo && aboveRoom > 0;
+  const need = Math.min(h, POPOVER_MAX_H);
+  // Flipped against the bounds, it must still fit above in the window (or have more room there than below).
+  const above = need > lo && hi > lo && (aboveRoom >= need || aboveRoom > below);
   const left = align === 'end' ? r.right - w : r.left;
   return {
     above,

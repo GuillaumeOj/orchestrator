@@ -81,11 +81,15 @@
   );
   const noRoots = $derived(view.loaded && !firstLoad && !(view.kids.get('roots') ?? []).length && !view.focusRoot);
   const rootsTotal = $derived((view.kids.get('roots') ?? []).length + (view.more.roots?.left ?? 0));
-  /** A filtered tree's count (§4.2): the loaded matches, ancestors kept for the hierarchy and team tasks not counted. */
+  /** A filtered tree's count (§4.2): the loaded matches, ancestors kept for the hierarchy and team tasks not counted.
+   *  Counted over the listed ids (roots and open parents): `view.nodes` also keeps nodes of earlier, unfiltered loads. */
   const match = $derived.by(() => {
     if (!narrowed(view.filter)) return null;
     let items = 0;
-    for (const n of view.nodes.values()) if (!n.ancestor_only && !n.team_task) items++;
+    for (const id of new Set([...view.kids.values()].flat())) {
+      const n = view.nodes.get(id);
+      if (n && !n.ancestor_only && !n.team_task) items++;
+    }
     return { items: items + (view.more.roots?.left ?? 0), filters: nFilters };
   });
   const status = $derived(
