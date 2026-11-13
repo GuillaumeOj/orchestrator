@@ -5,7 +5,7 @@
   // (a finished run has no record: its own status). The current project is the
   // workspace's context (none in All projects); a project or feature click sets
   // it. Carets are remembered (`app.sidebarTree`, design-notes §5.4).
-  import { activeAgents, app, features, inspected, openAgent, openFeature, openProjectContext, projects, setContext, toggleTree, treeOpen } from '../lib/app.svelte.js';
+  import { activeAgents, app, features, inspected, openAgent, openFeature, openProjectContext, paneProject, projects, setContext, toggleTree, treeOpen } from '../lib/app.svelte.js';
   import { pct } from '../lib/format.js';
   import { attention, featureRun, needYouText, runPhase, statusOf, waitLine } from '../lib/now.svelte.js';
   import { runStateLabel } from '../lib/teams.js';
@@ -30,10 +30,7 @@
       return { p, feats, list: mine.filter((a) => !ids.has(a.team?.feature_id)) };
     }),
   );
-  const workOpen = $derived.by(() => {
-    const s = app.panes[app.focused];
-    return s?.type === 'work' && s.projects?.length === 1 ? s.projects[0] : null;
-  });
+  const workOpen = $derived(app.panes[app.focused]?.type === 'work' ? paneProject(app.panes[app.focused]) : null);
   const focusedFeature = $derived(app.panes[app.focused]?.type === 'feature' ? app.panes[app.focused].featureId : null);
 
   function clickFeature(f) {

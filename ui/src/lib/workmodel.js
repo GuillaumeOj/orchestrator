@@ -4,7 +4,8 @@
 
 import { clock, dayHm, plural } from './format.js';
 import { ageText, GH_SCOPE_COMMAND, isShownLabel, shownLabels } from './intake.js';
-import { trackerError } from './tracker.js';
+import { TRACKERS } from './source.js';
+import { backlogDir, trackerError } from './tracker.js';
 
 // ---------------------------------------------------------------- trackers, kinds
 
@@ -17,7 +18,7 @@ export function trackerOf(node) {
   return null;
 }
 
-export const TRACKER_NAME = { github: 'GitHub', linear: 'Linear', local: 'Local' };
+export const TRACKER_NAME = TRACKERS;
 export const trackerName = (node) => TRACKER_NAME[trackerOf(node)] ?? 'the tracker';
 
 /** Containers (no Start solo / team run, F12): milestones, Linear projects, milestones, initiatives. */
@@ -431,17 +432,8 @@ export function cleanFilter(f) {
 
 /** The count on "Filters · n": every filter off its default but Hide closed (the toolbar shows it) and Show hidden (⋯). */
 export function filterCount(f) {
-  let n = 0;
-  if (f.only_ready) n++;
-  if (f.only_not_started) n++;
-  if (f.labels.length) n++;
-  if (f.assignees.length) n++;
-  if (f.milestone) n++;
-  if (f.cycle) n++;
-  if (f.issue_types.length) n++;
-  if (f.linear_projects.length) n++;
-  if (f.include_team_tasks) n++;
-  return n;
+  const counted = Object.keys(defaultFilter()).filter((k) => k !== 'state' && k !== 'show_hidden');
+  return counted.filter((k) => (Array.isArray(f[k]) ? f[k].length > 0 : !!f[k])).length;
 }
 
 /** Any filter beyond Hide closed narrows the tree (S8 "no match" vs S7 "empty tracker"). */
@@ -466,7 +458,6 @@ export const MAX_EXPANDED = 500;
 export function prefsOf(v) {
   return {
     filter: v.filter,
-    toggles: { details_open: !!v.details_open },
     expanded: [...(v.expanded ?? [])].slice(-MAX_EXPANDED),
     collapsed_projects: [...(v.collapsedProjects ?? [])],
     focused: v.focused ?? null,
@@ -483,7 +474,7 @@ export function readPrefs(saved) {
     expanded: Array.isArray(s.expanded) ? s.expanded.map(String).slice(-MAX_EXPANDED) : [],
     collapsedProjects: Array.isArray(s.collapsed_projects) ? s.collapsed_projects.map(String) : [],
     focused: typeof s.focused === 'string' ? s.focused : null,
-    details_open: s.details_open ?? s.toggles?.details_open ?? true,
+    details_open: s.details_open ?? true,
     focus_root: typeof s.focus_root === 'string' ? s.focus_root : null,
   };
 }
@@ -499,128 +490,74 @@ export function readPrefs(saved) {
  */
 export function visibleRows(t) {
   const out = [];
-  const base = t.multi ? 0 : 1;
   const focus = t.focusRoot ? t.nodes.get(t.focusRoot) : null;
-  const top = focus ? (focus.depth ?? 1) : base;
+  const top = focus ? (focus.depth ?? 1) : t.multi ? 0 : 1;
   const indentOf = (level) => Math.min(4, Math.max(0, level - top));
+  /** One line of the tree: its indent follows its level. */
+  const line = (kind, key, level, extra = {}) => out.push({ kind, key, level, indent: indentOf(level), ...extra });
+  /** A loaded list's state line: an error, else "Loading…" until the list is there; true when one was added. */
+  const state = (key, level, loaded) => {
+    if (t.errors.has(key))
+      return (line('error', `error:${key}`, level, { parent: key, message: t.errors.get(key) }), true);
+    if (t.loading.has(key) && !loaded) return (line('loading', `loading:${key}`, level, { parent: key }), true);
+    return false;
+  };
+  const moreLine = (key, level, indent = indentOf(level)) => {
+    const left = t.more?.[key]?.left ?? 0;
+    const shown = (t.kids.get(key) ?? []).length;
+    if (left > 0)
+      out.push({ kind: 'more', key: `more:${key}`, level, indent, parent: key, left, shown, roots: key === 'roots' });
+  };
 
   const children = (key, level, parent) => {
-    if (t.loading.has(key) && !t.kids.has(key)) {
-      out.push({ kind: 'loading', key: `loading:${key}`, level, indent: indentOf(level), parent: key });
-      return;
-    }
-    if (t.errors.has(key)) {
-      out.push({
-        kind: 'error',
-        key: `error:${key}`,
-        level,
-        indent: indentOf(level),
-        parent: key,
-        message: t.errors.get(key),
-      });
-      return;
-    }
+    if (state(key, level, t.kids.has(key))) return;
     for (const id of t.kids.get(key) ?? []) node(id, level);
-    const more = t.more?.[key];
-    if (more?.left > 0) {
-      const shown = (t.kids.get(key) ?? []).length;
-      out.push({
-        kind: 'more',
-        key: `more:${key}`,
-        level,
-        indent: indentOf(level),
-        parent: key,
-        left: more.left,
-        shown,
-        roots: key === 'roots',
-      });
-    }
+    moreLine(key, level);
     if (parent && trackerOf(parent) === 'github' && (parent.children?.total ?? 0) >= 100)
-      out.push({ kind: 'limit', key: `limit:${key}`, level, indent: indentOf(level) });
-    if (parent?.team_tasks > 0) {
-      const open = t.folds.has(parent.id);
-      out.push({
-        kind: 'fold',
-        key: `fold:${parent.id}`,
-        level,
-        indent: indentOf(level),
-        node: parent,
-        open,
-        count: parent.team_tasks,
-      });
-      if (open) {
-        const fk = `fold:${parent.id}`;
-        if (t.errors.has(fk))
-          out.push({
-            kind: 'error',
-            key: `error:${fk}`,
-            level: level + 1,
-            indent: indentOf(level + 1),
-            parent: fk,
-            message: t.errors.get(fk),
-          });
-        else if (t.loading.has(fk) && !t.tasks.has(parent.id))
-          out.push({
-            kind: 'loading',
-            key: `loading:fold:${parent.id}`,
-            level: level + 1,
-            indent: indentOf(level + 1),
-            parent: `fold:${parent.id}`,
-          });
-        for (const task of t.tasks.get(parent.id) ?? [])
-          out.push({
-            kind: 'task',
-            key: `task:${task.id}`,
-            level: level + 1,
-            indent: indentOf(level + 1),
-            node: task,
-            parent: parent.id,
-          });
-      }
-    }
+      line('limit', `limit:${key}`, level);
+    if (!(parent?.team_tasks > 0)) return;
+    const fk = `fold:${parent.id}`;
+    const open = t.folds.has(parent.id);
+    line('fold', fk, level, { node: parent, open, count: parent.team_tasks });
+    if (!open) return;
+    state(fk, level + 1, t.tasks.has(parent.id));
+    for (const task of t.tasks.get(parent.id) ?? [])
+      line('task', `task:${task.id}`, level + 1, { node: task, parent: parent.id });
   };
 
   const node = (id, level) => {
     const n = t.nodes.get(id);
     if (!n) return;
     const lv = n.depth ?? level;
-    const open = t.expanded.has(id);
     const hasKids = (n.children?.total ?? 0) > 0 || (n.team_tasks ?? 0) > 0 || (t.kids.get(id)?.length ?? 0) > 0;
-    out.push({ kind: 'node', key: id, node: n, level: lv, indent: indentOf(lv), open: open && hasKids, hasKids });
-    if (open && hasKids) children(id, lv + 1, n);
+    const open = t.expanded.has(id) && hasKids;
+    line('node', id, lv, { node: n, open, hasKids });
+    if (open) children(id, lv + 1, n);
   };
 
   if (focus) {
     node(focus.id, top);
     return out;
   }
-  if (t.multi) {
-    for (const p of t.scope) {
-      const key = `project:${p.id}`;
-      const open = !t.collapsedProjects.has(p.id);
-      out.push({ kind: 'project', key, project: p, level: 0, indent: 0, open });
-      const line = t.statusLines?.get(p.id);
-      if (line) out.push({ kind: 'srcline', key: `srcline:${p.id}`, level: 1, indent: 1, ...line });
-      if (!open) continue;
-      for (const id of (t.kids.get('roots') ?? []).filter((x) => t.nodes.get(x)?.project === p.id)) node(id, 1);
-    }
-    const more = t.more?.roots;
-    if (more?.left > 0) {
-      const shown = (t.kids.get('roots') ?? []).length;
-      out.push({
-        kind: 'more',
-        key: 'more:roots',
-        level: 1,
-        indent: 0,
-        parent: 'roots',
-        left: more.left,
-        shown,
-        roots: true,
-      });
-    }
+  if (!t.multi) {
+    children('roots', 1, null);
     return out;
   }
-  children('roots', 1, null);
+  // Several projects: a level-0 row each, its status line, then its roots (grouped in one pass).
+  const byProject = new Map();
+  for (const id of t.kids.get('roots') ?? []) {
+    const pid = t.nodes.get(id)?.project;
+    if (!byProject.has(pid)) byProject.set(pid, []);
+    byProject.get(pid).push(id);
+  }
+  for (const p of t.scope) {
+    const open = !t.collapsedProjects.has(p.id);
+    line('project', `project:${p.id}`, 0, { project: p, open });
+    const sl = t.statusLines?.get(p.id);
+    if (sl) out.push({ kind: 'srcline', key: `srcline:${p.id}`, level: 1, indent: 1, ...sl });
+    if (open) for (const id of byProject.get(p.id) ?? []) node(id, 1);
+  }
+  moreLine('roots', 1, 0);
   return out;
 }
 
@@ -652,7 +589,7 @@ export function headerStatus(status, { now = Date.now(), firstLoad = false, name
     return { text: `Loading ${names[first] ?? 'work'}…`, tone: 'muted' };
   }
   const failed = list.filter(([, s]) => s.status === 'error' && s.error?.code !== 'rate_limited' && !s.offline).length;
-  if (failed) return { text: failed === 1 ? '1 source failed' : `${failed} sources failed`, tone: 'error' };
+  if (failed) return { text: `${plural(failed, 'source')} failed`, tone: 'error' };
   if (list.some(([, s]) => s.status === 'refreshing'))
     return { text: 'refreshing…', tone: 'muted', refreshDisabled: true };
   const oldest = Math.min(...list.map(([, s]) => s.refreshed_at_ms ?? Number.POSITIVE_INFINITY));
@@ -728,8 +665,7 @@ export const loadErrorText = (message) =>
 export function emptyText(p) {
   const t = p?.tracker;
   if (t?.kind === 'linear') return `No issues in ${(t.teams ?? []).join(', ') || 'Linear'}.`;
-  if (t?.kind === 'local')
-    return `No backlog files in ${String(t.backlog_glob ?? '.orchestrator/backlog/*.md').replace(/[^/]*$/, '')}. Add a .md file there.`;
+  if (t?.kind === 'local') return `No backlog files in ${backlogDir(t.backlog_glob)}/. Add a .md file there.`;
   return `No open issues in ${p?.label ?? 'this repository'}. Create them in GitHub; Work picks them up at the next refresh (r).`;
 }
 
@@ -799,7 +735,7 @@ export function historyText(h, node) {
   const feat = h.feature ? `feature ${h.feature}` : '';
   switch (h.what) {
     case 'started':
-      return h.program ? `Started in program ${h.program.title} · ${feat}` : `Started · ${feat}`.replace(/ · $/, '');
+      return [h.program ? `Started in program ${h.program.title}` : 'Started', feat].filter(Boolean).join(' · ');
     case 'program_queued':
       return `Queued in program ${h.program?.title ?? ''}`.trim();
     case 'spec_approved':

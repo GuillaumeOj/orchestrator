@@ -4,6 +4,7 @@
   import { onMount } from 'svelte';
   import { dismissOn } from '../../lib/popover.js';
   import { tooltip } from '../../lib/tooltip.js';
+  import { optionList } from '../../lib/tracker.js';
   import Select from '../Select.svelte';
 
   /**
@@ -22,21 +23,28 @@
   });
 
   const toggle = (key, v) => set({ [key]: filter[key].includes(v) ? filter[key].filter((x) => x !== v) : [...filter[key], v] });
-  const has = (kind) => groups.some((g) => g.kind === kind);
+  const CHECKS = [
+    ['only_ready', 'Only ready', 'Items that match the Ready filter'],
+    ['only_not_started', 'Only not started', 'Nothing running, queued or merged'],
+    ['include_team_tasks', 'Include team tasks', 'Team tasks in search results'],
+  ];
+  const strings = (list) => list.map((v) => ({ value: v, label: v }));
 
+  /** The popover owns its keys: none reaches the tree behind it; Esc closes it. */
   function onKey(e) {
+    e.stopPropagation();
     if (e.key === 'Escape') {
       e.preventDefault();
-      e.stopPropagation();
       close();
     }
   }
 </script>
 
-{#snippet chips(key, list, words = (x) => x)}
+{#snippet chips(key, list)}
   <div class="chips">
-    {#each list as v (v)}
-      <button type="button" class="tchip" aria-pressed={filter[key].includes(v)} onclick={() => toggle(key, v)}>{words(v)}</button>
+    {#each list as o (o.value)}
+      {@const on = filter[key].includes(o.value)}
+      <button type="button" class="filter-chip" class:on aria-pressed={on} onclick={() => toggle(key, o.value)}>{o.label}</button>
     {:else}<span class="muted">Any</span>{/each}
   </div>
 {/snippet}
@@ -52,14 +60,14 @@
           <button type="button" role="radio" aria-checked={filter.state === v} class:on={filter.state === v} onclick={() => set({ state: v })}>{label}</button>
         {/each}
       </div>
-      <label class="cb"><input type="checkbox" checked={filter.only_ready} onchange={(e) => set({ only_ready: e.currentTarget.checked })} /> <span>Only ready<small>Items that match the Ready filter</small></span></label>
-      <label class="cb"><input type="checkbox" checked={filter.only_not_started} onchange={(e) => set({ only_not_started: e.currentTarget.checked })} /> <span>Only not started<small>Nothing running, queued or merged</small></span></label>
-      <label class="cb"><input type="checkbox" checked={filter.include_team_tasks} onchange={(e) => set({ include_team_tasks: e.currentTarget.checked })} /> <span>Include team tasks<small>Team tasks in search results</small></span></label>
-      {#if has('github') || has('linear')}
+      {#each CHECKS as [key, label, hint] (key)}
+        <label class="check cb"><input type="checkbox" checked={filter[key]} onchange={(e) => set({ [key]: e.currentTarget.checked })} /> <span>{label}<small>{hint}</small></span></label>
+      {/each}
+      {#if groups.length}
         <span class="lbl">Label · has any of</span>
-        {@render chips('labels', options.labels)}
+        {@render chips('labels', strings(options.labels))}
         <span class="lbl">Assignee</span>
-        {@render chips('assignees', ['@me', ...options.assignees.filter((a) => a !== '@me')], (a) => (a === '@me' ? 'Me' : a))}
+        {@render chips('assignees', [{ value: '@me', label: 'Me' }, ...strings(options.assignees.filter((a) => a !== '@me'))])}
       {/if}
     </div>
     {#if groups.length}
@@ -68,14 +76,14 @@
           <h4>{g.title}</h4>
           {#if g.kind === 'github'}
             <span class="lbl">Milestone</span>
-            <Select aria-label="Milestone" value={filter.milestone ?? ''} options={[{ value: '', label: 'Any' }, ...options.milestones.map((m) => ({ value: m, label: m }))]} onchange={(v) => set({ milestone: v || null })} />
+            <Select aria-label="Milestone" value={filter.milestone ?? ''} options={optionList(options.milestones, 'Any')} onchange={(v) => set({ milestone: v || null })} />
             <span class="lbl">Issue type</span>
-            {@render chips('issue_types', options.issue_types)}
+            {@render chips('issue_types', strings(options.issue_types))}
           {:else if g.kind === 'linear'}
             <span class="lbl">Cycle</span>
             <Select aria-label="Cycle" value={filter.cycle ?? ''} options={[{ value: '', label: 'Any' }, { value: 'current', label: 'Current' }, { value: 'next', label: 'Next' }]} onchange={(v) => set({ cycle: v || null })} />
             <span class="lbl">Linear project</span>
-            {@render chips('linear_projects', options.linear_projects.map((p) => p.id), (id) => options.linear_projects.find((p) => p.id === id)?.name ?? id)}
+            {@render chips('linear_projects', options.linear_projects.map((p) => ({ value: p.id, label: p.name })))}
           {/if}
         {/each}
       </div>
@@ -146,8 +154,6 @@
     color: var(--color-text-primary);
   }
   .cb {
-    display: flex;
-    gap: var(--space-sm);
     align-items: flex-start;
   }
   .cb small {
@@ -162,27 +168,15 @@
     max-height: 120px;
     overflow: auto;
   }
-  .tchip {
-    padding: 0 var(--space-sm);
-    border: var(--border-width-default) solid var(--color-border-subtle);
-    border-radius: var(--radius-full);
-    background: none;
-    color: var(--color-text-secondary);
+  .filter-chip {
     font: var(--text-caption);
+    color: var(--color-text-secondary);
     cursor: pointer;
-  }
-  .tchip[aria-pressed='true'] {
-    border-color: var(--color-focus);
-    background: var(--color-accent-subtle);
-    color: var(--color-text-primary);
   }
   .foot {
     display: flex;
     gap: var(--space-sm);
     padding: var(--space-sm) var(--space-lg);
     border-top: var(--border-width-default) solid var(--color-border-subtle);
-  }
-  .grow {
-    flex: 1;
   }
 </style>

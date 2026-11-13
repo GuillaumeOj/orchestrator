@@ -47,8 +47,8 @@ async function menuLabels(head) {
 }
 
 function expectPattern(head, want) {
-  // The Project pane's text button "Work" (improve-intake notes §1.2) sits before the icon buttons.
-  const bs = buttons(head).filter((b) => b.textContent !== 'Work');
+  // Labelled text buttons (the Project pane's "Work", improve-intake notes §1.2) are not part of the icon pattern.
+  const bs = buttons(head).filter((b) => !b.classList.contains('btn'));
   expect(bs.map((b) => b.getAttribute('aria-label'))).toEqual(want.map(([l]) => l));
   for (const [i, [, danger]] of want.entries()) {
     expect(bs[i].classList.contains('icon-btn')).toBe(true);

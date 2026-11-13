@@ -68,10 +68,10 @@ export function switchKind(form, kind) {
   };
 }
 
-/** "acme/shop" from a project's remote url (github.com only), else null. */
 /** A project's `origin` remote, else its first one (null without remotes). */
 export const originRemote = (p) => (p?.remotes ?? []).find((r) => r.name === 'origin') ?? p?.remotes?.[0] ?? null;
 
+/** "acme/shop" from a project's remote url (github.com only), else null. */
 export function repoOfRemote(url) {
   const m = /github\.com[:/]([^/\s]+\/[^/\s]+?)(?:\.git)?$/.exec(url ?? '');
   return m ? m[1] : null;
@@ -160,8 +160,18 @@ export function readySummary(ready, projectName = (id) => id) {
 /** The tracker in a few words ("acme/shop", "Linear ENG", "Local"), for sentences. */
 export function trackerName(t, known = null) {
   if (t.kind === 'github') return t.repo || known || "this project's repository";
-  if (t.kind === 'linear') return `Linear ${t.teams.join(', ')}`;
+  if (t.kind === 'linear') return `Linear ${trackerTarget(t)}`;
   return 'Local';
+}
+
+/** The folder of a backlog glob, without the trailing slash: ".orchestrator/backlog". */
+export const backlogDir = (glob) => String(glob || DEFAULT_GLOB).replace(/\/[^/]*$/, '');
+
+/** What the tracker reads, without its kind: "acme/shop", "ENG, MOB", ".orchestrator/backlog" (Work's project rows). */
+export function trackerTarget(t, known = null) {
+  if (t.kind === 'github') return t.repo || known || "this project's repository";
+  if (t.kind === 'linear') return t.teams.join(', ');
+  return backlogDir(t.backlog_glob);
 }
 
 /** The write-back list under the switch (notes §10.4, the owner of the sentences). */

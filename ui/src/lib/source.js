@@ -2,7 +2,7 @@
 // test/feature-source.test.js. The input is `run.source` (api-contract §2).
 import { remoteName } from './linear.js';
 
-const TRACKERS = { github: 'GitHub', linear: 'Linear', local: 'Local' };
+export const TRACKERS = { github: 'GitHub', linear: 'Linear', local: 'Local' };
 export const trackerKindLabel = (t) => TRACKERS[t] ?? remoteName(t);
 
 /**

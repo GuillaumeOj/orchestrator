@@ -11,10 +11,11 @@
   import WorkDetails from '../components/work/WorkDetails.svelte';
   import WorkRow from '../components/work/WorkRow.svelte';
   import { app, copyText, featureBySlug, now30, openAgent, openEditor, openFeature, openProjectSettings, openUrl, projects, toast } from '../lib/app.svelte.js';
+  import { plural } from '../lib/format.js';
   import { ageText, isShownLabel } from '../lib/intake.js';
   import { fixSource } from '../lib/intake.svelte.js';
   import { errText, invoke, listen } from '../lib/ipc.js';
-  import { isTypingTarget } from '../lib/keyboard.js';
+  import { keyIgnored } from '../lib/keyboard.js';
   import { breakpoint } from '../lib/tokens.js';
   import { tooltip } from '../lib/tooltip.js';
   import { openProgram, openProgramPlan } from '../lib/work.js';
@@ -67,7 +68,10 @@
   const narrow = $derived(app.width < breakpoint.md);
   const names = $derived(Object.fromEntries(view.scope.map((p) => [p.id, p.name])));
   const scopeNames = $derived(view.scope.map((p) => p.name));
-  const lines = $derived(view.lines(now));
+  // The 30 s clock only changes the age words of the lines: the same text keeps the same Map, so the
+  // tree (which carries the lines of several projects) is not rebuilt each tick.
+  const linesJson = $derived(JSON.stringify([...view.lines(now)]));
+  const lines = $derived(new Map(JSON.parse(linesJson)));
   const searching = $derived(!!view.query.trim());
 
   const firstLoad = $derived(
@@ -76,14 +80,17 @@
   );
   const rootsTotal = $derived((view.kids.get('roots') ?? []).length + (view.more.roots?.left ?? 0));
   const status = $derived(
-    headerStatus(view.status, { now, firstLoad, names: Object.fromEntries(view.scope.map((p) => [p.id, p.label || p.name])), rootsTotal }),
+    headerStatus(view.status, { now, firstLoad, names: Object.fromEntries(view.scope.map((p) => [p.id, p.label])), rootsTotal }),
   );
 
-  /** Ready, not hidden, per project (the project row's "3 ready"): the Ready lane's own list. */
-  // SourceStatus.counts (contract §2) when the core sends it, else the Ready lane's own list.
-  const readyCount = (pid) =>
-    view.status[pid]?.counts?.ready ?? (app.now?.intake?.items ?? []).filter((i) => i.project === pid && !i.hidden).length;
-  const itemCount = (pid) => view.status[pid]?.counts?.items;
+  /** Ready, not hidden, per project (the project row's "3 ready"): SourceStatus.counts (contract §2) when the
+   *  core sends it, else the Ready lane's own list (counted in one pass). */
+  const laneReady = $derived.by(() => {
+    const m = new Map();
+    for (const i of app.now?.intake?.items ?? []) if (!i.hidden) m.set(i.project, (m.get(i.project) ?? 0) + 1);
+    return m;
+  });
+  const readyCount = (pid) => view.status[pid]?.counts?.ready ?? laneReady.get(pid) ?? 0;
 
   const rows = $derived(
     visibleRows({
@@ -117,7 +124,21 @@
   const list = $derived(searching ? results : rows);
   const cur = $derived(list.find((r) => r.key === view.focused) ?? null);
   const curNode = $derived(cur?.kind === 'node' || cur?.kind === 'result' ? cur.node : null);
-  const curProject = $derived(cur?.kind === 'project' ? view.scope.find((p) => p.id === cur.project.id) : null);
+  const curProject = $derived(cur?.kind === 'project' ? cur.project : null);
+  /** The project details' status line: "updated 4 min ago · 14 items · 3 ready". */
+  const projectStatus = $derived.by(() => {
+    if (!curProject) return '';
+    const s = view.status[curProject.id];
+    const items = s?.counts?.items;
+    return [
+      s?.refreshed_at_ms ? `updated ${ageText(s.refreshed_at_ms, now)}` : '',
+      items != null ? plural(items, 'item') : '',
+      `${readyCount(curProject.id)} ready`,
+    ]
+      .filter(Boolean)
+      .join(' · ');
+  });
+
 
   // The focus falls back on the first row when its row went away (filter, collapse).
   $effect(() => {
@@ -142,6 +163,8 @@
   });
 
   const selNodes = $derived((view.selection?.ids ?? []).map((id) => view.nodes.get(id)).filter(Boolean));
+  /** Two or more selected: the details list the selection. */
+  const multiSel = $derived(selNodes.length >= 2);
   const selParent = $derived.by(() => {
     const p = view.selection?.parent;
     return p && !p.startsWith('roots:') ? view.nodes.get(p) : null;
@@ -186,7 +209,7 @@
     const right = firstLoad && s?.status === 'refreshing' ? `Reading ${TRACKER_NAME[p.kind] ?? 'the tracker'}…` : s?.status === 'refreshing' ? 'refreshing…' : `${readyCount(p.id)} ready`;
     return {
       tracker: view.trackerLine(p),
-      error: l?.tone === 'error' ? `${TRACKER_NAME[p.kind] ?? ''}: ${l.short ?? 'error'}`.replace(/^: /, '') : null,
+      error: l?.tone === 'error' ? [TRACKER_NAME[p.kind], l.short ?? 'error'].filter(Boolean).join(': ') : null,
       fix: l?.tone === 'error' && l.fix ? 'Fix' : null,
       right,
     };
@@ -498,8 +521,7 @@
   }
 
   function onKey(e) {
-    if (e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey || isTypingTarget(e.target)) return;
-    if (e.target?.closest?.('.pop')) return;
+    if (e.defaultPrevented || keyIgnored(e)) return;
     const k = e.key;
     const n = curNode;
     const run = (f) => {
@@ -518,11 +540,11 @@
     if (k === 'h' || k === 'ArrowLeft') return run(left);
     if (k === 'l' || k === 'ArrowRight') return run(right);
     if (k === 'Enter') {
-      if (e.target?.closest?.('button, a') && e.target !== root) return;
+      if (keyIgnored(e, { controls: true })) return;
       return run(() => activate(cur, true));
     }
     if (k === ' ') {
-      if (e.target?.closest?.('button, a')) return;
+      if (keyIgnored(e, { controls: true })) return;
       return run(() => {
         view.detailsOpen = !view.detailsOpen;
         view.save();
@@ -555,6 +577,10 @@
   const noRoots = $derived(view.loaded && !firstLoad && !(view.kids.get('roots') ?? []).length && !view.focusRoot);
 </script>
 
+{#snippet hiddenNote()}
+  {#if view.results.hidden > 0} · {view.results.hidden} more hidden by filters · <button type="button" class="link" onclick={() => view.showHiddenResults()}>Show</button>{/if}
+{/snippet}
+
 <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
 <div class="work" tabindex="0" data-pane-focus bind:this={root} onkeydown={onKey} role="region" aria-label={title}>
   <header class="head">
@@ -566,14 +592,14 @@
   </header>
 
   {#if view.selection}
-    <div class="bar selbar" data-selbar>
+    <div class="toolbar tbar selbar" data-selbar>
       <span>{selText}</span>
       <button type="button" class="btn primary" disabled={view.selection.ids.length < 2} use:tooltip={view.selection.ids.length < 2 ? 'Select 2 or more, or use Run as program on the parent' : { label: 'Run selected as program', key: 'p' }} onclick={runSelected}>Run selected as program</button>
       <button type="button" class="btn" use:tooltip={{ label: 'Clear', key: 'Esc' }} onclick={() => view.clearSelection()}>Clear</button>
       {#if view.selection.ids.length < 2}<span class="muted">Select 2 or more, or use Run as program on the parent</span>{/if}
     </div>
   {:else}
-    <div class="bar">
+    <div class="toolbar tbar">
       {#if focusNode}
         <nav class="fcrumbs" aria-label="Focus">
           {#each focusTrail as c, i (i)}
@@ -644,7 +670,7 @@
         <div class="empty" data-empty>
           <p class="muted" data-results>
             {resultsText(view.results, view.query.trim(), scopeNames)}
-            {#if view.results.hidden > 0} · {view.results.hidden} more hidden by filters · <button type="button" class="link" onclick={() => view.showHiddenResults()}>Show</button>{/if}
+            {@render hiddenNote()}
             · <button type="button" class="link" onclick={() => view.setQuery('')}>Clear search</button>
           </p>
         </div>
@@ -652,7 +678,7 @@
         <p class="rhead muted" data-results>
           {#if view.results}
             {resultsText(view.results, view.query.trim(), scopeNames)} · title first, then body · ⏎ reveals in the tree
-            {#if view.results.hidden > 0} · {view.results.hidden} more hidden by filters · <button type="button" class="link" onclick={() => view.showHiddenResults()}>Show</button>{/if}
+            {@render hiddenNote()}
           {:else}Searching…{/if}
         </p>
         {#each results as r (r.key)}
@@ -699,13 +725,13 @@
     {#if view.detailsOpen && !firstLoad}
       <WorkDetails
         bind:el={detailsEl}
-        node={view.selection && selNodes.length >= 2 ? null : curNode}
+        node={multiSel ? null : curNode}
         project={!curNode && curProject ? { ...curProject, trackerLine: view.trackerLine(curProject) } : null}
-        projectStatus={curProject ? [view.status[curProject.id]?.refreshed_at_ms ? `updated ${ageText(view.status[curProject.id].refreshed_at_ms, now)}` : '', itemCount(curProject.id) != null ? `${itemCount(curProject.id)} items` : '', `${readyCount(curProject.id)} ready`].filter(Boolean).join(' · ') : ''}
+        {projectStatus}
         detail={curNode ? view.detailsOf(curNode) : null}
         {trail}
         kids={curNode && view.kids.has(curNode.id) ? view.kids.get(curNode.id).map((id) => view.nodes.get(id)).filter(Boolean) : null}
-        selection={view.selection && selNodes.length >= 2 ? selNodes : null}
+        selection={multiSel ? selNodes : null}
         selectionText={selText}
         {narrow}
         readyTip={readyTip(curNode)}
@@ -743,9 +769,6 @@
     overflow: hidden;
     text-overflow: ellipsis;
   }
-  .grow {
-    flex: 1;
-  }
   .status {
     color: var(--color-text-muted);
     white-space: nowrap;
@@ -753,13 +776,10 @@
   .status.err {
     color: var(--color-status-error);
   }
-  .bar {
-    display: flex;
-    align-items: center;
-    gap: var(--space-sm);
+  .tbar {
+    flex-wrap: nowrap;
     min-height: 36px;
     padding: var(--space-xs) var(--space-md);
-    border-bottom: var(--border-width-default) solid var(--color-border-subtle);
   }
   .selbar {
     background: var(--color-surface-selected);

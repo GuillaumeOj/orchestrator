@@ -103,7 +103,9 @@ describe('rows, chips, roll-ups (§2.2–§2.6)', () => {
   it('saved expanded nodes come back in one call (F37); rows show type, labels ≤ 2, dependency, progress', async () => {
     const { container } = await mount(['shop-api'], { prefs: { expanded: [V2, 'gh:acme/shop#12'] } });
     await waitFor(() => expect(row(container, 'gh:acme/shop#14')).toBeTruthy());
-    expect(called('work_tree').at(-1).parents).toEqual([V2, 'gh:acme/shop#12']);
+    expect(called('work_tree').filter((a) => a.parents)).toEqual([
+      expect.objectContaining({ parents: [V2, 'gh:acme/shop#12'] }),
+    ]);
     const r14 = row(container, 'gh:acme/shop#14');
     expect(text(r14)).toContain('#14 Feature Payment step');
     expect(text(r14)).toContain('blocked by #13');

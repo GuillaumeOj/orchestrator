@@ -31,13 +31,24 @@
   } = $props();
 
   const n = $derived(row.node);
-  const right = $derived(n && row.kind === 'node' ? rightOf(n, { short: narrow, readyTip }) : null);
-  const dep = $derived(n && row.kind === 'node' ? depMark(n) : null);
-  const tail = $derived(n && row.kind === 'node' ? tailOf(n) : null);
-  const mark = $derived(n && row.kind === 'node' ? closedMark(n) : null);
-  const labels = $derived(n && row.kind === 'node' && !narrow ? labelsOf(n) : { chips: [], more: 0 });
-  const strong = $derived(!!n && !isClosed(n) && (isContainer(n) || ['Epic', 'Feature'].includes(n.upstream?.issue_type)));
-  const canSel = $derived(n && row.kind === 'node' ? selectable(n).ok : false);
+  /** The slots of a tree item, each computed once (other row kinds have none). */
+  const slots = $derived.by(() => {
+    if (row.kind !== 'node' || !n) return null;
+    const closed = isClosed(n);
+    return {
+      right: rightOf(n, { short: narrow, readyTip }),
+      dep: depMark(n),
+      tail: tailOf(n),
+      mark: closedMark(n),
+      labels: narrow ? { chips: [], more: 0 } : labelsOf(n),
+      closed,
+      strong: !closed && (isContainer(n) || ['Epic', 'Feature'].includes(n.upstream?.issue_type)),
+      canSel: selectable(n).ok,
+      ref: refOf(n),
+      up: upstreamText(n),
+      prog: progressText(n),
+    };
+  });
   const lineLevel = $derived(row.level + ariaBase);
 </script>
 
@@ -61,7 +72,7 @@
     class:selected
     class:hidden={n.hidden}
     class:ancestor={n.ancestor_only}
-    class:closed={isClosed(n)}
+    class:closed={slots.closed}
     role="treeitem"
     tabindex="-1"
     aria-level={lineLevel}
@@ -71,24 +82,24 @@
     onclick={onrow}
   >
     {@render guides(row.indent)}
-    {#if selecting}<span class="check" aria-hidden="true">{canSel ? (selected ? '\u{F0135}' : '\u{F0131}') : ''}</span>{/if}
+    {#if selecting}<span class="selbox" aria-hidden="true">{slots.canSel ? (selected ? '\u{F0135}' : '\u{F0131}') : ''}</span>{/if}
     {@render disclosure(row.open, row.hasKids)}
     {#if row.level >= 5}<span class="ltag">L{row.level}</span>{/if}
     <KindGlyph node={n} dim={!!n.upstream?.deleted} />
-    {#if refOf(n)}<span class="ref">{refOf(n)}</span>{/if}
+    {#if slots.ref}<span class="ref">{slots.ref}</span>{/if}
     {#if n.upstream?.issue_type}<span class="type">{n.upstream.issue_type}</span>{/if}
-    <span class="title" class:strong>{titleOf(n)}</span>
+    <span class="title" class:strong={slots.strong}>{titleOf(n)}</span>
     {#if n.hidden}<span class="type">Hidden</span>{/if}
     <span class="grow"></span>
-    {#if upstreamText(n)}<span class="up">{upstreamText(n)}</span>{/if}
-    {#each labels.chips as l (l)}<span class="label">{l}</span>{/each}
-    {#if labels.more}<span class="up">+{labels.more}</span>{/if}
-    {#if dep}<span class="dep" use:tooltip={dep.tip}><span aria-hidden="true">{'\u{F0337}'}</span>{#if !narrow} {dep.text}{:else}<span class="sr">{dep.text}</span>{/if}</span>{/if}
-    {#if progressText(n)}<span class="prog">{progressText(n)}</span>{/if}
-    {#if tail}<span class="tail" class:warn={tail.warn}>{tail.text}</span>{/if}
-    {#if mark}<span class="mark" use:tooltip={mark.tip}>⚠ {mark.text}</span>{/if}
+    {#if slots.up}<span class="up">{slots.up}</span>{/if}
+    {#each slots.labels.chips as l (l)}<span class="label">{l}</span>{/each}
+    {#if slots.labels.more}<span class="up">+{slots.labels.more}</span>{/if}
+    {#if slots.dep}<span class="dep" use:tooltip={slots.dep.tip}><span aria-hidden="true">{'\u{F0337}'}</span>{#if !narrow} {slots.dep.text}{:else}<span class="sr">{slots.dep.text}</span>{/if}</span>{/if}
+    {#if slots.prog}<span class="prog">{slots.prog}</span>{/if}
+    {#if slots.tail}<span class="tail" class:warn={slots.tail.warn}>{slots.tail.text}</span>{/if}
+    {#if slots.mark}<span class="mark" use:tooltip={slots.mark.tip}>⚠ {slots.mark.text}</span>{/if}
     <span class="right" class:narrow>
-      {#if right?.chip}<AppChip chip={right.chip} onopen={onchip} />{:else if right?.rollup}<span class="rollup" use:tooltip={right.tip}>{right.rollup}</span>{/if}
+      {#if slots.right?.chip}<AppChip chip={slots.right.chip} onopen={onchip} />{:else if slots.right?.rollup}<span class="rollup" use:tooltip={slots.right.tip}>{slots.right.rollup}</span>{/if}
     </span>
   </div>
 {:else if row.kind === 'project'}
@@ -201,7 +212,7 @@
     color: var(--color-text-muted);
     cursor: pointer;
   }
-  .check {
+  .selbox {
     flex: none;
     width: 16px;
     color: var(--color-focus);

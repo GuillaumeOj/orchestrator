@@ -1,5 +1,5 @@
 <script>
-  import { dayHm } from '../../lib/format.js';
+  import { dayHm, ppAmount } from '../../lib/format.js';
   // Work › details panel (notes §3): the focused node, first painted from the tree's WorkNode; body and history
   // from `work_node` (cached by id + updated_at_ms, F36). Kinds: issue, container, project row, multi-selection.
   // Item text is untrusted: plain text only; only "Open in GitHub ↗" / "Open in Linear ↗" navigates.
@@ -62,15 +62,18 @@
     if (!node) return [];
     const out = [];
     if (feature) out.push({ id: 'feature', label: feature.agent ? 'Show session' : 'Show feature', key: 'g' });
-    if (offered(program) && (isContainer(node) || openProgram))
-      out.push({ id: 'program', label: openProgram ? 'Open program' : 'Run as program', key: 'p', tip: disabledTip(program), disabled: !usable(program) });
+    const prog = offered(program)
+      ? { id: 'program', label: openProgram ? 'Open program' : 'Run as program', key: 'p', tip: disabledTip(program), disabled: !usable(program) }
+      : null;
+    // Containers and program roots lead with the program; items lead with the starts.
+    const progFirst = isContainer(node) || openProgram;
+    if (prog && progFirst) out.push(prog);
     for (const [w, label, key] of [
       ['team', 'Start team run', 't'],
       ['solo', 'Start solo', 'a'],
     ])
       if (offered(a(w))) out.push({ id: w, label, key, tip: disabledTip(a(w)), disabled: !usable(a(w)) });
-    if (offered(program) && !isContainer(node) && !openProgram)
-      out.push({ id: 'program', label: 'Run as program', key: 'p', tip: disabledTip(program), disabled: !usable(program) });
+    if (prog && !progFirst) out.push(prog);
     if (node.url) out.push({ id: 'open', label: `Open in ${tracker} ↗`, key: 'o' });
     else if (trackerOf(node) === 'local') out.push({ id: 'open', label: 'Open file', key: 'o' });
     return out;
@@ -131,7 +134,8 @@
       </div>
       {#if chip}<div class="chipline"><AppChip {chip} onopen={(c) => act('chip', c)} /></div>{/if}
       {#if node.upstream?.deleted}<p class="warn">Deleted in {tracker}. Only Show feature is left.</p>{/if}
-      {#if factsOf(node)}<p class="facts">{factsOf(node)}</p>{/if}
+      {@const facts = factsOf(node)}
+      {#if facts}<p class="facts">{facts}</p>{/if}
 
       {#if detail?.body || !detail || detail.error}
         <section>
@@ -222,7 +226,7 @@
               <div class="deprow"><span class="dl muted">{label}</span><div class="dv"><span>{exactRange(est[m])}</span><span class="muted">{basisText(est[m], m, est.size ?? null, trail[0]?.title ?? node.project)}</span></div></div>
             {/if}
           {/each}
-          {#if est.room_pp != null}<div class="deprow"><span class="dl muted">Room</span><span>{Number(est.room_pp).toFixed(1)} pp left this week</span></div>{/if}
+          {#if est.room_pp != null}<div class="deprow"><span class="dl muted">Room</span><span>{ppAmount(est.room_pp)} left this week</span></div>{/if}
         {:else if offered(program)}
           <p class="muted">Run as program to see the plan's estimate.</p>
         {:else}<p class="muted">No estimate yet.</p>{/if}
@@ -232,7 +236,8 @@
 
   {#if selection}
     <div class="acts">
-      <button type="button" class="btn primary" disabled={selection.length < 2} use:tooltip={selection.length < 2 ? 'Select 2 or more, or use Run as program on the parent' : { label: 'Run selected as program', key: 'p' }} onclick={() => act('program-selected')}>Run selected as program</button>
+      <!-- The pane passes a selection of 2 or more only. -->
+      <button type="button" class="btn primary" use:tooltip={{ label: 'Run selected as program', key: 'p' }} onclick={() => act('program-selected')}>Run selected as program</button>
       <button type="button" class="btn" use:tooltip={{ label: 'Clear', key: 'Esc' }} onclick={() => act('clear')}>Clear</button>
     </div>
   {:else if node && buttons.length}
@@ -343,9 +348,6 @@
   }
   .ktitle.block {
     display: block;
-  }
-  .grow {
-    flex: 1;
   }
   .deprow {
     display: flex;
