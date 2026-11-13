@@ -219,7 +219,7 @@
     if (!v) return [];
     const nr = notionReady;
     return [
-      { id: 'work', icon: '\u{F0570}', label: 'Show source in Work', key: 'w', disabled: !run?.source || !!run.source.deleted, reason: 'No tracker item for this feature', run: showInWork },
+      { id: 'work', icon: '\u{F0570}', label: 'Show source in Work', key: 'w', disabled: !canShowInWork, reason: 'No tracker item for this feature', run: showInWork },
       { id: 'canvas', icon: '\u{F1546}', label: 'Canvas', key: 'c', disabled: !run, reason: 'No team run yet', run: () => openCanvas(run.team_id, v.feature.project_id) },
       { separator: true },
       {
@@ -235,6 +235,7 @@
     ];
   });
 
+  const canShowInWork = $derived(!!run?.source && !run.source.deleted);
   const showInWork = () => openWork({ projects: [v.feature.project_id], reveal: run?.source?.node ?? null });
 
   /** `b`: Tasks takes the focus (the first time after the update, the Board's removal toast too). */
@@ -271,7 +272,7 @@
     const k = e.key;
     if (k === 'e') openDoc();
     else if (k === 'b') focusTasks();
-    else if (k === 'w' && run?.source && !run.source.deleted) showInWork();
+    else if (k === 'w' && canShowInWork) showInWork();
     else if (k === 'c' && run) openCanvas(run.team_id, v.feature.project_id);
     else if (k === 'p' && run && !runFinished(run.status)) act(paused ? 'resume' : 'pause');
     else if (k === 'm') msgBox?.focus();

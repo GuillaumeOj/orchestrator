@@ -70,6 +70,7 @@ describe('GROUPS (design-notes §7)', () => {
       'Agent pane',
       'Decisions & chat',
       'Mission control',
+      'Work browser',
       'Feature',
       'Feature › Tasks (focused)',
       'Project',

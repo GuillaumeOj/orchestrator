@@ -34,6 +34,7 @@ import {
   updateActions,
 } from './update.js';
 import { openWork } from './work.js';
+import { scopeTitle } from './workmodel.js';
 
 /** The dock's share of the work column when nothing is saved: agents need rows. */
 const DOCK_HEIGHT = 0.45;
@@ -327,6 +328,8 @@ export function paneProject(spec) {
   if (spec.type === 'feature')
     return features().find((f) => f.id === spec.featureId)?.project_id ?? spec.projectId ?? null;
   if (['project', 'diff', 'trust', 'canvas', 'editor', 'shell'].includes(spec.type)) return spec.projectId ?? null;
+  // A Work tab on one project is that project's; on several (or all) it is app-wide.
+  if (spec.type === 'work') return spec.projects?.length === 1 ? spec.projects[0] : null;
   return null;
 }
 
@@ -512,6 +515,7 @@ function title(spec) {
       if (spec.type === 'trust') return `trust · ${spec.projectId}`;
       if (spec.type === 'feature') return features().find((f) => f.id === spec.featureId)?.slug ?? 'feature';
       if (spec.type === 'canvas') return spec.teamId ? `Team: ${spec.teamId}` : 'Team canvas';
+      if (spec.type === 'work') return scopeTitle(spec.projects ?? null, (spec.projects ?? []).map(projectName));
       if (spec.type === 'diff')
         return `diff · ${
           spec.branch ??
@@ -867,7 +871,7 @@ function leaveWindow() {
 }
 
 /** An open pane gets the focus (a jump, a link): like a new tab, it gives the window way. */
-function showPane(id) {
+export function showPane(id) {
   leaveWindow();
   focusPane(id);
 }
@@ -1033,10 +1037,11 @@ export function askRemoveProject(projectId) {
 /** P2: a feature's pane (docs, tasks, team, timeline), one per feature. */
 export function openFeature(featureId, doc = null, anchor = null, timeline = null, land = null) {
   const existing = findPane((s) => s.type === 'feature' && s.featureId === featureId);
+  const landReq = land && { ...land, seq: Date.now() };
   if (existing) {
     if (doc) app.panes[existing] = { ...app.panes[existing], doc, anchor };
     if (timeline) app.panes[existing].timeline = timeline;
-    if (land) app.panes[existing] = { ...app.panes[existing], land: { ...land, seq: Date.now() } };
+    if (landReq) app.panes[existing] = { ...app.panes[existing], land: landReq };
     return showPane(existing);
   }
   const f = features().find((x) => x.id === featureId);
@@ -1046,7 +1051,7 @@ export function openFeature(featureId, doc = null, anchor = null, timeline = nul
     projectId: f?.project_id,
     ...(doc ? { doc, anchor } : {}),
     ...(timeline ? { timeline } : {}),
-    ...(land ? { land: { ...land, seq: Date.now() } } : {}),
+    ...(landReq ? { land: landReq } : {}),
   });
 }
 
@@ -1084,11 +1089,9 @@ async function taskFeature(projectId, id, hint) {
     hint.feature && all.find((f) => f.id === hint.feature || (f.project_id === projectId && f.slug === hint.feature));
   if (named) return named;
   if (hint.run) return null;
-  for (const f of all.filter((x) => x.project_id === projectId && x.run)) {
-    const v = await invoke('feature_view', { feature: f.id }).catch(() => null);
-    if (v?.tasks?.some((t) => String(t.id) === id)) return f;
-  }
-  return null;
+  const cands = all.filter((x) => x.project_id === projectId && x.run);
+  const views = await Promise.all(cands.map((f) => invoke('feature_view', { feature: f.id }).catch(() => null)));
+  return cands.find((_, i) => views[i]?.tasks?.some((t) => String(t.id) === id)) ?? null;
 }
 
 /** The first time an old Board path is used (Feature `b`, the inspector): one toast, then never (notes §1.3). */
@@ -2076,10 +2079,17 @@ export function commands() {
       label: 'Launch a team on a feature…',
       run: () => (app.overlay = { kind: 'launch', projectId: contextProject()?.id ?? null }),
     },
+    // Work browser (notes §1.2, §12.7): leader ⌘; b opens it on the context project (else all).
+    { id: 'work.browser', label: 'Work browser', run: () => openWork({ projects: workContext() }) },
+    { id: 'work.open', label: 'Open Work (all projects)', run: () => openWork({ projects: null }) },
+    { id: 'work.find', label: 'Find work item…', run: () => openWork({ projects: workContext(), find: true }) },
     {
-      id: 'work.open',
-      label: contextProject() ? `Open Work (${contextProject().name})` : 'Open Work (all projects)',
-      run: () => openWork({ projects: contextProject() ? [contextProject().id] : null }),
+      id: 'work.refresh',
+      label: 'Refresh Work',
+      run: () =>
+        Promise.all((workContext() ?? [null]).map((project) => invoke('work_refresh', { project }))).catch((e) =>
+          toast(`Could not refresh: ${errText(e)}`, { kind: 'error' }),
+        ),
     },
     { id: 'shell.new', label: 'New shell (dock)', run: () => openShell() },
     { id: 'dock.toggle', label: 'Show or hide the dock', run: () => toggleDock() },
@@ -2165,6 +2175,15 @@ export function commands() {
   }
   for (const c of list) c.hint = hint(c.id);
   return list;
+}
+
+/** The project Work opens on from the leader / palette: the focused pane's, else the context's, else all. */
+function workContext() {
+  // A Work tab in focus keeps its own scope (several projects, or all).
+  const s = focusedSpec();
+  if (s?.type === 'work') return s.projects ?? null;
+  const id = paneProject(s) ?? contextProjectId();
+  return id ? [id] : null;
 }
 
 export function run(commandId) {

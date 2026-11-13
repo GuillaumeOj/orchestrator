@@ -12,7 +12,6 @@ export const BACKENDS = [
 ];
 
 const backendOf = (id) => BACKENDS.find((b) => b.id === id) ?? BACKENDS[0];
-export const backendLabel = (id) => backendOf(id).label;
 export const remoteName = (id) => backendOf(id).remote;
 
 /** The mapping rows: each Linear state with its column (saved, else its default). */

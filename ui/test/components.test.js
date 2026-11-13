@@ -44,7 +44,9 @@ describe('components', () => {
   it('sidebar lists solo sessions under their project', () => {
     const { container, getByText } = render(Sidebar);
     expect(getByText('shop-api')).toBeTruthy();
-    const rows = [...container.querySelectorAll('[data-row]')].map((r) => r.textContent.replace(/\s+/g, ' ').trim());
+    const rows = [...container.querySelectorAll('[data-row]:not(.sub)')].map((r) =>
+      r.textContent.replace(/\s+/g, ' ').trim(),
+    );
     expect(rows[0]).toMatch(/^▾ shop-api/);
     expect(rows[1]).toMatch(/back-1 62%/);
     expect(rows[3]).toMatch(/blog/);

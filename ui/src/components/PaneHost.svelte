@@ -12,6 +12,7 @@
   import SetupPane from '../panes/SetupPane.svelte';
   import TeamCanvasPane from '../panes/TeamCanvasPane.svelte';
   import TermPaneView from '../panes/TermPaneView.svelte';
+  import WorkPane from '../panes/WorkPane.svelte';
 
   /** @type {{ paneId: string, id?: string, labelledby?: string }} */
   let { paneId, id, labelledby } = $props();
@@ -29,6 +30,7 @@
     {:else if spec.type === 'canvas'}<TeamCanvasPane {paneId} />
     {:else if spec.type === 'feature'}<FeaturePane {paneId} />
     {:else if spec.type === 'report'}<ReportPane {paneId} />
+    {:else if spec.type === 'work'}<WorkPane {paneId} />
     {:else if spec.type === 'setup'}<SetupPane />{/if}
   </div>
 {/if}

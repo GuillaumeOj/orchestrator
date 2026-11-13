@@ -2,8 +2,8 @@
 // test/feature-source.test.js. The input is `run.source` (api-contract §2).
 import { remoteName } from './linear.js';
 
-const TRACKERS = { github: 'GitHub', linear: 'Linear', local: 'Local' };
-export const trackerName = (t) => TRACKERS[t] ?? remoteName(t);
+export const TRACKERS = { github: 'GitHub', linear: 'Linear', local: 'Local' };
+export const trackerKindLabel = (t) => TRACKERS[t] ?? remoteName(t);
 
 /**
  * What the header shows. `kind`: 'source' (a tracker item), 'brief' (the Overwatch's brief) or 'none' (started by hand).
@@ -21,7 +21,7 @@ export function sourceModel(run, brief = null) {
         }
       : { kind: 'none', title: 'No tracker item · started by you', canShowInWork: false };
   }
-  const tracker = trackerName(s.tracker);
+  const tracker = trackerKindLabel(s.tracker);
   const crumbs = (s.breadcrumb ?? []).map((c) => (c.title && c.title !== c.ref ? `${c.ref} ${c.title}` : c.ref));
   const trail = [
     crumbs.length ? `in ${crumbs.join(' › ')}` : null,
@@ -58,7 +58,7 @@ export function sourceModel(run, brief = null) {
 export function tasksSummary(source, tasks) {
   const n = `${tasks.filter((t) => t.status === 'done').length} of ${tasks.length} done`;
   if (source && source.tracker !== 'local' && source.write_back !== 'off')
-    return `${trackerName(source.tracker)} sub-issues of ${source.ref} · ${n}`;
+    return `${trackerKindLabel(source.tracker)} sub-issues of ${source.ref} · ${n}`;
   return `Local · ${n}`;
 }
 
