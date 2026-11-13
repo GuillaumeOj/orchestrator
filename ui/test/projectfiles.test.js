@@ -112,11 +112,28 @@ describe('Project settings › Files', () => {
   });
 
   it('keeps Tracker as the default section', async () => {
+    replies.tracker_settings = {
+      settings: {
+        tracker: { kind: 'local', backlog_glob: null },
+        ready: { kind: 'local' },
+        write_back: {
+          enabled: true,
+          assign_me: false,
+          running_label: 'orch:running',
+          board_status: null,
+          linear_state: null,
+        },
+        refresh_secs: 600,
+        group_by_milestone: true,
+        task_states: null,
+      },
+      migration_notice: null,
+    };
+    replies.tracker_options = { matches: 0 };
     app.window = { kind: 'project-settings', projectId: 'shop-api' };
-    const { findByText } = render(ProjectSettingsWindow);
-    await findByText(/Where this project's work lives/, {}, { timeout: 2000 }).catch(() =>
-      findByText(/Could not read shop-api's tracker/),
-    );
+    const { findByText, queryByText } = render(ProjectSettingsWindow);
+    await findByText(/Where this project's work lives/);
+    expect(queryByText(/Could not read shop-api's tracker/)).toBeNull();
   });
 
   it('hides the write hint when all rows are read only and the live note at 0 agents', async () => {

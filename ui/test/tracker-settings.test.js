@@ -342,6 +342,41 @@ describe('Project settings › Tracker', () => {
     expect(txt(container)).not.toContain('Unsaved changes');
   });
 
+  it('a switch to Linear with tasks asks (D8) instead of claiming a save; the choice is sent as migrate', async () => {
+    replies.tracker_options = LIN_OPTS;
+    replies.tracker_settings_set = (a) =>
+      a.migrate
+        ? { settings: a.settings, migration_notice: null }
+        : { confirm: { kind: 'linear_migrate', open: 2, done: 1 } };
+    const { findByRole, getByRole, container } = open(local());
+    await fireEvent.click(await findByRole('radio', { name: 'Linear' }));
+    await waitFor(() => expect(called('tracker_options').length).toBeGreaterThan(0));
+    await pick(container.querySelector('[aria-labelledby="trk-teams"]'), 'ENG · Engineering');
+    await fireEvent.click(getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(container.querySelector('[data-confirm]')).toBeTruthy());
+    expect(txt(container)).toContain('2 open tasks. 1 done tasks are not pushed.');
+    expect(txt(container)).toContain('Unsaved changes'); // nothing was stored
+    expect(txt(container)).not.toContain('Saved · updated just now');
+    await fireEvent.click(getByRole('button', { name: /^Create 2 open tasks as issues in ENG/ }));
+    await waitFor(() => expect(called('tracker_settings_set')).toHaveLength(2));
+    expect(last('tracker_settings_set')).toMatchObject({
+      migrate: 'push_open',
+      settings: { tracker: { kind: 'linear' } },
+    });
+    await waitFor(() => expect(txt(container)).toContain('Saved · updated just now'));
+    expect(container.querySelector('[data-confirm]')).toBeNull();
+  });
+
+  it('⌘⏎ in the Ready labels field adds the typed label and still saves', async () => {
+    const { findByLabelText, container } = open(github());
+    const labels = await findByLabelText('Labels');
+    await fireEvent.input(labels, { target: { value: 'next' } });
+    await fireEvent.keyDown(labels, { key: 'Enter', metaKey: true });
+    await waitFor(() => expect(called('tracker_settings_set')).toHaveLength(1));
+    expect(last('tracker_settings_set').settings.ready.labels).toEqual(['ready', 'next']);
+    expect(container.querySelector('.tracker')).toBeTruthy();
+  });
+
   it('a repository that is not owner/name is refused before Save', async () => {
     const { findByLabelText, getByRole, container } = open(github());
     await fireEvent.input(await findByLabelText('Repository'), { target: { value: 'shop' } });

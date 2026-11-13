@@ -80,8 +80,11 @@
     if (busy || !saved) return;
     busy = true;
     try {
-      const settings = { ...saved.settings, notion_parent_page: notionPage.trim() || undefined };
-      saved = await invoke('project_settings_set', { project: pid, form: { settings, backend: saved.backend, track_orchestrator_dir: saved.track_orchestrator_dir } });
+      // The backend is the tracker's now, saved by its own section: read the stored one back, or a
+      // Notion save would put this window's stale copy over a tracker saved since it opened.
+      const now = await invoke('project_settings', { project: pid });
+      const settings = { ...now.settings, notion_parent_page: notionPage.trim() || undefined };
+      saved = await invoke('project_settings_set', { project: pid, form: { settings, backend: now.backend, track_orchestrator_dir: now.track_orchestrator_dir } });
       toast(`Saved ${name}'s settings`);
     } catch (e) {
       toast(errText(e), { kind: 'error' });

@@ -34,12 +34,12 @@ export const trackerDefaults = (kind) =>
       ? { kind, teams: [], projects: null }
       : { kind: 'local', backlog_glob: DEFAULT_GLOB };
 
-/** The Ready filter of a kind, with its defaults (notes §10.3); `labels` are the repo's, for `ready`. */
-export function readyDefaults(kind, repoLabels = []) {
+/** The Ready filter of a kind, with its defaults (notes §10.3). GitHub's `ready` label is added once the repo's labels are known. */
+function readyDefaults(kind) {
   if (kind === 'github')
     return {
       kind,
-      labels: repoLabels.includes('ready') ? ['ready'] : [],
+      labels: [],
       milestone: null,
       board_status: null,
       issue_type: null,

@@ -19,7 +19,6 @@
     optionList,
     parseErr,
     REFRESH,
-    readyDefaults,
     readySummary,
     repoOfRemote,
     problems as rules,
@@ -53,6 +52,7 @@
   let touched = $state(false);
   let fieldErrors = $state(/** @type {Record<string, string>} */ ({}));
   let saveError = $state(null);
+  let ask = $state(/** @type {any} */ (null)); // D8: { open, done, settings } while a switch to Linear waits for a choice
 
   let opts = $state(/** @type {any} */ (null)); // tracker_options for the form's tracker
   let optsError = $state(/** @type {any} */ (null));
@@ -168,6 +168,7 @@
   function edit() {
     fieldErrors = {};
     saveError = null;
+    ask = null;
   }
 
   function pickKind(k) {
@@ -185,14 +186,16 @@
 
   function addLabel(v) {
     const n = v.trim().replace(/,$/, '').trim();
-    if (n) form.ready.labels = addTo(form.ready.labels, n);
     labelInput = '';
+    if (!n) return; // a blur with nothing typed is not an edit
+    form.ready.labels = addTo(form.ready.labels, n);
     autoReady = false;
     edit();
   }
   let labelInput = $state('');
   function labelKey(e) {
-    if (e.key === 'Enter' || e.key === ',') {
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) addLabel(labelInput); // ⌘⏎ still saves (the window's key)
+    else if (e.key === 'Enter' || e.key === ',') {
       e.preventDefault();
       e.stopPropagation();
       addLabel(labelInput);
@@ -235,21 +238,41 @@
     }
   }
 
-  async function save() {
+  /**
+   * Stores `settings`. A switch to Linear of a project with tasks answers `{ confirm }` and stores
+   * nothing (D8): it opens the choice and resolves to null; `migrate` is that choice.
+   */
+  async function commit(settings, migrate = null) {
+    const r = await invoke('tracker_settings_set', { project, settings, ...(migrate ? { migrate } : {}) });
+    if (r?.confirm) {
+      ask = { ...r.confirm, settings };
+      return null;
+    }
+    ask = null;
+    return r;
+  }
+
+  /** The saved answer of the core becomes the form (or, with none, the form is what was saved). */
+  function landed(r, settings) {
+    const was = notice;
+    if (r?.settings) adopt(r);
+    else baseline = JSON.stringify(settings);
+    if (was && !r?.migration_notice) notice = null;
+    savedAt = Date.now();
+    clearTimeout(savedTimer);
+    savedTimer = setTimeout(() => (savedAt = 0), 5000);
+  }
+
+  async function save(migrate = null) {
     touched = true;
     if (busy || !valid || !dirty) return;
     busy = true;
     saveError = null;
     fieldErrors = {};
     try {
-      const r = await invoke('tracker_settings_set', { project, settings: $state.snapshot(form) });
-      const was = notice;
-      if (r?.settings) adopt(r);
-      else baseline = json;
-      if (was && !r?.migration_notice) notice = null;
-      savedAt = Date.now();
-      clearTimeout(savedTimer);
-      savedTimer = setTimeout(() => (savedAt = 0), 5000);
+      const settings = $state.snapshot(form);
+      const r = await commit(settings, migrate);
+      if (r) landed(r, settings);
     } catch (e) {
       const x = parseErr(e, errText);
       if (x.field) fieldErrors = { [x.field]: fieldCopy(x.field, x.message) };
@@ -259,8 +282,26 @@
     }
   }
 
+  /** D8: the choice for the tasks of a project moving to Linear: `push_open` or `leave`. */
+  async function answer(migrate) {
+    if (busy || !ask) return;
+    busy = true;
+    saveError = null;
+    const { settings } = ask;
+    try {
+      const r = await commit(settings, migrate);
+      if (r) landed(r, settings);
+    } catch (e) {
+      const x = parseErr(e, errText);
+      saveError = x.message ?? errText(e);
+    } finally {
+      busy = false;
+    }
+  }
+
   export function revert() {
     if (!baseline || baseline === 'null') return;
+    ask = null;
     form = JSON.parse(baseline);
     rows = opts?.states ? stateRows(opts.states, form.task_states) : [];
     fieldErrors = {};
@@ -293,7 +334,8 @@
     const t = $state.snapshot(choice.tracker);
     const settings = t.kind === saved.tracker.kind ? { ...saved, tracker: t } : { ...switchKind(saved, t.kind), tracker: t };
     try {
-      adopt(await invoke('tracker_settings_set', { project, settings }));
+      const r = await commit(settings);
+      if (r) adopt(r);
     } catch (e) {
       saveError = parseErr(e, errText).message ?? errText(e);
     } finally {
@@ -583,9 +625,22 @@
       </div>
     </div>
 
+    {#if ask}
+      <div class="notice" role="alertdialog" aria-label="Move tasks to Linear" data-confirm>
+        <span class="glyph" aria-hidden="true">ⓘ</span>
+        <div class="nbody">
+          <p><b>Move {name}'s tasks to Linear?</b> {ask.open} open task{ask.open === 1 ? '' : 's'}.{ask.done ? ` ${ask.done} done tasks are not pushed.` : ''}</p>
+          <div class="acts">
+            <button class="btn primary" disabled={busy} onclick={() => answer('push_open')}>Create {ask.open} open tasks as issues in {form.tracker.teams.join(', ')}</button>
+            <button class="btn" disabled={busy} onclick={() => answer('leave')}>Leave them out (they stay in the app, not synced)</button>
+            <button class="btn" disabled={busy} onclick={() => (ask = null)}>Cancel</button>
+          </div>
+        </div>
+      </div>
+    {/if}
     {#if saveError}<p class="ferr" role="alert">Could not save: {saveError}</p>{/if}
     <div class="foot">
-      <button class="btn primary" disabled={busy || !dirty || (touched && !valid)} use:tooltip={{ label: 'Save', key: '⌘⏎' }} onclick={save}>{busy ? 'Saving…' : 'Save'}</button>
+      <button class="btn primary" disabled={busy || !dirty || (touched && !valid)} use:tooltip={{ label: 'Save', key: '⌘⏎' }} onclick={() => save()}>{busy ? 'Saving…' : 'Save'}</button>
       <button class="btn" disabled={!dirty} onclick={revert}>Revert</button>
     </div>
   {/if}

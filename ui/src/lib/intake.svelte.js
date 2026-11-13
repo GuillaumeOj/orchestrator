@@ -154,7 +154,7 @@ export async function fixSource(src, refresh = () => refreshIntake([src.project]
   else return refresh();
 }
 
-/** Set up intake (e): Project settings › Intake. */
+/** Set up intake (e): Project settings › Tracker. */
 export const setUpIntake = (project) => openProjectSettings(project, 'tracker');
 
 // ---------------------------------------------------------------- Plan with the Overwatch (notes §8.1)
