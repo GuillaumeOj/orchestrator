@@ -33,8 +33,7 @@
       "app"
     ],
     "icon": [
-      "icons/icon.png",
-      "icons/Orchestrator.icon"
+      "icons/icon.png"
     ]
   }
 }

@@ -8,18 +8,6 @@ description: >
 runs:
   using: composite
   steps:
-    # The Liquid Glass icon (.icon) needs the Xcode 26 actool; macos-latest defaults to an older Xcode.
-    - name: Select Xcode 26
-      shell: bash
-      run: |
-        xcode=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -n 1)
-        if [ -z "$xcode" ]; then
-          echo "::error::No Xcode 26 on this runner (needed to compile Orchestrator.icon)"
-          ls -d /Applications/Xcode*
-          exit 1
-        fi
-        sudo xcode-select -s "$xcode"
-        xcodebuild -version
     - run: rustup toolchain install # from rust-toolchain.toml
       shell: bash
     - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
