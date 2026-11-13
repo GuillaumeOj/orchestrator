@@ -96,6 +96,11 @@ if [ "$accept" = 1 ]; then
     echo "tested_max is already $installed: nothing to change."
     exit 0
   fi
+  # Never lower tested_max (an older claude passing proves nothing about the newer one).
+  if [ "$(printf '%s\n%s\n' "$tested" "$installed" | sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1)" != "$installed" ]; then
+    echo "claude $installed is older than tested_max $tested: nothing changed" >&2
+    exit 1
+  fi
   # Only the value in the SUPPORTED_CLAUDE definition, and only when it is there exactly once.
   pattern='tested_max: Version([0-9]*, *[0-9]*, *[0-9]*)'
   if [ "$(grep -c "$pattern" "$preflight")" != 1 ]; then

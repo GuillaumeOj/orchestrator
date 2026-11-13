@@ -24,13 +24,20 @@ fn claude() -> Option<PathBuf> {
     Some(std::env::var_os("ORCH_LIVE_CLAUDE_BIN").map(PathBuf::from).unwrap_or_else(|| "claude".into()))
 }
 
-fn run(claude: &Path, args: &[&str]) -> String {
+/// `(stdout, stderr)` of `claude <args>`.
+fn run_split(claude: &Path, args: &[&str]) -> (String, String) {
     let o = Command::new(claude)
         .args(args)
         .env("DISABLE_AUTOUPDATER", "1")
         .output()
         .unwrap_or_else(|e| panic!("cannot run {} {}: {e}", claude.display(), args.join(" ")));
-    String::from_utf8_lossy(&o.stdout).into_owned() + &String::from_utf8_lossy(&o.stderr)
+    (String::from_utf8_lossy(&o.stdout).into_owned(), String::from_utf8_lossy(&o.stderr).into_owned())
+}
+
+/// stdout then stderr (the help may go to either).
+fn run(claude: &Path, args: &[&str]) -> String {
+    let (out, err) = run_split(claude, args);
+    out + &err
 }
 
 /// A role that makes `compile` pass every optional flag, for each session mode.
@@ -70,7 +77,14 @@ fn app_args(mode: PermissionMode, session: SessionMode) -> Vec<String> {
 fn every_flag_the_app_passes_is_in_claude_help() {
     let Some(claude) = claude() else { return };
     let help = run(&claude, &["--help"]);
-    let words: Vec<&str> = help.split(|c: char| c.is_whitespace() || c == ',' || c == '<').collect();
+    // Only the option column of each line (`  -r, --resume [value]   description`): a flag
+    // merely mentioned in another option's description must not count as listed.
+    let words: Vec<&str> = help
+        .lines()
+        .map(str::trim)
+        .filter(|l| l.starts_with('-'))
+        .flat_map(|l| l.split("  ").next().unwrap_or(l).split(|c: char| c.is_whitespace() || c == ',' || c == '<'))
+        .collect();
     let mut flags: Vec<String> =
         [SessionMode::New("s".into()), SessionMode::Resume("s".into()), SessionMode::Fork("s".into())]
             .into_iter()
@@ -118,9 +132,10 @@ fn every_permission_mode_the_app_uses_is_listed() {
 #[ignore = "needs a real claude: ORCH_LIVE_CLAUDE=1 … -- --ignored (no quota)"]
 fn auth_status_json_has_the_fields_the_app_reads() {
     let Some(claude) = claude() else { return };
-    let out = run(&claude, &["auth", "status", "--json"]);
+    // stdout only: a warning on stderr must not break the JSON.
+    let (out, err) = run_split(&claude, &["auth", "status", "--json"]);
     let v: serde_json::Value = serde_json::from_str(out.trim())
-        .unwrap_or_else(|e| panic!("claude auth status --json no longer prints JSON ({e}): {out}"));
+        .unwrap_or_else(|e| panic!("claude auth status --json no longer prints JSON ({e}): {out}{err}"));
     for field in ["loggedIn", "authMethod"] {
         assert!(v.get(field).is_some(), "claude auth status --json lost the `{field}` field: {v}");
     }
