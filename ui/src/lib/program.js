@@ -17,6 +17,12 @@ export function refOfId(id) {
   return colon >= 0 ? s.slice(colon + 1) : s;
 }
 
+/** "acme/shop" from a GitHub node id ("gh:acme/shop#12", "gh-milestone:acme/shop/3"); '' for other trackers. */
+export function repoOfId(id) {
+  const m = /^gh(?:-milestone)?:([^/\s#]+\/[^/\s#]+)/.exec(String(id ?? ''));
+  return m ? m[1] : '';
+}
+
 /** The tracker of a node id, in copy: GitHub, Linear, Local (else "the tracker"). */
 export const trackerOfId = (id) => trackerName({ id });
 
@@ -35,27 +41,57 @@ const cutSet = (p) => new Set((p?.cut ?? []).map(([a, b]) => `${a}>${b}`));
 /** The feature's number in the plan (1-based, row order). */
 export const numberOf = (p, key) => (p?.features ?? []).findIndex((f) => f.key === key) + 1;
 
-/** The edges a feature waits on (cut ones left out), with the waited-on feature's number and skip. */
+/**
+ * The edges a feature waits on (cut ones left out), with the waited-on feature's number and skip. An edge on an
+ * item left out because it already runs (`source: "external"`, from `x:<run id>`) has `external` and the item's
+ * `ref` ("#13", the first of its items) instead of a number; externals come last.
+ */
 export function depsOf(p, key) {
   const cut = cutSet(p);
   const byKey = new Map((p?.features ?? []).map((f, i) => [f.key, { f, n: i + 1 }]));
   const seen = new Set();
   const out = [];
   for (const e of p?.edges ?? []) {
-    if (e.to !== key || cut.has(`${e.from}>${e.to}`) || seen.has(e.from) || !byKey.has(e.from)) continue;
+    if (e.to !== key || cut.has(`${e.from}>${e.to}`) || seen.has(e.from)) continue;
+    const items = e.items ?? [];
+    if (e.source === 'external' || String(e.from).startsWith('x:')) {
+      seen.add(e.from);
+      const ref = items[0] ? refOfId(items[0]) : '';
+      out.push({
+        key: e.from,
+        n: Number.POSITIVE_INFINITY,
+        external: true,
+        ref,
+        skipped: false,
+        source: 'external',
+        items,
+        slug: ref,
+      });
+      continue;
+    }
+    if (!byKey.has(e.from)) continue;
     seen.add(e.from);
     const { f, n } = byKey.get(e.from);
-    out.push({ key: e.from, n, skipped: !!f.skip, source: e.source, items: e.items ?? [], slug: f.slug });
+    out.push({ key: e.from, n, skipped: !!f.skip, source: e.source, items, slug: f.slug });
   }
   return out.sort((a, b) => a.n - b.n);
 }
 
-/** "first" · "after 1" · "after 1, 2" · "after 1 (skipped)"; a skipped row: "first (skipped)". */
+/**
+ * "first" · "after 1" · "after 1, 2" · "after 1 (skipped)" · "after #13 merges" (an item running outside the
+ * program); a skipped row: "first (skipped)".
+ */
 export function orderText(p, f) {
   const deps = depsOf(p, f.key);
-  const base = deps.length
-    ? `after ${deps.map((d) => d.n).join(', ')}${deps.every((d) => d.skipped) ? ' (skipped)' : ''}`
-    : 'first';
+  const inner = deps.filter((d) => !d.external);
+  const outer = deps.filter((d) => d.external);
+  const parts = [
+    inner.length ? `after ${inner.map((d) => d.n).join(', ')}${inner.every((d) => d.skipped) ? ' (skipped)' : ''}` : '',
+    outer.length
+      ? `${inner.length ? '' : 'after '}${outer.map((d) => d.ref || 'a running item').join(', ')} ${outer.length > 1 ? 'merge' : 'merges'}`
+      : '',
+  ].filter(Boolean);
+  const base = parts.length ? parts.join(', ') : 'first';
   return f.skip ? `${base} (skipped)` : base;
 }
 
@@ -72,7 +108,7 @@ export function orderNote(p, f) {
   const deps = depsOf(p, f.key).filter((d) => !d.skipped);
   if (!deps.length) return '';
   if (deps.every((d) => d.source === 'sequential')) return 'Sequential';
-  const tracker = deps.filter((d) => d.source === 'tracker' && d.items.length);
+  const tracker = deps.filter((d) => (d.source === 'tracker' || d.external) && d.items.length);
   if (tracker.length) return `⛓ ${tracker.map((d) => blocksText(d.items)).join(', ')}`;
   return 'Added by you';
 }
@@ -85,6 +121,7 @@ export function orderTip(p, f) {
     .map((d) => {
       if (d.source === 'sequential') return `Sequential: after ${d.slug}`;
       if (d.source === 'user') return `Added by you: after ${d.slug}`;
+      if (d.external) return `${d.ref || 'The item'} already runs outside this program: waits for its merge`;
       return `${blocksText(d.items) || `after ${d.slug}`} in ${trackerOfId(d.items[0])}${d.skipped ? ' (skipped: no wait)' : ''}`;
     })
     .join(' · ');
@@ -461,12 +498,29 @@ const COUNT_WORDS = [
   ['skipped', 'skipped'],
 ];
 
-/** Counts as parts: "1 of 3 merged", then running, PR open, waiting, queued, failed, skipped (non-zero). */
-export function countParts(row) {
+/**
+ * Counts as parts: "1 of 3 merged", then running, PR open, waiting, queued, failed, skipped (non-zero).
+ * `short` (rows under 880 px, the 1280 board): "0/3 merged · 1 running · 2 more" (the first count, the rest summed).
+ */
+export function countParts(row, { short = false } = {}) {
   const c = row?.counts ?? {};
-  const out = [{ key: 'merged', text: `${c.merged ?? 0} of ${progressOf(row).length} merged` }];
-  for (const [k, w] of COUNT_WORDS) if (c[k] > 0) out.push({ key: k, text: `${c[k]} ${w}`, error: k === 'failed' });
-  return out;
+  const total = progressOf(row).length;
+  const out = [
+    { key: 'merged', text: short ? `${c.merged ?? 0}/${total} merged` : `${c.merged ?? 0} of ${total} merged` },
+  ];
+  const rest = COUNT_WORDS.filter(([k]) => c[k] > 0).map(([k, w]) => ({
+    key: k,
+    text: `${c[k]} ${w}`,
+    error: k === 'failed',
+    n: c[k],
+  }));
+  if (!short || rest.length <= 2) return [...out, ...rest.map(({ n: _, ...p }) => p)];
+  const [first, ...more] = rest;
+  return [
+    ...out,
+    { key: first.key, text: first.text, error: first.error },
+    { key: 'more', text: `${more.reduce((s, p) => s + p.n, 0)} more`, error: more.some((p) => p.error) },
+  ];
 }
 
 /** Progress segments: one per feature not skipped, filled when merged. */

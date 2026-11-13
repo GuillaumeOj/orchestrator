@@ -79,9 +79,17 @@
     !view.loaded ||
       (!(view.kids.get('roots') ?? []).length && Object.values(view.status).some((s) => s.status === 'refreshing' && !s.refreshed_at_ms)),
   );
+  const noRoots = $derived(view.loaded && !firstLoad && !(view.kids.get('roots') ?? []).length && !view.focusRoot);
   const rootsTotal = $derived((view.kids.get('roots') ?? []).length + (view.more.roots?.left ?? 0));
+  /** A filtered tree's count (§4.2): the loaded matches, ancestors kept for the hierarchy and team tasks not counted. */
+  const match = $derived.by(() => {
+    if (!narrowed(view.filter)) return null;
+    let items = 0;
+    for (const n of view.nodes.values()) if (!n.ancestor_only && !n.team_task) items++;
+    return { items: items + (view.more.roots?.left ?? 0), filters: nFilters };
+  });
   const status = $derived(
-    headerStatus(view.status, { now, firstLoad, names: Object.fromEntries(view.scope.map((p) => [p.id, p.label])), rootsTotal }),
+    headerStatus(view.status, { now, firstLoad, names: Object.fromEntries(view.scope.map((p) => [p.id, p.label])), rootsTotal, match }),
   );
 
   /** Ready, not hidden, per project (the project row's "3 ready"): SourceStatus.counts (contract §2) when the
@@ -543,6 +551,8 @@
     if (k === 'l' || k === 'ArrowRight') return run(right);
     if (k === 'Enter') {
       if (keyIgnored(e, { controls: true })) return;
+      // S8: nothing matches the filters; ⏎ is Reset filters.
+      if (!searching && noRoots && narrowed(view.filter)) return run(() => view.resetFilters());
       return run(() => activate(cur, true));
     }
     if (k === ' ') {
@@ -562,6 +572,11 @@
       return;
     }
     if (!n) return;
+    // Deleted upstream (S14): only Show feature is left.
+    if (n.upstream?.deleted) {
+      if (k === 'g' && featureOf(n)) run(() => showFeature(n));
+      return;
+    }
     if (k === 'x' && !searching) return run(() => view.select(n));
     if (k === 't') return run(() => start(n, 'team'));
     if (k === 'a') return run(() => start(n, 'solo'));
@@ -573,10 +588,14 @@
   }
 
   const hints = $derived(
-    hintsFor(cur, { selection: view.selection?.ids.length ?? 0, focusMode: !!view.focusRoot, searching, details: view.detailsOpen }),
+    !searching && noRoots && narrowed(view.filter)
+      ? [
+          ['⏎', 'reset filters'],
+          ['/', 'search'],
+        ]
+      : hintsFor(cur, { selection: view.selection?.ids.length ?? 0, focusMode: !!view.focusRoot, searching }),
   );
   const singleLines = $derived(view.multi ? [] : [...lines].map(([pid, l]) => ({ pid, ...l })));
-  const noRoots = $derived(view.loaded && !firstLoad && !(view.kids.get('roots') ?? []).length && !view.focusRoot);
 </script>
 
 {#snippet hiddenNote()}
@@ -702,7 +721,10 @@
           {#if narrowed(view.filter)}
             <p class="muted">{noMatchText(nFilters || 1, scopeNames)} · <button type="button" class="link" onclick={() => view.resetFilters()}>Reset filters</button></p>
           {:else}
-            {#each view.scope as p (p.id)}<p class="muted">{emptyText(p)}</p>{/each}
+            {#each view.scope as p (p.id)}
+              {@const e = emptyText(p)}
+              <p class="muted">{e.text}{#if e.link}<button type="button" class="link" onclick={() => openUrl(e.link.url)}>{e.link.label}</button>{e.after}{/if}</p>
+            {/each}
           {/if}
         </div>
       {:else}

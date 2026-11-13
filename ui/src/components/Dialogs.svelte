@@ -29,6 +29,8 @@
   const o = $derived(app.overlay);
   // The dialogs keep their small sizes in the window shell (design-notes §3.3).
   const WIDE = { w: 560, h: null };
+  // Launch / New session prefilled from Work or a brief: 600 at both widths (board ii-dialogs-prefilled).
+  const PREFILLED = { w: 600, h: null };
   const SMALL = { w: 420, h: null };
   const DIALOG_MIN_W = 320;
   let busy = $state(false);
@@ -334,16 +336,21 @@
   {/if}
   {#if stale}<p class="err" role="alert" data-stale>{staleBanner(stale)}</p>{/if}
 {/snippet}
+{#snippet scopeNote()}
+  <!-- Improve-intake notes §5.2: under the brief, the open sub-issues that are part of the run's scope. -->
+  {#if o.origin?.kind === 'intake'}
+    {@const sub = subIssuesLine(o.origin.open_sub_issues)}
+    {#if sub}<p class="muted note" data-scope>{sub} <button type="button" class="linkbtn" onclick={runAsProgramInstead}>Run as program instead</button></p>{/if}
+  {/if}
+{/snippet}
 {#snippet intakeNote(mode)}
   {#if o.origin?.kind === 'intake'}
-    <!-- Improve-intake notes §5.2: scope line, ran before, untrusted text, blocked, write-back, estimate. -->
+    <!-- Improve-intake notes §5.2, just above the buttons: ran before, untrusted text, blocked, write-back, estimate. -->
     {@const org = o.origin}
-    {@const sub = subIssuesLine(org.open_sub_issues)}
     {@const ran = ranBeforeLine(org.ran_before)}
     {@const tname = org.tracker ?? org.source}
     {@const blocked = blockedLine(org.blocked_by_open, tname)}
     {@const est = o.item ? dialogEstimate(o.item, mode, projects().find((p) => p.id === o.item.project)?.name) : ''}
-    {#if sub}<p class="muted note" data-scope>{sub} <button type="button" class="linkbtn" onclick={runAsProgramInstead}>Run as program instead</button></p>{/if}
     {#if ran}<p class="muted note" data-ran-before>{ran}</p>{/if}
     <p class="muted note" data-untrusted>This text comes from {trackerName(tname)}. It goes to the agent as part of the brief you send.</p>
     {#if blocked}<p class="note warnline" data-blocked><span aria-hidden="true">{'\u{F0026}'}</span> {blocked}</p>{/if}
@@ -361,7 +368,7 @@
 
 {#if o && ['new-session', 'add-project', 'launch', 'plan', 'delete-agent', 'delete-feature', 'confirm'].includes(o.kind)}
   {#if o.kind === 'new-session'}
-    <FloatingWindow title="New session" size={WIDE} minW={DIALOG_MIN_W} onclose={close} onkeydown={(e) => onKey(e, startSession)}>
+    <FloatingWindow title="New session" size={o.prefill ? PREFILLED : WIDE} minW={DIALOG_MIN_W} onclose={close} onkeydown={(e) => onKey(e, startSession)}>
     <form onsubmit={(e) => (e.preventDefault(), startSession())}>
       {@render fromIntake()}
       <label>Project
@@ -373,7 +380,7 @@
       <label>Task <span class="muted">(first message, optional)</span>
         <textarea class="field" rows={o.prefill ? 12 : 3} bind:value={form.message} bind:this={messageEl} disabled={!!stale} placeholder="What should Claude do?"></textarea>
       </label>
-      {@render intakeNote('solo')}
+      {@render scopeNote()}
       <div class="row">
         <label>Name <!-- svelte-ignore a11y_autofocus --><input class="field" bind:value={form.name} autofocus spellcheck="false" /></label>
         <label>Base branch <input class="field" bind:value={form.base} placeholder={project?.git?.branch ?? 'default'} spellcheck="false" /></label>
@@ -393,6 +400,7 @@
       {#if snap}
         <p class="note"><span style:color={PRESSURE[snap.state]?.color}>{PRESSURE[snap.state]?.icon}</span> Governor {PRESSURE[snap.state]?.label}{app.data?.usage?.shadow ? ' (shadow mode)' : ''} · {liveText(c)} · your own typing is never blocked; app-delivered turns go through the Governor.</p>
       {/if}
+      {@render intakeNote('solo')}
       {#if error}<p class="err">{error}</p>{/if}
       <div class="foot">
         <button type="button" class="btn ghost" onclick={close} use:tooltip={{ label: 'Cancel', key: 'esc' }}>Cancel</button>
@@ -405,7 +413,7 @@
     </form>
     </FloatingWindow>
   {:else if o.kind === 'launch'}
-    <FloatingWindow title="Launch {launchTeam?.team.name ?? 'a team'}" size={WIDE} minW={DIALOG_MIN_W} onclose={close} onkeydown={(e) => onKey(e, launchTeamOnFeature)}>
+    <FloatingWindow title="Launch {launchTeam?.team.name ?? 'a team'}" size={o.prefill ? PREFILLED : WIDE} minW={DIALOG_MIN_W} onclose={close} onkeydown={(e) => onKey(e, launchTeamOnFeature)}>
     <form onsubmit={(e) => (e.preventDefault(), launchTeamOnFeature())}>
       {@render fromIntake()}
       <div class="seg" role="radiogroup" aria-label="Feature">
@@ -431,7 +439,7 @@
       <label>Brief <span class="muted">({o.prefill ? 'the item as markdown' : '3 lines'})</span>
         <textarea class="field" rows={o.prefill ? 12 : 3} bind:value={launch.brief} bind:this={briefEl} disabled={!!stale} placeholder="What to build, the constraints, where the designs are."></textarea>
       </label>
-      {@render intakeNote('team')}
+      {@render scopeNote()}
       <div class="note what">
         <span>• Creates <span class="mono">orch/{launchSlug || '…'}/integration</span> and the lead's worktree on it.</span>
         <span>• The lead drafts spec.md (and ux-brief.md, api-contract.md) in <span class="mono">.orchestrator/features/{launchSlug || '…'}/</span>, then asks for the Spec gate.</span>
@@ -448,6 +456,7 @@
       {#if snap}
         <p class="note"><span style:color={PRESSURE[snap.state]?.color}>{PRESSURE[snap.state]?.icon}</span> Governor {PRESSURE[snap.state]?.label}{app.data?.usage?.shadow ? ' (shadow mode)' : ''} · {liveText(c)}: the lead {c.live >= c.live_cap ? 'queues for a live slot' : 'starts when its first turn is admitted'}.</p>
       {/if}
+      {@render intakeNote('team')}
       {#if error}<p class="err">{error}</p>{/if}
       <div class="foot">
         <button type="button" class="btn ghost" onclick={close} use:tooltip={{ label: 'Cancel', key: 'esc' }}>Cancel</button>

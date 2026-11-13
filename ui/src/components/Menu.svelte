@@ -18,8 +18,9 @@
    */
   /** @type {{ items?: MenuItem[], onselect?: (item: MenuItem) => void, label?: string, disabled?: boolean,
    *           tabindex?: number, heading?: string, hint?: string, onclose?: () => void,
-   *           trigger?: import('svelte').Snippet<[Record<string, any>]> }} */
-  let { items = [], onselect, label = 'More actions', disabled = false, tabindex = undefined, heading = '', hint = '', onclose, trigger } = $props();
+   *           trigger?: import('svelte').Snippet<[Record<string, any>]>, bounds?: HTMLElement | null }} */
+  // `bounds`: the area the popover flips against instead of the window (a task menu stays within the Tasks band).
+  let { items = [], onselect, label = 'More actions', disabled = false, tabindex = undefined, heading = '', hint = '', onclose, trigger, bounds = null } = $props();
 
   const uid = $props.id();
   const menuId = `${uid}-menu`;
@@ -75,7 +76,7 @@
     if (t && pop) {
       const r = t.getBoundingClientRect();
       const h = pop.offsetHeight || items.length * 28 + 8;
-      place = placePopover(r, pop.offsetWidth || 200, h, window.innerWidth, window.innerHeight, 'end');
+      place = placePopover(r, pop.offsetWidth || 200, h, window.innerWidth, window.innerHeight, 'end', bounds?.getBoundingClientRect() ?? null);
     }
     focusRow(0, hi);
   }

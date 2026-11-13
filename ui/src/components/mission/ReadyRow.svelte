@@ -28,7 +28,7 @@
     ...(item.node ? [{ id: 'work', label: 'Show in Work', key: 'w', run: () => onwork() }] : []),
     { id: 'details', label: 'Details', key: 'space', run: () => ondetails() },
     { id: 'source', label: 'Open source', key: 'o', run: () => onsource() },
-    ...(row.hidden ? [] : [{ id: 'hide', label: 'Hide', key: 'x', run: () => onhide() }]),
+    ...(row.hidden ? [] : [{ id: 'hide', label: 'Hide from Ready', key: '⌫', run: () => onhide() }]),
   ]);
 </script>
 

@@ -675,6 +675,8 @@ describe('Mission control: the Ready to start lane', () => {
     const parent = await labels('ready:it_1');
     expect(parent.some((x) => x.includes('Run as program'))).toBe(true);
     expect(parent.some((x) => x.includes('Show in Work'))).toBe(true);
+    // §5.3: "Hide from Ready" with ⌫, as in Work.
+    expect(parent.find((x) => x.includes('Hide'))?.trim()).toBe('Hide from Ready ⌫');
     expect((await labels('ready:it_2')).some((x) => x.includes('Run as program'))).toBe(false);
   });
 
@@ -980,7 +982,19 @@ describe('the prefilled dialogs (notes §5)', () => {
     const lines = [...c.querySelectorAll('.note')].map((n) =>
       n.getAttribute('data-scope') !== null ? 'scope' : n.getAttributeNames().find((a) => a.startsWith('data-')),
     );
-    expect(lines.slice(0, 5)).toEqual(['scope', 'data-ran-before', 'data-untrusted', 'data-blocked', 'data-writeback']);
+    expect(lines.filter(Boolean).slice(0, 5)).toEqual([
+      'scope',
+      'data-ran-before',
+      'data-untrusted',
+      'data-blocked',
+      'data-writeback',
+    ]);
+    // The scope line stays under the brief; the others sit just above the buttons (after the dialog's own notes).
+    const follows = (a, b) =>
+      !!(c.querySelector(a).compareDocumentPosition(c.querySelector(b)) & Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(follows('[data-scope]', '.note.what')).toBe(true);
+    expect(follows('.note.what', '[data-ran-before]')).toBe(true);
+    expect(c.querySelector('[data-writeback]').nextElementSibling?.matches('[data-estimate], .foot, .err')).toBe(true);
     expect(text(c.querySelector('[data-scope]'))).toContain(
       "2 sub-issues are part of this run's scope. To run them as separate features, use Run as program. Run as program instead",
     );

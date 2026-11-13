@@ -162,6 +162,23 @@ describe('plan rules (§6.2, §6.4)', () => {
     expect(P.orderNote(seq, seq.features[1])).toBe('Sequential');
   });
 
+  it('a dependency on a left-out running item (B5 external edge): "after #13 merges"', () => {
+    const ext = { from: 'x:run:run-elsewhere', to: 'pf-2', source: 'external', items: [N(13), N(14)] };
+    const p = checkout({ edges: [ext] });
+    expect(P.orderText(p, p.features[1])).toBe('after #13 merges');
+    expect(P.orderNote(p, p.features[1])).toBe('⛓ #13 blocks #14');
+    expect(P.orderTip(p, p.features[1])).toBe('#13 already runs outside this program: waits for its merge');
+    const both = checkout({
+      edges: [
+        { from: 'pf-1', to: 'pf-3', source: 'tracker', items: [N(13), N(15)] },
+        { ...ext, to: 'pf-3' },
+      ],
+    });
+    expect(P.orderText(both, both.features[2])).toBe('after 1, #13 merges');
+    // Cut like any edge.
+    expect(P.orderText(P.cutEdge(p, ext.from, 'pf-2'), p.features[1])).toBe('first');
+  });
+
   it('skip: the total drops, dependents note the skip, the label counts what starts', () => {
     const p = P.toggleSkip(checkout(), 'pf-1');
     expect(p.features[0].skip).toBe(true);
@@ -365,6 +382,13 @@ describe('Programs lane rules (§7.1)', () => {
         .join(' · '),
     ).toBe('1 of 4 merged · 1 failed · 1 skipped');
     expect(P.countParts(f).find((x) => x.key === 'failed').error).toBe(true);
+    // The 1280 rule: "1/5 merged · 1 running · 3 more"; two counts or fewer stay whole.
+    const short = (r) =>
+      P.countParts(r, { short: true })
+        .map((x) => x.text)
+        .join(' · ');
+    expect(short(row())).toBe('1/5 merged · 1 running · 3 more');
+    expect(short(f)).toBe('1/4 merged · 1 failed · 1 skipped');
     expect(P.progressOf(row())).toEqual([true, false, false, false, false]);
   });
 
@@ -439,6 +463,26 @@ const rows = () => [...document.body.querySelectorAll('[data-row]')];
 const startBtn = () => /** @type {HTMLButtonElement} */ (document.body.querySelector('[data-start]'));
 
 describe('plan dialog (§6)', () => {
+  it('"in …" on the From line only under an issue; "Start program" while the first plan loads', async () => {
+    replies.program_plan = () => new Promise(() => {});
+    replies.work_node = {
+      ...ROOT,
+      id: N(13),
+      ref: '#13',
+      title: 'Address step',
+      breadcrumb: [{ id: N(12), ref: '#12', title: 'Checkout v2' }],
+    };
+    replies.teams_view = TEAMS;
+    replies.tracker_settings = TRACKER;
+    openProgramPlan([N(13)], { title: '#13 Address step' });
+    render(ProgramPlanDialog);
+    await settle();
+    expect(text(document.body.querySelector('[data-from]'))).toContain(
+      'From #13 Address step · in #12 Checkout v2 · acme/shop · GitHub',
+    );
+    expect(text(startBtn())).toBe('Start program');
+  });
+
   it('plans on open and shows rows, order, issues, totals, gates and write-back lines', async () => {
     const { dlg } = await openPlan();
     expect(called('program_plan')[0]).toEqual({
@@ -447,7 +491,7 @@ describe('plan dialog (§6)', () => {
       opts: { sequential: false, max_parallel: 2, cut: [] },
     });
     expect(dlg.dataset.planPhase).toBe('planned');
-    expect(text(dlg.querySelector('[data-from]'))).toContain('From #12 Checkout v2 · in v2 · acme/shop · GitHub');
+    expect(text(dlg.querySelector('[data-from]'))).toContain('From #12 Checkout v2 · acme/shop · GitHub');
     expect(rows()).toHaveLength(3);
     expect(text(rows()[0])).toContain('checkout-address');
     expect(text(rows()[0])).toContain('#13 +2');
@@ -699,6 +743,9 @@ describe('Programs lane in Mission control', () => {
     const { c } = await mount();
     const lane = c.querySelector('section[aria-label="Programs"]');
     expect(text(lane.querySelector('.lh'))).toContain('Programs · 1 running');
+    // The program glyph, in the running colour (not ▲).
+    expect(text(lane.querySelector('.lh'))).toContain('\u{F0328}');
+    expect(text(lane.querySelector('.lh'))).not.toContain('▲');
     const r = lane.querySelector('[data-program="prg-1"]');
     expect(text(r)).toContain('Checkout v2');
     expect(text(r)).toContain('from #12 · shop-api');
@@ -794,7 +841,7 @@ describe('Program view', () => {
     expect(text(c.querySelector('h2'))).toBe('Checkout v2 · program');
     expect(text(c.querySelector('[data-status]'))).toBe('running · 0 of 3 merged');
     expect(text(c.querySelector('[data-subline]'))).toBe(
-      'From #12 Checkout v2 ↗ · started 12 Nov 09:40 · 2 at once · by dependencies',
+      'From #12 Checkout v2 · acme/shop ↗ · started 12 Nov 09:40 · 2 at once · by dependencies',
     );
     const r = [...c.querySelectorAll('[data-row]')];
     expect(text(r[0])).toContain('running · executing');

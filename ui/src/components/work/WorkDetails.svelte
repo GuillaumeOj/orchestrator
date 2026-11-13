@@ -4,7 +4,7 @@
   // Work › details panel (notes §3): the focused node, first painted from the tree's WorkNode; body and history
   // from `work_node` (cached by id + updated_at_ms, F36). Kinds: issue, container, project row, multi-selection.
   // Item text is untrusted: plain text only; only "Open in GitHub ↗" / "Open in Linear ↗" navigates.
-  import { basisText, exactRange } from '../../lib/intake.js';
+  import { basisText, exactRange, modeOf } from '../../lib/intake.js';
   import { liveCapText } from '../../lib/program.js';
   import { tooltip } from '../../lib/tooltip.js';
   import {
@@ -21,9 +21,11 @@
     historyText,
     isContainer,
     offered,
+    progressText,
     refOf,
     TRACKER_NAME,
     trackerOf,
+    upstreamText,
     usable,
   } from '../../lib/workmodel.js';
   import Menu from '../Menu.svelte';
@@ -65,16 +67,21 @@
     if (!node) return [];
     const out = [];
     if (feature) out.push({ id: 'feature', label: feature.agent ? 'Show session' : 'Show feature', key: 'g' });
+    // Deleted upstream (S14): Show feature is the only action left.
+    if (node.upstream?.deleted) return out;
     const prog = offered(program)
       ? { id: 'program', label: openProgram ? 'Open program' : 'Run as program', key: 'p', tip: disabledTip(program), disabled: !usable(program) }
       : null;
     // Containers and program roots lead with the program; items lead with the starts.
     const progFirst = isContainer(node) || openProgram;
     if (prog && progFirst) out.push(prog);
-    for (const [w, label, key] of [
+    // The suggested mode leads (P4.5 modeOf): solo first when the project has no team or the item asks for solo.
+    const starts = [
       ['team', 'Start team run', 't'],
       ['solo', 'Start solo', 'a'],
-    ])
+    ];
+    if (modeOf({ mode: detail?.mode ?? node.mode, can_team: usable(a('team')) }) === 'solo') starts.reverse();
+    for (const [w, label, key] of starts)
       if (offered(a(w))) out.push({ id: w, label, key, tip: disabledTip(a(w)), disabled: !usable(a(w)) });
     if (prog && !progFirst) out.push(prog);
     if (node.url) out.push({ id: 'open', label: `Open in ${tracker} ↗`, key: 'o' });
@@ -83,7 +90,7 @@
   });
 
   const menu = $derived.by(() => {
-    if (!node) return [];
+    if (!node || node.upstream?.deleted) return [];
     const h = a('hide');
     return [
       ...(offered(h) ? [{ id: 'hide', label: node.hidden ? 'Unhide' : 'Hide from Ready', key: '⌫', disabled: !usable(h), reason: disabledTip(h), run: () => act('hide') }] : []),
@@ -97,14 +104,16 @@
   const issueLike = $derived(node && !isContainer(node) && trackerOf(node) !== 'local');
 </script>
 
-{#snippet line(n)}
-  {@const c = chipOf(n, { short: true, liveCap })}
+<!-- A child or dependency line; without an app state it shows the upstream state (Linear) or the progress (containers). -->
+{#snippet line(n, short = true)}
+  {@const c = chipOf(n, { short, liveCap })}
+  {@const rest = isContainer(n) ? progressText(n) : trackerOf(n) === 'linear' ? upstreamText(n) : ''}
   <div class="kid">
     <KindGlyph node={n} />
     {#if refOf(n)}<span class="ref">{refOf(n)}</span>{/if}
     <button type="button" class="ktitle" tabindex="-1" onclick={() => act('reveal', n.id)}>{n.title}</button>
     <span class="grow"></span>
-    {#if c}<AppChip chip={c} onopen={(x) => act('chip', x)} />{:else}<span class="muted">—</span>{/if}
+    {#if c}<AppChip chip={c} onopen={(x) => act('chip', x)} />{:else}<span class="muted">{rest || '—'}</span>{/if}
   </div>
 {/snippet}
 
@@ -175,7 +184,7 @@
               <div class="dv">
                 {#each list as d (d.ref)}
                   {@const known = d.outside ? null : lookup(d.id)}
-                  {#if known}{@render line(known)}
+                  {#if known}{@render line(known, narrow)}
                   {:else}
                     <div class="kid">
                       {#if d.outside}

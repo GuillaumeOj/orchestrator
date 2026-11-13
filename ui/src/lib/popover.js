@@ -18,13 +18,17 @@ export function portal(node) {
 /**
  * Where a popover of `w` × `h` goes for a trigger rect `r` in a `vw` × `vh` window.
  * `align` 'start' lines up left edges, 'end' right edges. Above when it does not
- * fit below and there is more room above.
+ * fit below and there is more room above. `bounds` ({ top, bottom }, e.g. a band's
+ * rect): the flip is decided against it instead of the window (a task menu that would
+ * leave the Tasks band opens upward); the height stays limited by the window.
  */
-export function placePopover(r, w, h, vw, vh, align = 'start') {
+export function placePopover(r, w, h, vw, vh, align = 'start', bounds = null) {
   const below = vh - r.bottom - GAP - EDGE;
   const aboveRoom = r.top - GAP - EDGE;
+  const lo = bounds ? Math.min(bounds.bottom, vh) - r.bottom - GAP : below;
+  const hi = bounds ? r.top - Math.max(bounds.top, 0) - GAP : aboveRoom;
   // Measured before its max-height applies: what shows is at most POPOVER_MAX_H.
-  const above = Math.min(h, POPOVER_MAX_H) > below && aboveRoom > below;
+  const above = Math.min(h, POPOVER_MAX_H) > lo && hi > lo && aboveRoom > 0;
   const left = align === 'end' ? r.right - w : r.left;
   return {
     above,

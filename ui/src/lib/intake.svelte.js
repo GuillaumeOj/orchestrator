@@ -160,6 +160,9 @@ export async function openSource(item, openEditor) {
 // ---------------------------------------------------------------- errors, set up
 
 /** The error line's Fix (notes §4.2): where `fix` sends the user; Copy command for `gh_scope`. */
+/** Source errors whose Fix is in Project settings › Tracker (notes §10.7). */
+const TRACKER_FIXES = { linear_complexity: true, gh_write: true, linear_write: true };
+
 export async function fixSource(src, refresh = () => refreshIntake([src.project])) {
   const code = src.error?.code;
   const fix = src.error?.fix;
@@ -171,7 +174,8 @@ export async function fixSource(src, refresh = () => refreshIntake([src.project]
       toast(`Run it in a terminal, then Refresh: ${GH_SCOPE_COMMAND}`);
     }
   } else if (fix === 'integrations') openSettings('integrations', integrationsRow(code));
-  else if (fix === 'settings') openProjectSettings(src.project, 'tracker');
+  // The Tracker fixes (limit the projects, turn off write-back) are made in Project settings › Tracker.
+  else if (fix === 'settings' || TRACKER_FIXES[code]) openProjectSettings(src.project, 'tracker');
   else return refresh();
 }
 

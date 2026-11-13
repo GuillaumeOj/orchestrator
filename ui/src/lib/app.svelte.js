@@ -2099,7 +2099,7 @@ export function commands() {
       run: () => (app.overlay = { kind: 'launch', projectId: contextProject()?.id ?? null }),
     },
     // Work browser (notes §1.2, §12.7): leader ⌘; b opens it on the context project (else all).
-    { id: 'work.browser', label: 'Work browser', run: () => openWork({ projects: workContext() }) },
+    { id: 'work.browser', label: workLabel(workContext()), run: () => openWork({ projects: workContext() }) },
     { id: 'work.open', label: 'Open Work (all projects)', run: () => openWork({ projects: null }) },
     { id: 'work.find', label: 'Find work item…', run: () => openWork({ projects: workContext(), find: true }) },
     {
@@ -2219,6 +2219,13 @@ export function commands() {
 }
 
 /** The project Work opens on from the leader / palette: the focused pane's, else the context's, else all. */
+/** The palette's ⌘; b entry (notes §1.3): "Open Work (shop-api)" on the context, "Open Work (3 projects)", else "Work browser". */
+function workLabel(ids) {
+  if (!ids?.length) return 'Work browser';
+  if (ids.length > 1) return `Open Work (${ids.length} projects)`;
+  return `Open Work (${projects().find((p) => p.id === ids[0])?.name ?? ids[0]})`;
+}
+
 function workContext() {
   // A Work tab in focus keeps its own scope (several projects, or all).
   const s = focusedSpec();

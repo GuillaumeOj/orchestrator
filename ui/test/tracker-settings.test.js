@@ -20,8 +20,18 @@ vi.mock('../src/lib/ipc.js', () => ({
 }));
 
 const { default: ProjectSettingsWindow } = await import('../src/components/ProjectSettingsWindow.svelte');
-const { readySummary, writeBackLines, noticeInfo, switchKind, stateColumn, toggleType, hasParentPart, stateRows } =
-  await import('../src/lib/tracker.js');
+const {
+  readySummary,
+  writeBackLines,
+  noticeInfo,
+  switchKind,
+  stateColumn,
+  toggleType,
+  hasParentPart,
+  stateRows,
+  sampleWhere,
+  trackerError,
+} = await import('../src/lib/tracker.js');
 
 const wb = { enabled: true, assign_me: false, running_label: 'orch:running', board_status: null, linear_state: null };
 const local = () =>
@@ -424,6 +434,36 @@ describe('Tracker › errors', () => {
     expect(container.querySelector('[data-write-back-off]')).toBeTruthy();
   });
 
+  it('not_found is a field error: under Repository, red border, focused; no Retry link', async () => {
+    replies.tracker_preview = {
+      roots: 0,
+      items: 0,
+      ready: 0,
+      sample: [],
+      error: { code: 'not_found', message: '404' },
+    };
+    const r = open(github());
+    const repo = await r.findByLabelText('Repository');
+    await fireEvent.input(repo, { target: { value: 'acme/shop' } });
+    await fireEvent.click(r.getByRole('button', { name: 'Preview' }));
+    await waitFor(() => expect(repo.classList.contains('bad')).toBe(true));
+    expect(txt(r.container)).toContain('acme/shop not found, or you have no access');
+    expect(document.activeElement).toBe(repo);
+    expect(r.container.querySelector('[data-preview]')).toBeNull();
+    expect(r.queryByRole('button', { name: 'Retry' })).toBeNull();
+  });
+
+  it('copy: the name fills the shared table; Linear samples have no "in"', () => {
+    expect(trackerError({ code: 'not_found' }, 'github', 'acme/shop').text).toBe(
+      'acme/shop not found, or you have no access',
+    );
+    const n = { breadcrumb: [{ title: 'Mobile onboarding' }, { title: 'M1 · Sign-up' }], upstream: {}, ready: true };
+    expect(sampleWhere(n, 'linear')).toBe('Mobile onboarding › M1 · Sign-up · ready');
+    expect(sampleWhere({ ...n, breadcrumb: [{ title: 'v2' }], upstream: { milestone: 'v2' } }, 'github')).toBe(
+      'in v2 · ready',
+    );
+  });
+
   it('gh_sub_issues: Retry previews again', async () => {
     const { getByRole } = await run({ code: 'gh_sub_issues', message: 'x' });
     await fireEvent.click(getByRole('button', { name: 'Retry' }));
@@ -548,6 +588,16 @@ describe('Tracker › review follow-ups', () => {
     expect(readySummary({ kind: 'linear', state_types: [], label: 'bug', project: null, cycle: null })).toBe(
       'Issues labelled bug',
     );
+  });
+
+  it('Linear preview count: "2 ready in ENG"', async () => {
+    replies.tracker_options = LIN_OPTS;
+    replies.tracker_preview = { roots: 2, items: 9, ready: 2, sample: [], more: 0 };
+    const r = open(linear());
+    await r.findByLabelText('Teams');
+    await fireEvent.click(r.getByRole('button', { name: 'Preview' }));
+    await waitFor(() => expect(r.container.querySelector('[data-preview-count]')).toBeTruthy());
+    expect(txt(r.container.querySelector('[data-preview-count]'))).toBe('9 items, 2 at the top · 2 ready in ENG');
   });
 
   it('stale preview: amber line with a Preview again link, the block is not dimmed', async () => {

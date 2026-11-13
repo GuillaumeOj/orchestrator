@@ -2,7 +2,9 @@
 // visible rows (indent, depth tags, folds, more / loading / error lines), selection, filters, prefs, copy.
 
 import { describe, expect, it } from 'vitest';
+import { compactRow } from '../src/lib/titlefit.js';
 import {
+  childrenHeading,
   chipOf,
   cleanFilter,
   closedMark,
@@ -340,9 +342,59 @@ describe('hint row (§12.1, P4.2 §1.9): only the keys the focused row allows', 
   it('with a selection: the selection keys only', () => {
     expect(hintsFor(null, { selection: 3 }).map(([k]) => k)).toEqual(['x', '⇧J ⇧K', 'p', 'Esc']);
   });
-  it('focus mode adds ⇧Z and Esc', () => {
+  it('focus mode adds ⇧Z and Esc, and keeps ⏎ details', () => {
     const { n13 } = github();
-    expect(hintsFor({ kind: 'node', node: n13 }, { focusMode: true }).map(([k]) => k)).toContain('⇧Z');
+    const h = hintsFor({ kind: 'node', node: n13 }, { focusMode: true });
+    expect(h.map(([k]) => k)).toContain('⇧Z');
+    expect(h[0]).toEqual(['⏎', 'details']);
+  });
+  it('one selected: x select · Esc clear only', () => {
+    expect(hintsFor(null, { selection: 1 })).toEqual([
+      ['x', 'select'],
+      ['Esc', 'clear'],
+    ]);
+  });
+  it('search: Esc clear search, also with no results', () => {
+    const { n9 } = github();
+    expect(hintsFor({ kind: 'result', node: n9 }, { searching: true }).at(-1)).toEqual(['Esc', 'clear search']);
+    expect(hintsFor(null, { searching: true })).toEqual([['Esc', 'clear search']]);
+  });
+  it('deleted upstream (S14): only g show feature', () => {
+    const { n13 } = github();
+    const gone = { ...n13, upstream: { ...n13.upstream, deleted: true } };
+    expect(hintsFor({ kind: 'node', node: gone })).toEqual([['g', 'show feature']]);
+  });
+});
+
+describe('the per-row 1280 rule at 1512 (README improve-intake pass)', () => {
+  it('compacts when the title would keep under 24 characters', () => {
+    // 40 characters at 7 px: 280 px natural.
+    expect(compactRow({ room: 280, natural: 280, chars: 40 })).toBe(false);
+    expect(compactRow({ room: 175, natural: 280, chars: 40 })).toBe(false); // 25 characters kept
+    expect(compactRow({ room: 140, natural: 280, chars: 40 })).toBe(true); // 20 kept
+    // A short title that fits whole never compacts.
+    expect(compactRow({ room: 70, natural: 70, chars: 10 })).toBe(false);
+    // Compact now: the room the full labels would leave decides (no flip-flop).
+    expect(compactRow({ room: 200, natural: 280, chars: 40, extra: 60 })).toBe(true);
+    expect(compactRow({ room: 260, natural: 280, chars: 40, extra: 60 })).toBe(false);
+    // Not measured (jsdom): never.
+    expect(compactRow({ room: 0, natural: 0, chars: 40 })).toBe(false);
+  });
+});
+
+describe('details children heading (§3)', () => {
+  it('containers: "Issues · 2 issues · 0 done · 1 running"', () => {
+    const v2 = {
+      id: 'gh-milestone:acme/shop/3',
+      kind: 'milestone',
+      children: { total: 2, done: 0, open: 2 },
+      rollup: { running: 1 },
+    };
+    expect(childrenHeading(v2)).toBe('Issues · 2 issues · 0 done · 1 running');
+    expect(childrenHeading({ ...v2, rollup: null })).toBe('Issues · 2 issues · 0 done');
+    expect(childrenHeading({ id: 'gh:acme/shop#12', kind: 'issue', children: { total: 2, done: 1 } })).toBe(
+      'Sub-issues · 1 of 2 done',
+    );
   });
 });
 
@@ -394,6 +446,14 @@ describe('states copy (§11)', () => {
     expect(headerStatus({ a: { status: 'ok', offline: true, refreshed_at_ms: now - 2 * 3600000 } }, { now }).text).toBe(
       'Offline · updated 2 h ago',
     );
+    expect(
+      headerStatus({ a: { status: 'ok', refreshed_at_ms: now - 4 * 60000 } }, { now, match: { items: 8, filters: 2 } })
+        .text,
+    ).toBe('8 items match · 2 filters · updated 4 min ago');
+    expect(
+      headerStatus({ a: { status: 'ok', refreshed_at_ms: now - 4 * 60000 } }, { now, match: { items: 1, filters: 1 } })
+        .text,
+    ).toBe('1 item matches · 1 filter · updated 4 min ago');
     expect(headerStatus({ a: { status: 'ok', refreshed_at_ms: now - 4 * 60000 } }, { now, rootsTotal: 512 }).text).toBe(
       '512 at the top · updated 4 min ago',
     );
@@ -435,11 +495,16 @@ describe('states copy (§11)', () => {
   });
 
   it('empty tracker per kind (S7), no match (S8), search header', () => {
-    expect(emptyText({ label: 'acme/shop', tracker: { kind: 'github' } })).toBe(
-      'No open issues in acme/shop. Create them in GitHub; Work picks them up at the next refresh (r).',
+    expect(emptyText({ label: 'acme/shop', tracker: { kind: 'github' } })).toEqual({
+      text: 'No open issues in acme/shop. Create them in ',
+      link: { label: 'GitHub ↗', url: 'https://github.com/acme/shop/issues' },
+      after: '; Work picks them up at the next refresh (r).',
+    });
+    expect(emptyText({ label: "this project's repository", tracker: { kind: 'github' } }).text).toBe(
+      "No open issues in this project's repository. Create them in GitHub; Work picks them up at the next refresh (r).",
     );
-    expect(emptyText({ tracker: { kind: 'linear', teams: ['ENG'] } })).toBe('No issues in ENG.');
-    expect(emptyText({ tracker: { kind: 'local', backlog_glob: '.orchestrator/backlog/*.md' } })).toBe(
+    expect(emptyText({ tracker: { kind: 'linear', teams: ['ENG'] } }).text).toBe('No issues in ENG.');
+    expect(emptyText({ tracker: { kind: 'local', backlog_glob: '.orchestrator/backlog/*.md' } }).text).toBe(
       'No backlog files in .orchestrator/backlog/. Add a .md file there.',
     );
     expect(noMatchText(3, ['shop-api'])).toBe('Nothing matches 3 filters in shop-api');
