@@ -175,14 +175,14 @@ PlanIssue = { "kind": "cycle"|"already_running"|"closed"|"no_team"|"over_room", 
 |---|---|---|
 | `program_plan` | `roots: [ids]` (one node, or ≥ 2 siblings), `grouping`, `opts: {sequential, max_parallel, cut?}` | `{ program: Program (draft), issues: [PlanIssue] }` |
 | `program_start` | `program` (the edited draft) | `{ program }` (running) or `{ issues }` (dialog stays) |
-| `program_update` | `id, patch`: `{pause}` · `{resume}` · `{skip: key}` · `{add_item: id, mode, team, after: [keys], slug?}` · `{ignore_item: id}` · `{max_parallel: n}` · `{cancel}` | `Program` |
+| `program_update` | `id, patch`: `{pause}` · `{resume}` · `{skip: key}` · `{add_item: id, mode, team, after: [keys], slug?}` · `{ignore_item: id}` · `{max_parallel: n}` · `{start_anyway: key}` (drop a failed / cancelled external dependency) · `{cancel}` | `Program` |
 | `program` | `id` | `Program` with live states |
 
 **Engine**: a feature starts when every `depends_on` (not skipped) is `merged`, the program is `running`, fewer than `max_parallel` of its features run, and the Governor admits it (else `queued`, held by the Governor; `waiting` = a dependency not merged). Starting = the same path as a team run / solo session started from the node (spec / PR gates per feature unchanged). Upstream changes (notes §7.3): new child → `new_items` + decision; child closed → flag + decision; dependency added → edges recomputed for not-started features + decision.
 
 **In `now`** (F21, F32, F39): lane order `needs_you, running, programs, waiting, queued, ready, done`. `now.programs` = `{ upsert: [ProgramRow], remove: [ids] }` in deltas (whole list in the snapshot). `ProgramRow = { id, project, title, root_ref, status, counts: Rollup-like {merged, running, pr, waiting, queued, failed, skipped}, estimate: {low_pp, high_pp}, features: [{ key, slug, title, state, mode, team, phase?, pr?, waiting_on?, flags }] }`. Done / cancelled → an outcome in Done today (`kind: "program"`). Run / queue rows' `origin` gains `program: {id, title}`.
 
-**Decisions** (F22): kinds `program_new_item` (actions `add`, `ignore`), `program_item_closed` (`skip`, `keep`), `program_dependency_added` (`open`), `program_done` (`open`), `program_feature_failed` (`open`, `skip`), `writeback_failing` (`settings`, `turn_off`). Spec / PR decisions of a program feature gain `program: { id, title, index, total }` (F29).
+**Decisions** (F22): kinds `program_new_item` (actions `add`, `ignore`), `program_item_closed` (`skip`, `keep`), `program_dependency_added` (`open`), `program_done` (`open`), `program_feature_failed` (`open`, `skip`; for a dependent whose external dependency failed or was cancelled: `start_anyway`, `skip`), `writeback_failing` (`settings`, `turn_off`). An `{open: "feature"}` reply carries `project` and the slug. Spec / PR decisions of a program feature gain `program: { id, title, index, total }` (F29).
 
 **Events**: `work.changed {project}`, `program.started | feature_started | feature_merged | done | cancelled {id}`, `writeback.done | failed {node, what, code?}`.
 
@@ -208,6 +208,8 @@ Team-task fallback: when GitHub refuses `addSubIssue` (no sub-issues API / permi
 - Removal toast once (notes §1.3): `settings_set("work.board_notice_seen", true)`.
 
 ## 7. Removed (Q2)
+
+**Done in I1**: the `intake_*` commands, the Board commands (`board_*`) and the separate `linear_teams` / `linear_states` commands are removed; `TaskBackendConfig` / `IntakeSource` remain only as store types behind the migration and `project_settings_set`.
 
 **When**: an old command stays callable (unchanged where its data still exists, else a thin adapter over the new model) until the front task that replaces its callers has merged; **I1** removes them all, with the Board's commands, once F1–F5 are merged. The integration branch never ships a UI calling a missing command.
 
