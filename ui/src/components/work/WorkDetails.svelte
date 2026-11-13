@@ -30,10 +30,10 @@
 
   /**
    * @type {{ node?: any, project?: any, detail?: any, trail?: any[], kids?: any[] | null, selection?: any[] | null,
-   *          selectionText?: string, narrow?: boolean, readyTip?: string, projectStatus?: string,
+   *          selectionText?: string, narrow?: boolean, readyTip?: string, projectStatus?: string, lookup?: (id: string) => any,
    *          act: (what: string, arg?: any) => void, el?: HTMLElement }}
    */
-  let { node = null, project = null, detail = null, trail = [], kids = null, selection = null, selectionText = '', narrow = false, readyTip = '', projectStatus = '', act, el = $bindable() } = $props();
+  let { node = null, project = null, detail = null, trail = [], kids = null, selection = null, selectionText = '', narrow = false, readyTip = '', projectStatus = '', lookup = (_id) => null, act, el = $bindable() } = $props();
 
   let bodyAll = $state(false);
   let historyAll = $state(false);
@@ -46,8 +46,8 @@
   const tracker = $derived(node ? (TRACKER_NAME[trackerOf(node)] ?? '') : '');
   const chip = $derived(node ? chipOf(node, { short: narrow, readyTip }) : null);
   const body = $derived(bodyLines(detail?.body, bodyAll));
-  // `work_node(id, {children: true})` lists them in `children` (F36); the counts object is the node's own.
-  const children = $derived(kids ?? (Array.isArray(detail?.children) ? detail.children : null));
+  // `work_node(id, {children: true})` lists the first page in `child_nodes` (F36); `children` stays the counts.
+  const children = $derived(kids ?? detail?.child_nodes ?? null);
   const history = $derived(detail?.history ?? []);
   const feature = $derived(node ? featureOf(node) : null);
   const est = $derived(detail?.estimate ?? node?.estimate ?? null);
@@ -166,14 +166,19 @@
               <span class="dl muted">{label}</span>
               <div class="dv">
                 {#each list as d (d.ref)}
-                  <div class="kid">
-                    {#if d.outside}
-                      <button type="button" class="ktitle" tabindex="-1" use:tooltip={'Outside this tracker'} onclick={() => act('url', d.url)}>{d.text} ↗</button>
-                    {:else}
-                      <button type="button" class="ktitle" tabindex="-1" onclick={() => act('reveal', d.id)}>{d.text}</button>
-                    {/if}
-                    <span class="muted">{d.open ? '' : 'closed'}</span>
-                  </div>
+                  {@const known = d.outside ? null : lookup(d.id)}
+                  {#if known}{@render line(known)}
+                  {:else}
+                    <div class="kid">
+                      {#if d.outside}
+                        <button type="button" class="ktitle" tabindex="-1" use:tooltip={'Outside this tracker'} onclick={() => act('url', d.url)}>{d.text} ↗</button>
+                      {:else}
+                        <button type="button" class="ktitle" tabindex="-1" onclick={() => act('reveal', d.id)}>{d.text}</button>
+                      {/if}
+                      <span class="grow"></span>
+                      <span class="muted">{d.open ? '—' : 'closed'}</span>
+                    </div>
+                  {/if}
                 {:else}<span class="muted">none</span>{/each}
               </div>
             </div>

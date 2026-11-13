@@ -55,6 +55,7 @@ function setup({ prefs = null, nodes = null, status = undefined, more = undefine
   replies.work_tree = treeReply(nodes ?? Object.values(g), { status, more });
   replies.work_node = (a) => ({
     ...g.n13,
+    child_nodes: [g.n16, g.n17],
     id: a.id,
     breadcrumb: [{ id: V2, ref: 'v2', title: 'v2' }],
     body: 'Customers enter a delivery address.',
@@ -126,6 +127,22 @@ describe('rows, chips, roll-ups (§2.2–§2.6)', () => {
     const { container } = await mount(['shop-api', 'mobile']);
     await waitFor(() => expect(text(row(container, 'project:shop-api'))).toContain('shop-api · GitHub acme/shop'));
     expect(text(container.querySelector('h2'))).toBe('Work · 2 projects');
+  });
+});
+
+describe('row tail (§11 S14, S15; page 02 row states)', () => {
+  it('the tail sits after the children progress, right before the chip', async () => {
+    const n = wn('gh:acme/shop#13', {
+      title: 'Address step',
+      children: { total: 2, open: 1, done: 1 },
+      upstream: { deleted: true },
+      app: { state: 'running', feature: 'f', phase: 'executing' },
+    });
+    const { container } = await mount(['shop-api'], { nodes: [n] });
+    const r = row(container, n.id);
+    const order = [...r.children].map((c) => c.classList[0]).filter((c) => ['prog', 'tail', 'right'].includes(c));
+    expect(order).toEqual(['prog', 'tail', 'right']);
+    expect(text(r)).toContain('1/2 Deleted in GitHub running');
   });
 });
 
@@ -325,13 +342,22 @@ describe('search (§4.1)', () => {
       nodes: [
         {
           ...github().n17,
+          match: { field: 'title', snippet: null },
+          breadcrumb: [
+            { id: V2, ref: 'v2', title: 'v2' },
+            { id: 'gh:acme/shop#12', ref: '#12', title: 'Checkout v2' },
+          ],
+        },
+        {
+          ...github().n14,
+          match: { field: 'body', snippet: '…after the address step' },
           breadcrumb: [
             { id: V2, ref: 'v2', title: 'v2' },
             { id: 'gh:acme/shop#12', ref: '#12', title: 'Checkout v2' },
           ],
         },
       ],
-      total: 1,
+      total: 2,
       hidden_by_filters: 2,
     };
     replies.work_reveal = () => ({
@@ -346,7 +372,11 @@ describe('search (§4.1)', () => {
     await vi.advanceTimersByTimeAsync(260);
     await waitFor(() => expect(container.querySelector('.result')).toBeTruthy());
     expect(called('work_search')[0]).toMatchObject({ query: 'address', scope: { projects: ['shop-api'] } });
-    expect(text(container.querySelector('[data-results]'))).toContain('1 result for "address"');
+    expect(text(container.querySelector('[data-results]'))).toContain('2 results for "address"');
+    expect(text(container.querySelectorAll('.result')[0])).not.toContain('in body');
+    expect(text(container.querySelectorAll('.result')[1])).toContain(
+      'acme/shop › v2 › #12 Checkout v2 · in body: "…after the address step"',
+    );
     expect(text(container.querySelector('[data-results]'))).toContain('2 more hidden by filters');
     expect(text(container.querySelector('.result'))).toContain('acme/shop › v2 › #12 Checkout v2');
     await fireEvent.keyDown(input, { key: 'Enter' });
@@ -381,7 +411,10 @@ describe('details (§3, F36)', () => {
       { timeout: 2000 },
     );
     expect(called('work_node')).toEqual([{ id: 'gh:acme/shop#13', opts: { children: true } }]);
-    expect(text(container.querySelector('.details'))).toContain('Blocking #14 Payment step');
+    expect(text(container.querySelector('.details'))).toContain('#17 Address validation errors');
+    const dep = container.querySelector('.details .deprow');
+    expect(text(dep)).toMatch(/^Blocking .?\s?#14 Payment step waiting/u);
+    expect(dep.querySelector('[data-chip="waiting"]')).toBeTruthy(); // the tree's node: glyph, ref, title, chip
     expect(text(container.querySelector('.details'))).toContain('#58 Postcode lookup · merged');
     expect(text(container.querySelector('.details'))).toContain('Nothing yet. Start it here.');
     expect(container.querySelector('.details [data-act="feature"]').textContent).toBe('Show feature');

@@ -104,7 +104,9 @@
       ? view.results.nodes.map((n) => {
           const p = view.scope.find((x) => x.id === n.project);
           const trail = [p?.label || p?.name, ...crumbs(n.breadcrumb, 3).map((c) => c.text)].filter(Boolean);
-          return { kind: 'result', key: n.id, node: n, trail: trail.join(' › ') };
+          // A body match adds its snippet (contract §2 `match`): "… · in body: "…after the address step"".
+          const body = n.match?.field === 'body' && n.match.snippet ? ` · in body: "${n.match.snippet}"` : '';
+          return { kind: 'result', key: n.id, node: n, trail: trail.join(' › ') + body };
         })
       : [],
   );
@@ -627,12 +629,20 @@
             {#each [0, 1, 2] as i (i)}<span class="bar-row" style:padding-left="{i * 16 + 16}px"><span class="sk short"></span><span class="sk"></span><span class="grow"></span><span class="sk tail"></span></span>{/each}
           </div>
         {/each}
+      {:else if searching && view.results && !view.results.total}
+        <!-- No results (notes §4.1): centred in the tree, as the other empty states. -->
+        <div class="empty" data-empty>
+          <p class="muted" data-results>
+            {resultsText(view.results, view.query.trim(), scopeNames)}
+            {#if view.results.hidden > 0} · {view.results.hidden} more hidden by filters · <button type="button" class="link" onclick={() => view.showHiddenResults()}>Show</button>{/if}
+            · <button type="button" class="link" onclick={() => view.setQuery('')}>Clear search</button>
+          </p>
+        </div>
       {:else if searching}
         <p class="rhead muted" data-results>
           {#if view.results}
-            {resultsText(view.results, view.query.trim(), scopeNames)}{#if view.results.total} · title first, then body · ⏎ reveals in the tree{/if}
+            {resultsText(view.results, view.query.trim(), scopeNames)} · title first, then body · ⏎ reveals in the tree
             {#if view.results.hidden > 0} · {view.results.hidden} more hidden by filters · <button type="button" class="link" onclick={() => view.showHiddenResults()}>Show</button>{/if}
-            {#if !view.results.total} · <button type="button" class="link" onclick={() => view.setQuery('')}>Clear search</button>{/if}
           {:else}Searching…{/if}
         </p>
         {#each results as r (r.key)}
@@ -688,6 +698,7 @@
         selectionText={selText}
         {narrow}
         readyTip={readyTip(curNode)}
+        lookup={(id) => view.nodes.get(id) ?? null}
         act={detailsAct}
       />
     {/if}

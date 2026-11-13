@@ -82,8 +82,8 @@
     {#each labels.chips as l (l)}<span class="label">{l}</span>{/each}
     {#if labels.more}<span class="up">+{labels.more}</span>{/if}
     {#if dep}<span class="dep" use:tooltip={dep.tip}><span aria-hidden="true">{'\u{F0337}'}</span>{#if !narrow} {dep.text}{:else}<span class="sr">{dep.text}</span>{/if}</span>{/if}
-    {#if tail}<span class="tail" class:warn={tail.warn}>{tail.text}</span>{/if}
     {#if progressText(n)}<span class="prog">{progressText(n)}</span>{/if}
+    {#if tail}<span class="tail" class:warn={tail.warn}>{tail.text}</span>{/if}
     {#if mark}<span class="mark" use:tooltip={mark.tip}>⚠ {mark.text}</span>{/if}
     <span class="right" class:narrow>
       {#if right?.chip}<AppChip chip={right.chip} onopen={onchip} />{:else if right?.rollup}<span class="rollup" use:tooltip={right.tip}>{right.rollup}</span>{/if}
