@@ -900,7 +900,7 @@ export function openProjectSettings(projectId, section = null, server = null) {
   const w = app.window;
   if (w?.kind === 'project-settings' && w.projectId === projectId)
     return setWindow({ ...w, section: section ?? w.section, server });
-  setWindow({ kind: 'project-settings', projectId, section: section ?? 'backend', server });
+  setWindow({ kind: 'project-settings', projectId, section: section ?? 'tracker', server });
 }
 
 /** The Week planner window (pacing indicator, banners, leader g, the palette). */
