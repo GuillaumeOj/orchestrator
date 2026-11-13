@@ -150,6 +150,7 @@ const EFFECT_VERB = {
   // Program cards (improve-intake notes §7.3).
   ignored: 'ignored',
   kept: 'kept',
+  'started anyway': 'started anyway',
   opened: 'opened',
   resolved: 'resolved',
 };

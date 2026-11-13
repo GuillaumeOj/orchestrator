@@ -26,7 +26,7 @@ const A = await import('../src/lib/app.svelte.js');
 const P = await import('../src/lib/program.js');
 const { lanes } = await import('../src/lib/mission.js');
 const { applyNow } = await import('../src/lib/now.svelte.js');
-const { keyIntent, intentFor } = await import('../src/lib/inbox.js');
+const { keyIntent, intentFor, pendingToast, effectText } = await import('../src/lib/inbox.js');
 const { decisionKind } = await import('../src/lib/status.js');
 const { originText, staleOf } = await import('../src/lib/intake.js');
 const { openProgram, openProgramPlan } = await import('../src/lib/work.js');
@@ -986,6 +986,17 @@ describe('program cards', () => {
     expect(keyIntent('x', failed)).toEqual({ kind: 'decide', action: 'skip' });
     expect(keyIntent('enter', failed)).toEqual({ kind: 'core', action: 'open' });
     expect(intentFor(card('rule_proposal', []), 'add')).toEqual({ kind: 'decide', action: 'add' });
+    // I1: a dependent of a failed run outside the program: ⏎ Start anyway, x Skip it.
+    const dep = card('program_feature_failed', [
+      { id: 'start_anyway', label: 'Start anyway', key: '⏎' },
+      { id: 'skip', label: 'Skip it', key: 'x' },
+    ]);
+    expect(keyIntent('enter', dep)).toEqual({ kind: 'decide', action: 'start_anyway' });
+    expect(keyIntent('x', dep)).toEqual({ kind: 'decide', action: 'skip' });
+    expect(pendingToast(dep, 'start_anyway')).toBe('Starting anyway · New sub-issue in Checkout v2');
+    expect(
+      effectText({ ...dep, lifecycle: { state: 'decided', effect: 'started anyway' } }, { action: 'start_anyway' }),
+    ).toBe('Started anyway · New sub-issue in Checkout v2');
   });
 
   it('the card shows its kind label and the ⏎ action as primary', async () => {
