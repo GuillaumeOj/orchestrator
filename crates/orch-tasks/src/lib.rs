@@ -3,6 +3,7 @@
 pub mod github;
 pub mod intake;
 pub mod linear;
+pub mod writeback;
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;

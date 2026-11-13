@@ -158,6 +158,8 @@ pub(crate) struct Ctx {
     team: HashMap<usize, Vec<Task>>,
     rolls: Vec<Roll>,
     viewer: Option<String>,
+    /// The write-back status of each node (contract §2 `writeback`).
+    wb: HashMap<String, Value>,
 }
 
 fn phase(s: RunState) -> &'static str {
@@ -190,6 +192,7 @@ impl Ctx {
             apps: vec![],
             team: HashMap::new(),
             rolls: vec![],
+            wb: rt.wb_statuses(&project.id),
             viewer: rt.db.setting(&viewer_key(&project.id)).ok().flatten().and_then(|v| v.as_str().map(str::to_string)),
             rows,
         };
@@ -326,6 +329,12 @@ impl Ctx {
         }
     }
 
+    /// `x:run:<id>` / `x:agent:<id>`: what a program waits on while the node runs outside it.
+    pub(crate) fn app_wait_key(&self, i: usize) -> Option<String> {
+        let a = &self.apps[i].0;
+        a["run"].as_str().map(|r| format!("x:run:{r}")).or_else(|| a["agent"].as_str().map(|r| format!("x:agent:{r}")))
+    }
+
     /// The feature (or session) a node runs as, from its app state.
     pub(crate) fn app_feature(&self, i: usize) -> Option<String> {
         let a = &self.apps[i].0;
@@ -458,7 +467,7 @@ impl Ctx {
             "rollup": self.rolls[i].json(),
             "ready": self.ready(i),
             "hidden": r.state == IntakeState::Hidden,
-            "writeback": null,
+            "writeback": self.wb.get(&r.node_id).cloned().unwrap_or(Value::Null),
             "actions": self.actions(i),
         })
     }
@@ -622,12 +631,6 @@ impl Runtime {
         Ok(if ids.is_empty() { all } else { all.into_iter().filter(|p| ids.contains(&p.id)).collect() })
     }
 
-    /// The contexts of the projects in scope; one that cannot be read (its settings are broken…) is
-    /// skipped and reported, never failing the others'.
-    fn work_ctxs(&self, scope: &Value) -> Result<Vec<Ctx>> {
-        Ok(self.work_ctxs_with_errors(scope)?.0)
-    }
-
     fn work_ctxs_with_errors(&self, scope: &Value) -> Result<(Vec<Ctx>, Failed)> {
         let (mut ok, mut failed) = (vec![], vec![]);
         for p in self.work_projects(scope)? {
@@ -637,6 +640,25 @@ impl Runtime {
             }
         }
         Ok((ok, failed))
+    }
+
+    /// The status of each project of a read (an unreadable one is `error`, never a failure of the call).
+    fn work_statuses(
+        &self,
+        ctxs: &[Ctx],
+        failed: Failed,
+        inflight: &std::collections::BTreeSet<String>,
+    ) -> serde_json::Map<String, Value> {
+        let mut status: serde_json::Map<String, Value> =
+            ctxs.iter().map(|c| (c.project.id.clone(), self.work_status(c, inflight))).collect();
+        for (id, why) in failed {
+            status.insert(
+                id,
+                json!({"status": "error", "error": {"code": "failed", "message": why}, "warning": null,
+                       "offline": false, "refreshed_at_ms": null, "counts": {"items": 0, "roots": 0, "ready": 0}}),
+            );
+        }
+        status
     }
 
     /// The project's source status (contract §2): refreshing / error / warning / offline, and what the cache holds.
@@ -796,16 +818,7 @@ impl Runtime {
                 }
             }
         }
-        let mut status: serde_json::Map<String, Value> =
-            ctxs.iter().map(|c| (c.project.id.clone(), self.work_status(c, &inflight))).collect();
-        for (id, why) in failed {
-            status.insert(
-                id,
-                json!({"status": "error", "error": {"code": "failed", "message": why}, "warning": null,
-                                     "offline": false, "refreshed_at_ms": null,
-                                     "counts": {"items": 0, "roots": 0, "ready": 0}}),
-            );
-        }
+        let status = self.work_statuses(&ctxs, failed, &inflight);
         Ok(json!({"nodes": nodes, "more": more, "status": status}))
     }
 
@@ -813,10 +826,12 @@ impl Runtime {
     pub fn work_search(&self, scope: &Value, query: &str, filter: &Value) -> Result<Value> {
         let f = WorkFilter::parse(filter)?;
         let q = query.trim().to_lowercase();
+        let (ctxs, failed) = self.work_ctxs_with_errors(scope)?;
+        let inflight = super::lock(&self.intake.sched).inflight.clone();
+        let status = self.work_statuses(&ctxs, failed, &inflight);
         if q.is_empty() {
-            return Ok(json!({"nodes": [], "total": 0, "hidden_by_filters": 0}));
+            return Ok(json!({"nodes": [], "total": 0, "hidden_by_filters": 0, "status": status}));
         }
-        let ctxs = self.work_ctxs(scope)?;
         let root = scope["root"].as_str();
         let bare = |s: &str| s.trim_start_matches('#').to_lowercase();
         let tokens: Vec<&str> = q.split_whitespace().collect();
@@ -874,7 +889,7 @@ impl Runtime {
                 n
             })
             .collect();
-        Ok(json!({"nodes": nodes, "total": total, "hidden_by_filters": hidden}))
+        Ok(json!({"nodes": nodes, "total": total, "hidden_by_filters": hidden, "status": status}))
     }
 
     /// `work_node`: the node with its breadcrumb, body, history and estimate; `children`: the first page.
@@ -997,6 +1012,7 @@ impl Runtime {
         out["open_sub_issues"] = json!(open_kids);
         out["blocked_by_open"] = json!(blocked_open);
         out["ran_before"] = ran_before;
+        out["estimate"] = self.intake_estimate_of(&full);
         out["write_back_line"] = json!(write_back_line(&ctx.settings, &full.reference));
         Ok(out)
     }
@@ -1043,8 +1059,12 @@ impl Runtime {
         if let Ok(Some(r)) = self.db.work_node_of_run(run) {
             self.work_log(&r, what, None, None);
         }
-        // A merge may free a program's next feature.
         if what == "merged" {
+            // Every item of the run is closed upstream when GitHub / Linear did not (write-back), and a
+            // merge may free a program's next feature.
+            for r in self.db.work_nodes_of("run", run).unwrap_or_default() {
+                self.wb_spawn(&r.project_id, &r.node_id, crate::writeback::WbOp::Merged);
+            }
             self.programs_tick();
         }
     }

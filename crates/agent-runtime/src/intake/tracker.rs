@@ -40,11 +40,16 @@ pub(crate) fn upstream_json(meta: &Value, updated_at_ms: u64) -> Value {
 
 /// The first rules of the row actions (B3 replaces them with notes §5.1):
 /// the team needs a team, a program needs children.
-pub(crate) fn actions_json(can_team: bool, has_children: bool) -> Value {
+/// `kids`: (children, open children) of the node.
+pub(crate) fn actions_json(can_team: bool, kids: (usize, usize)) -> Value {
     json!({
         "team": if can_team { json!("ok") } else { json!({"disabled": "This project has no team yet"}) },
         "solo": "ok",
-        "program": if has_children { json!("ok") } else { json!("hidden") },
+        "program": match kids {
+            (0, _) => json!("hidden"),
+            (_, 0) => json!({"disabled": "No open sub-issues"}),
+            _ => json!("ok"),
+        },
         "hide": "ok",
     })
 }
@@ -106,7 +111,7 @@ impl<'a> Preview<'a> {
             "team_tasks": meta["team_tasks"].as_u64().unwrap_or(0),
             "upstream": upstream_json(meta, n.f.updated_at_ms),
             "app": {"state": "none"}, "rollup": null, "ready": true, "hidden": false, "writeback": null,
-            "actions": actions_json(can_team, !kids.is_empty()),
+            "actions": actions_json(can_team, (kids.len(), open)),
             "breadcrumb": breadcrumb,
         })
     }

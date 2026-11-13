@@ -98,6 +98,8 @@ pub struct WorkIndex {
     pub parent_id: Option<String>,
     pub reference: String,
     pub title: String,
+    /// Open upstream (the lane's "run as program" needs an open child).
+    pub open: bool,
 }
 
 /// What a refresh writes for one item, in the source's order.
@@ -251,6 +253,17 @@ impl Store {
         })
     }
 
+    /// Every node started with run (or session) `reference` of `kind` (a program feature links several).
+    pub fn work_nodes_of(&self, kind: &str, reference: &str) -> Result<Vec<IntakeRow>> {
+        let (k, r) = (kind.to_string(), reference.to_string());
+        self.read(move |c| {
+            let mut st = c.prepare(&format!(
+                "SELECT {COLS} FROM work_nodes WHERE state='started' AND started_kind=?1 AND started_ref=?2 AND source!=?3 ORDER BY id"
+            ))?;
+            Ok(st.query_map(params![k, r, BRIEF_SOURCE], row)?.collect::<rusqlite::Result<_>>()?)
+        })
+    }
+
     /// A node that ran before (its run merged) starts again: the new run is its mark.
     pub fn intake_restart(&self, id: u64, kind: &str, reference: &str) -> Result<bool> {
         let (kind, reference) = (kind.to_string(), reference.to_string());
@@ -354,7 +367,12 @@ impl Store {
     pub fn work_index(&self) -> Result<Vec<WorkIndex>> {
         self.read(|c| {
             let mut st = c.prepare(
-                "SELECT project_id, node_id, parent_id, ref, title FROM work_nodes WHERE source!=?1 AND deleted=0",
+                "SELECT project_id, node_id, parent_id, ref, title,
+                   CASE WHEN json_extract(meta,'$.state_type') IN ('completed','canceled') THEN 0
+                        WHEN json_extract(meta,'$.state_type') IS NULL
+                             AND lower(coalesce(json_extract(meta,'$.state'),'open')) != 'open' THEN 0
+                        ELSE 1 END
+                 FROM work_nodes WHERE source!=?1 AND deleted=0",
             )?;
             let rows = st.query_map([BRIEF_SOURCE], |r| {
                 Ok(WorkIndex {
@@ -363,6 +381,7 @@ impl Store {
                     parent_id: r.get(2)?,
                     reference: r.get(3)?,
                     title: r.get(4)?,
+                    open: r.get::<_, i64>(5)? != 0,
                 })
             })?;
             Ok(rows.collect::<rusqlite::Result<_>>()?)

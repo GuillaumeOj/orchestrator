@@ -228,6 +228,7 @@ pub fn run() {
             commands::notion_publish,
             commands::notion_status,
             commands::linear_states,
+            commands::writeback_retry,
             commands::program_plan,
             commands::program_start,
             commands::program_update,
