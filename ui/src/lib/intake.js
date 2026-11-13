@@ -262,9 +262,8 @@ export function originChip(origin) {
   const from = `From ${origin.ref}${origin.title ? ` ${origin.title}` : ''}`;
   // The parent alone; under a Linear milestone, "project › milestone" (§5.2).
   const bc = origin.breadcrumb ?? [];
-  const crumb = crumbLine(bc.at(-1)?.id?.startsWith('lin-milestone:') ? bc.slice(-2) : bc, {
-    parentOnly: bc.at(-1)?.id?.startsWith('lin-milestone:') !== true,
-  });
+  const underMilestone = bc.at(-1)?.id?.startsWith('lin-milestone:');
+  const crumb = crumbLine(underMilestone ? bc.slice(-2) : bc, { parentOnly: !underMilestone });
   return {
     text: [from, crumb && `in ${crumb}`, name].filter(Boolean).join(' · '),
     tip: crumbTip(origin.breadcrumb),
@@ -321,7 +320,8 @@ export function staleOf(e) {
   const o = e && typeof e === 'object' ? e : null;
   if (o?.code === 'stale') return o;
   try {
-    const j = JSON.parse(String(e?.message ?? e));
+    const raw = String(e?.message ?? e);
+    const j = JSON.parse(raw.slice(Math.max(0, raw.indexOf('{'))));
     return j?.code === 'stale' ? j : null;
   } catch {
     return null;
@@ -337,7 +337,8 @@ export const originOf = (rec) => (rec?.source?.node ? rec.source : (rec?.origin 
 export function originText(origin) {
   if (!origin) return '';
   if (origin.kind === 'brief') return 'from brief';
-  return `from ${origin.short ?? origin.ref}`;
+  // A program's feature names its program (improve-intake notes §7.1): "from #14 · Checkout v2".
+  return `from ${origin.short ?? origin.ref}${origin.program?.title ? ` · ${origin.program.title}` : ''}`;
 }
 
 /** The chip's tooltip: the item, where it sits in the tree, and its link; "Deleted in GitHub" when it is gone (S14). */

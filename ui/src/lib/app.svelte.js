@@ -33,7 +33,7 @@ import {
   readyToast,
   updateActions,
 } from './update.js';
-import { openWork } from './work.js';
+import { openProgram, openProgramPlan, openWork, programTabTitle, togglePause } from './work.js';
 import { scopeTitle } from './workmodel.js';
 
 /** The dock's share of the work column when nothing is saved: agents need rows. */
@@ -45,7 +45,7 @@ const CHAT_NARROW = 340;
 /**
  * @typedef {{ rev: number, agents: Record<string, any>, runs: Record<string, any>,
  *   decisions: Record<string, any>, outcomes: any[], counts: { global: any, projects: any },
- *   chat?: { day: string | null, entries: Record<string, any> }, overwatch?: any, intake?: any }} Now
+ *   chat?: { day: string | null, entries: Record<string, any> }, overwatch?: any, intake?: any, programs?: Record<string, any> }} Now
  */
 
 export const app = $state({
@@ -330,6 +330,8 @@ export function paneProject(spec) {
   if (['project', 'diff', 'trust', 'canvas', 'editor', 'shell'].includes(spec.type)) return spec.projectId ?? null;
   // A Work tab on one project is that project's; on several (or all) it is app-wide.
   if (spec.type === 'work') return spec.projects?.length === 1 ? spec.projects[0] : null;
+  // A Program view belongs to its program's project.
+  if (spec.type === 'program') return app.now.programs?.[spec.programId]?.project ?? spec.projectId ?? null;
   return null;
 }
 
@@ -515,6 +517,8 @@ function title(spec) {
       if (spec.type === 'trust') return `trust · ${spec.projectId}`;
       if (spec.type === 'feature') return features().find((f) => f.id === spec.featureId)?.slug ?? 'feature';
       if (spec.type === 'canvas') return spec.teamId ? `Team: ${spec.teamId}` : 'Team canvas';
+      if (spec.type === 'program')
+        return programTabTitle(app.now.programs?.[spec.programId]?.title || spec.programTitle);
       if (spec.type === 'work') return scopeTitle(spec.projects ?? null, (spec.projects ?? []).map(projectName));
       if (spec.type === 'diff')
         return `diff · ${
@@ -966,7 +970,14 @@ export function routeOpen(r, projectId = null) {
       focus: r.focus === 'brief' || r.edit ? 'brief' : null,
     });
   else if (r.open === 'editor' && r.scope) openPolicy(r.scope, r.project ?? projectId);
-  else return false;
+  // Program cards (improve-intake notes §7.3): the Program view, its row editor, or the failed feature.
+  else if (r.open === 'program' && r.program) openProgram(r.program);
+  else if (r.open === 'program_add' && r.program) openProgram(r.program, '', { add: r.item ?? true });
+  else if (r.open === 'feature' && r.feature) {
+    const f = projectId ? featureBySlug(projectId, r.feature) : features().find((x) => x.slug === r.feature);
+    if (f) openFeature(f.id);
+    else if (r.program) openProgram(r.program);
+  } else return false;
   return true;
 }
 
@@ -2156,6 +2167,25 @@ export function commands() {
       id: `feature.delete.${f.id}`,
       label: `Delete feature ${f.slug}…`,
       run: () => (app.overlay = { kind: 'delete-feature', featureId: f.id }),
+    });
+  }
+  // Ready parents (notes §12.7): "Run as program: #12 Checkout v2".
+  for (const it of app.now.intake?.items ?? []) {
+    if (!it.node || it.actions?.program !== 'ok' || it.hidden) continue;
+    const name = `${it.ref ? `${it.ref} ` : ''}${it.title ?? ''}`.trim();
+    list.push({
+      id: `program.plan.${it.node}`,
+      label: `Run as program: ${name}`,
+      run: () => openProgramPlan([it.node], { title: name }),
+    });
+  }
+  // Programs in progress (notes §12.7): "Program: Checkout v2", "Pause program Checkout v2".
+  for (const p of Object.values(app.now.programs ?? {})) {
+    list.push({ id: `program.open.${p.id}`, label: `Program: ${p.title}`, run: () => openProgram(p.id, p.title) });
+    list.push({
+      id: `program.pause.${p.id}`,
+      label: `${p.status === 'paused' ? 'Resume' : 'Pause'} program ${p.title}`,
+      run: () => togglePause(p),
     });
   }
   for (const p of projects()) {

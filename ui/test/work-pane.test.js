@@ -176,7 +176,7 @@ describe('keys (§12.1)', () => {
     expect(calls.some(([c]) => c === 'agent_start' || c === 'feature_launch')).toBe(false);
   });
 
-  it('a disabled start says why; p on a program root opens the program (stub until F5)', async () => {
+  it('a disabled start says why; p on a container opens the plan dialog', async () => {
     const { container, pane } = await mount(['shop-api'], { prefs: { focused: 'gh:acme/shop#20' } });
     await waitFor(() => expect(row(container, 'gh:acme/shop#20')?.classList.contains('focused')).toBe(true));
     await press(pane, 't');
@@ -185,7 +185,8 @@ describe('keys (§12.1)', () => {
     await press(pane, 'k');
     await press(pane, 'k');
     await press(pane, 'p'); // the milestone: Run as program
-    expect(app.toasts.at(-1).text).toContain('Run as program · v2');
+    expect(app.overlay).toMatchObject({ kind: 'program-plan', roots: [V2], title: 'v2' });
+    app.overlay = null;
   });
 
   it('⌫ hides from Ready with Undo; u undoes within 5 s', async () => {
@@ -302,7 +303,9 @@ describe('selection (§5.4, S19)', () => {
     await press(pane, 'x');
     expect(app.toasts.at(-1).text).toBe('Select items under the same parent to run them as one program.');
     await press(pane, 'p');
-    expect(app.toasts.at(-1).text).toContain('3 selected');
+    expect(app.overlay).toMatchObject({ kind: 'program-plan', title: '#12 Checkout v2' });
+    expect(app.overlay.roots).toHaveLength(3);
+    app.overlay = null;
   });
 });
 
@@ -396,6 +399,30 @@ describe('search (§4.1)', () => {
     await waitFor(() =>
       expect(text(container.querySelector('[data-results]'))).toContain('No results for "adress" in shop-api'),
     );
+  });
+});
+
+describe('search status (B5)', () => {
+  it('a project that failed is said in the results header', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    replies.work_search = {
+      nodes: [
+        {
+          ...wn('gh:acme/shop#13', { title: 'Address step' }),
+          breadcrumb: [],
+          match: { field: 'title', snippet: null },
+        },
+      ],
+      total: 1,
+      hidden_by_filters: 0,
+      status: { 'shop-api': { status: 'error', error: { code: 'not_logged_in', message: 'gh is not logged in' } } },
+    };
+    const { container } = await mount();
+    const input = container.querySelector('input[type="search"]');
+    await fireEvent.input(input, { target: { value: 'address' } });
+    await vi.advanceTimersByTimeAsync(260);
+    await waitFor(() => expect(container.querySelector('[data-search-status="shop-api"]')).toBeTruthy());
+    expect(text(container.querySelector('[data-search-status="shop-api"]'))).toContain('shop-api ·');
   });
 });
 

@@ -467,6 +467,8 @@ export class WorkView {
         nodes: r?.nodes ?? [],
         total: r?.total ?? r?.nodes?.length ?? 0,
         hidden: r?.hidden_by_filters ?? 0,
+        // Per project (B5): a project that failed is said in the results header.
+        status: r?.status ?? {},
       };
     } catch (e) {
       if (seq === this.#searchSeq) this.results = { nodes: [], total: 0, hidden: 0, error: errText(e) };
@@ -656,6 +658,17 @@ export class WorkView {
       if (l) m.set(p.id, l);
     }
     return m;
+  }
+
+  /** The search header's lines: each project of the scope whose search status is an error. */
+  searchLines(now = Date.now()) {
+    const st = this.results?.status ?? {};
+    const out = [];
+    for (const p of this.scope) {
+      const l = statusLine(p, st[p.id], now);
+      if (l?.tone === 'error') out.push({ pid: p.id, text: l.text });
+    }
+    return out;
   }
 
   /** @type {((text: string, opts?: any) => any) | null} set by the pane */

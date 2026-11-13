@@ -6,6 +6,7 @@
   // `lanes()` (lib/mission.js); this pane keeps the selection, the open
   // lanes and details, and the keys (notes §3.1).
   import { untrack } from 'svelte';
+  import ProgramRow from '../components/mission/ProgramRow.svelte';
   import QueueRow from '../components/mission/QueueRow.svelte';
   import ReadyDetails from '../components/mission/ReadyDetails.svelte';
   import ReadyLine from '../components/mission/ReadyLine.svelte';
@@ -41,9 +42,11 @@
   import { isTypingTarget } from '../lib/keyboard.js';
   import { allowed, COUNT_KEYS, DONE_ROWS, decisionOf, defaultTarget, footerText, hiddenText, lanes, looseText, rowIndex, stops, target } from '../lib/mission.js';
   import { attention } from '../lib/now.svelte.js';
+  import { liveCapText, SUBROWS_OPEN_MAX } from '../lib/program.js';
+  import { TRACKERS } from '../lib/source.js';
   import { LEVEL } from '../lib/status.js';
   import { tooltip } from '../lib/tooltip.js';
-  import { openProgramPlan, openWork } from '../lib/work.js';
+  import { cancelProgram, openProgram, openProgramFeature, openProgramPlan, openProgramSource, openWork, togglePause } from '../lib/work.js';
 
   let { paneId } = $props();
 
@@ -53,6 +56,7 @@
   let idleOpen = $state(false);
   let showAll = $state(false);
   let details = $state({});
+  let subrows = $state({}); // program id → sub-rows shown (default: ≤ 5 features)
   let busy = $state(null); // the agent an action waits on
   let lastAt = 0; // the selection's last stop index (a row that leaves gives its place to the next)
 
@@ -156,8 +160,25 @@
     confirm(`Kill ${id}?`, 'It loses its current turn. Its process group and leftover processes in its worktree get SIGTERM, then SIGKILL after 5 s.', () => act(id, 'kill'), 'Kill');
   }
 
+  // ---- Programs (improve-intake notes §7.1, §12.2)
+
+  const subOpen = (p) => subrows[p.id] ?? p.features.length <= SUBROWS_OPEN_MAX;
+  const toggleSubs = (p) => (subrows = { ...subrows, [p.id]: !subOpen(p) });
+  /** The tracker's name for a project's sub-row flags ("closed in GitHub"). */
+  const trackerFor = (project) => TRACKERS[(app.now.intake?.sources ?? []).find((s) => s.project === project)?.type] ?? 'the tracker';
+  const liveCap = $derived(liveCapText(app.now.counts?.global));
+  const progActs = (p) => ({
+    ontoggle: () => toggleSubs(p),
+    onopen: () => openProgram(p.id, p.title),
+    onpause: () => togglePause(p),
+    oncancel: () => cancelProgram(p),
+    onsource: () => openProgramSource(p.id),
+    onfeature: (f) => openProgramFeature(p, f),
+  });
+
   /** `o` on an outcome (notes §1.7). */
   function openOutcome(o) {
+    if (o.kind === 'program' && o.program) return openProgram(o.program);
     if (o.url) return openUrl(o.url);
     if (o.kind === 'turn_done' && o.agent) return openSession(o.agent);
     if (o.kind === 'report_ready') return openReport(o.report ?? 'current');
@@ -188,6 +209,7 @@
     if (row?.kind === 'outcome') return openOutcome(row.outcome);
     if (row?.kind === 'ready') return row.hidden ? unhideItem(row.item) : startItem(row.item, modeOf(row.item));
     if (row?.kind === 'iline') return lineAct(row);
+    if (row?.kind === 'program') return openProgram(row.program.id, row.program.title);
     if (t) openSession(t);
   }
 
@@ -234,6 +256,14 @@
       e.preventDefault();
       fn();
     };
+    // A program row (notes §12.2): p pause / resume, ⇧K cancel, space sub-rows, o source; ⏎ below.
+    if (row?.kind === 'program') {
+      const p = row.program;
+      if (k === 'K' && e.shiftKey) return run(() => cancelProgram(p));
+      if (k === 'p') return run(() => togglePause(p));
+      if (k === ' ') return run(() => toggleSubs(p));
+      if (k === 'o') return run(() => openProgramSource(p.id));
+    }
     // ⇧K kills; k (and a caps-lock K) moves up (notes §3.2).
     if (k === 'K' && e.shiftKey) return t && trec ? run(() => kill(t)) : undefined;
     if (k === 'j' || k === 'ArrowDown') return run(() => move(1));
@@ -299,6 +329,13 @@
   {#if r.kind === 'outcome'}
     <div role="row" aria-selected={sel} data-key={r.key}>
       <div role="gridcell"><OutcomeRow outcome={r.outcome} selected={sel} onselect={() => setSel(r.key)} /></div>
+    </div>
+  {:else if r.kind === 'program'}
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <div class="row program" class:sel role="row" tabindex="-1" aria-selected={sel} data-key={r.key} onclick={() => setSel(r.key)}>
+      <div role="gridcell" class="cell">
+        <ProgramRow row={r.program} name={projectName(r.program.project) ?? ''} tracker={trackerFor(r.program.project)} open={subOpen(r.program)} {liveCap} {...progActs(r.program)} />
+      </div>
     </div>
   {:else if r.kind === 'ready' || r.kind === 'iline'}
     <!-- svelte-ignore a11y_click_events_have_key_events -->
