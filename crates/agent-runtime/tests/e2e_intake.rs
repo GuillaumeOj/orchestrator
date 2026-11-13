@@ -25,7 +25,8 @@ struct FakeGh(Answers);
 impl orch_tasks::github::Gh for FakeGh {
     fn run(&self, args: &[String]) -> anyhow::Result<String> {
         assert!(!args.iter().any(|a| a == "-X" || a.contains("mutation")), "intake writes nothing: {args:?}");
-        let key = args.get(1).cloned().unwrap_or_default();
+        // The first argument after `api` that is not a flag (`--paginate`).
+        let key = args.iter().skip(1).find(|a| !a.starts_with('-')).cloned().unwrap_or_default();
         let a = self.0.lock().unwrap();
         match a.iter().filter(|(k, _)| key.starts_with(k.as_str())).max_by_key(|(k, _)| k.len()) {
             Some((_, v)) => Ok(v.to_string()),

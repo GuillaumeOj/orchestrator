@@ -135,6 +135,12 @@ export function shortRef(item, siblings = []) {
   return segs.length <= 2 ? ref : `…/${segs.slice(-2).join('/')}`;
 }
 
+/**
+ * The count in "+ n more": "12", "1990+" when the refresh stopped at the read bound
+ * (`partial`: `more` counts only what was read), "" when partial with nothing counted.
+ */
+export const moreCount = (more, partial) => (partial ? (more > 0 ? `${more}+` : '') : String(more));
+
 /** Up to two labels as chips (+n), without `size:*` / `size/*` and `orch*` (§2). */
 export function shownLabels(item) {
   const all = (item?.labels ?? []).filter((l) => !/^size[:/]/i.test(l) && !/^orch(:|$)/i.test(l));

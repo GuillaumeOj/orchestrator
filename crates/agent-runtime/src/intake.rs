@@ -499,6 +499,7 @@ impl Runtime {
                     status.error = None;
                     status.refreshed_at_ms = Some(now);
                     status.more = listing.more();
+                    status.partial = listing.partial;
                     status.tip = tip;
                     // An empty answer has no link to give: the last one stays.
                     status.url = listing.url.or(status.url.take());
@@ -574,7 +575,7 @@ impl Runtime {
             let source = self.db.intake_source(&p.id).unwrap_or_default();
             if source.is_none() {
                 sources.push(json!({"project": p.id, "type": "none", "label": "none", "status": "none",
-                    "error": null, "refreshed_at_ms": null, "url": null, "count": 0, "more": 0, "hidden": 0}));
+                    "error": null, "refreshed_at_ms": null, "url": null, "count": 0, "more": 0, "partial": false, "hidden": 0}));
                 continue;
             }
             let facts = self.project_facts(p);
@@ -605,6 +606,8 @@ impl Runtime {
                 "url": source_url(&source, repo.as_deref(), status.url.as_deref()),
                 "count": shown,
                 "more": ready.len().saturating_sub(shown) + status.more,
+                // An error answers nothing: the last refresh's bound is not shown with it.
+                "partial": status.partial && status.error.is_none(),
                 "hidden": hidden.len(),
             }));
         }
@@ -647,7 +650,7 @@ impl Runtime {
         let items: Vec<Value> =
             ready.iter().take(PREVIEW).map(|r| item_json(&ItemFields::of_row(r), &facts, &est)).collect();
         Ok(
-            json!({"preview": {"count": ready.len().min(src::CAP), "more": more, "items": items, "error": status.error}}),
+            json!({"preview": {"count": ready.len().min(src::CAP), "more": more, "partial": status.partial && status.error.is_none(), "items": items, "error": status.error}}),
         )
     }
 
@@ -665,9 +668,9 @@ impl Runtime {
                     .take(PREVIEW)
                     .map(|f| item_json(&ItemFields::of_upsert(&f.upsert(), &p.id, s.kind()), &facts, &est))
                     .collect();
-                json!({"count": l.items.len(), "more": l.more(), "items": items, "error": null})
+                json!({"count": l.items.len(), "more": l.more(), "partial": l.partial, "items": items, "error": null})
             }
-            Err(e) => json!({"count": 0, "more": 0, "items": [], "error": e.json()}),
+            Err(e) => json!({"count": 0, "more": 0, "partial": false, "items": [], "error": e.json()}),
         })
     }
 
