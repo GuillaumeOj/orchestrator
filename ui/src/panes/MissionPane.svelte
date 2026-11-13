@@ -36,13 +36,14 @@
   } from '../lib/app.svelte.js';
   import { mb, startOfDay } from '../lib/format.js';
   import { isOpen } from '../lib/inbox.js';
-  import { ageText, modeOf, rateLimitedUntil } from '../lib/intake.js';
+  import { ageText, modeOf, originOf, rateLimitedUntil } from '../lib/intake.js';
   import { fixSource, hideItem, intakeUi, openSource, planWithOverwatchIn, refreshIntake, setUpIntake, startItem, undoHide, unhideItem } from '../lib/intake.svelte.js';
   import { isTypingTarget } from '../lib/keyboard.js';
   import { allowed, COUNT_KEYS, DONE_ROWS, decisionOf, defaultTarget, footerText, hiddenText, lanes, looseText, rowIndex, stops, target } from '../lib/mission.js';
   import { attention } from '../lib/now.svelte.js';
   import { LEVEL } from '../lib/status.js';
   import { tooltip } from '../lib/tooltip.js';
+  import { openProgramPlan, openWork } from '../lib/work.js';
 
   let { paneId } = $props();
 
@@ -195,7 +196,22 @@
   const refreshLane = () => refreshIntake((app.now.intake?.sources ?? []).filter((s) => s.type !== 'none' && (!filter || filter.includes(s.project))).map((s) => s.project));
 
   /** A Ready item's actions, for its row and its details. */
-  const itemActs = (it) => ({ onstart: (m) => startItem(it, m), onhide: () => hideItem(it), onunhide: () => unhideItem(it), onsource: () => openSource(it, openEditor) });
+  const itemActs = (it) => ({
+    onstart: (m) => startItem(it, m),
+    onhide: () => hideItem(it),
+    onunhide: () => unhideItem(it),
+    onsource: () => openSource(it, openEditor),
+    onprogram: () => runAsProgram(it),
+    onwork: () => showInWork(it),
+  });
+
+  /** `p` / ⋯ "Run as program": the plan dialog of this parent (F5 implements it behind the hook). */
+  const runAsProgram = (it) => it.node && it.actions?.program === 'ok' && openProgramPlan([it.node], { title: it.title });
+
+  /** `w` on a Ready row: Work revealed at that item; elsewhere, Work on the filter's projects (all without a filter). */
+  const showInWork = (it) => openWork({ projects: [it.project], reveal: it.node ?? null });
+  const browseScope = $derived(filter ?? (ps.length === 1 ? [ps[0].id] : null));
+  const browse = () => openWork({ projects: browseScope });
 
   /** ⏎ / a click on a line (notes §4.1, §10.1). */
   function lineAct(r) {
@@ -226,6 +242,7 @@
     if (k === 'l' || k === 'ArrowRight') return run(() => moveChip(1));
     if (k === 'R' && e.shiftKey) return run(refreshLane);
     if (k === 'H' && e.shiftKey) return run(() => (intakeUi.showHidden = !intakeUi.showHidden));
+    if (k === 'w') return run(() => (row?.kind === 'ready' && row.item.node ? showInWork(row.item) : browse()));
     if (k === 'u' && intakeUi.lastHide) return run(undoHide);
     if (row?.kind === 'ready') {
       const it = row.item;
@@ -233,6 +250,7 @@
       if (!row.hidden && k === 'a') return run(() => startItem(it, 'solo'));
       if (k === 'x' || k === 'Backspace') return run(() => (row.hidden ? unhideItem(it) : hideItem(it)));
       if (k === 'o') return run(() => openSource(it, openEditor));
+      if (k === 'p' && !row.hidden && it.actions?.program === 'ok') return run(() => runAsProgram(it));
     }
     if (row?.kind === 'iline' && k === 'e' && (row.line === 'nosource' || row.line === 'error')) return run(() => setUp(row));
     if (k === 'Enter') return run(onEnter);
@@ -310,7 +328,7 @@
             {looseText(r.count)} · <button type="button" class="linkbtn" tabindex="-1" use:tooltip={{ label: 'Show card', key: 'd' }} onclick={(e) => (e.stopPropagation(), focusCard(r.ids[0]))}>Show card</button>
           </div>
         {/if}
-        {#if details[r.key] && r.kind !== 'decisions'}<RowDetails ids={ids(r)} {now} origin={r.kind === 'run' ? r.run.origin : r.agent?.origin} />{/if}
+        {#if details[r.key] && r.kind !== 'decisions'}<RowDetails ids={ids(r)} {now} origin={originOf(r.kind === 'run' ? r.run : r.agent)} />{/if}
       </div>
     </div>
   {/if}
@@ -321,6 +339,8 @@
   <div class="toolbar">
     <b>Mission control</b>
     <span class="muted">{ctx ? `in ${projectName(ctx)}` : 'every project'} · follows the project context</span>
+    <span class="grow"></span>
+    <button type="button" class="btn" tabindex="-1" onclick={browse} use:tooltip={{ label: 'Work', key: 'w', detail: 'Browse GitHub, Linear and local work of the shown projects' }}>Work</button>
   </div>
 
   <div class="scroll" role="grid" aria-label="Mission control rows" aria-readonly="true">
@@ -367,6 +387,7 @@
                   {#if st.refreshing}refreshing…{:else if st.failed}{st.failed === 1 ? '1 source failed' : `${st.failed} sources failed`}{:else if st.oldest != null}updated {ageText(st.oldest, now)}{/if}
                 </span>
                 {#if st.withSource}
+                  <button class="btn ghost rbtn" tabindex="-1" onclick={browse} use:tooltip={{ label: 'Browse all', key: 'w', detail: browseScope?.length === 1 ? `Open Work for ${projectName(browseScope[0])}` : 'Open Work for the shown projects' }}>Browse all</button>
                   <button class="btn ghost rbtn" tabindex="-1" disabled={st.refreshing || (app.now.intake?.sources ?? []).some((s) => (!filter || filter.includes(s.project)) && rateLimitedUntil(s, now))} onclick={refreshLane} use:tooltip={{ label: 'Refresh', key: '⇧R', detail: 'Check GitHub, Linear and repo docs now' }}>{st.refreshing ? 'Refreshing…' : 'Refresh'}</button>
                 {/if}
                 {#if !shut && st.hidden > 0}

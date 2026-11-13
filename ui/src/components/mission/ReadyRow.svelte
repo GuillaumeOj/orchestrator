@@ -4,12 +4,12 @@
   // warning, Start team run / Start solo (neutral, opening the prefilled dialogs) and
   // the ⋯ menu (Hide, Open source, Details). Not attention: neutral surface, dashed rule.
   // Under 880 px of row width the project and labels drop to line 2 and the buttons shorten.
-  import { estimateText, estimateTip, MODE_LABEL, modeOf, roomWarning, SOURCE_NAME, shownLabels, startLabel } from '../../lib/intake.js';
+  import { crumbLine, crumbTip, estimateText, estimateTip, MODE_LABEL, modeOf, roomWarning, SOURCE_NAME, shownLabels, startLabel } from '../../lib/intake.js';
   import { tooltip } from '../../lib/tooltip.js';
   import Menu from '../Menu.svelte';
 
-  /** @type {{ row: any, selected?: boolean, starting?: boolean, onstart?: (mode: 'team' | 'solo') => void, onhide?: () => void, onunhide?: () => void, onsource?: () => void, ondetails?: () => void }} */
-  let { row, selected = false, starting = false, onstart = () => {}, onhide = () => {}, onunhide = () => {}, onsource = () => {}, ondetails = () => {} } = $props();
+  /** @type {{ row: any, selected?: boolean, starting?: boolean, onstart?: (mode: 'team' | 'solo') => void, onhide?: () => void, onunhide?: () => void, onsource?: () => void, ondetails?: () => void, onprogram?: () => void, onwork?: () => void }} */
+  let { row, selected = false, starting = false, onstart = () => {}, onhide = () => {}, onunhide = () => {}, onsource = () => {}, ondetails = () => {}, onprogram = () => {}, onwork = () => {} } = $props();
 
   const item = $derived(row.item);
   const mode = $derived(modeOf(item));
@@ -20,7 +20,12 @@
   const GLYPH = { github: '\u{F02A4}', linear: '\u{F0E6D}', repo_docs: '\u{F0214}' };
   const GLYPH_NAME = { github: 'GitHub issue', linear: 'Linear issue', repo_docs: 'Repo doc' };
   // The row's `⋯` (shared Menu, keys right-aligned: they work on the selected row).
+  // The breadcrumb (notes §8): the whole chain at 1512, the parent alone below 880 px (the narrow span).
+  const crumbs = $derived(item.breadcrumb ?? []);
+  const asProgram = $derived(item.actions?.program === 'ok');
   const menuItems = $derived([
+    ...(asProgram && !row.hidden ? [{ id: 'program', label: 'Run as program', key: 'p', run: () => onprogram() }] : []),
+    ...(item.node ? [{ id: 'work', label: 'Show in Work', key: 'w', run: () => onwork() }] : []),
     { id: 'details', label: 'Details', key: 'space', run: () => ondetails() },
     { id: 'source', label: 'Open source', key: 'o', run: () => onsource() },
     ...(row.hidden ? [] : [{ id: 'hide', label: 'Hide', key: 'x', run: () => onhide() }]),
@@ -56,6 +61,7 @@
   <!-- Line 2 at every width (boards): [warning ·] project · ≤ 2 label chips. -->
   <div class="l2">
     {#if warn}<span class="warn"><span aria-hidden="true">{'\u{F0026}'}</span> {warn}</span><span aria-hidden="true">·</span>{/if}
+    {#if crumbs.length}<span class="crumb" title={crumbTip(crumbs)}><span class="wide">in {crumbLine(crumbs)}</span><span class="narrow">in {crumbLine(crumbs, { parentOnly: true })}</span></span><span aria-hidden="true">·</span>{/if}
     <span class="proj">{row.name}</span>
     {#each labels.chips as l (l)}<span class="chip">{l}</span>{/each}{#if labels.more}<span class="chip">+{labels.more}</span>{/if}
   </div>
@@ -133,6 +139,11 @@
   }
   .warn {
     color: var(--color-text-muted);
+  }
+  .crumb {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   .menuwrap {
     position: relative;

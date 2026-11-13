@@ -141,8 +141,8 @@ describe('the brief card', () => {
     );
   });
 
-  it('Launch and Edit open the prefilled dialog through intake_prefill and decide nothing', async () => {
-    replies.intake_prefill = {
+  it('Launch and Edit open the prefilled dialog through brief_prefill and decide nothing', async () => {
+    replies.brief_prefill = {
       launch: {
         project_id: 'shop-api',
         team_id: 'default-web',
@@ -154,7 +154,7 @@ describe('the brief card', () => {
     const c = await open();
     await fireEvent.click(buttons(cardOf(c))[0]);
     await settle();
-    expect(calls.find(([k]) => k === 'intake_prefill')[1]).toEqual({ brief_decision: 'd_88', mode: 'team' });
+    expect(calls.find(([k]) => k === 'brief_prefill')[1]).toEqual({ decision: 'd_88', mode: 'team' });
     expect(app.overlay).toMatchObject({
       kind: 'launch',
       intake: { brief_decision: 'd_88' },
@@ -168,17 +168,16 @@ describe('the brief card', () => {
   });
 
   it('Edit focuses the brief; a solo brief opens the session dialog', async () => {
-    replies.intake_prefill = { session: { project_id: 'shop-api', name: 'partial-refunds', message: 'x' } };
+    replies.brief_prefill = { session: { project_id: 'shop-api', name: 'partial-refunds', message: 'x' } };
     const c = await open(brief({ mode: 'solo' }));
     await fireEvent.click(buttons(cardOf(c))[1]);
     await settle();
-    expect(calls.find(([k]) => k === 'intake_prefill')[1]).toEqual({ brief_decision: 'd_88', mode: 'solo' });
+    expect(calls.find(([k]) => k === 'brief_prefill')[1]).toEqual({ decision: 'd_88', mode: 'solo' });
     expect(app.overlay).toMatchObject({ kind: 'new-session', focus: 'brief' });
   });
 
   it('a stale brief does not open the dialog and says so', async () => {
-    replies.intake_prefill = Object.assign(new Error('x'), { code: 'stale', message: 'brief closed' });
-    replies.intake_prefill = new Error(JSON.stringify({ code: 'stale', message: 'brief closed' }));
+    replies.brief_prefill = new Error(JSON.stringify({ code: 'stale', message: 'brief closed' }));
     const c = await open();
     await fireEvent.click(buttons(cardOf(c))[0]);
     await settle();
@@ -290,11 +289,11 @@ describe('Plan with the Overwatch', () => {
     expect(entryOf('intake.plan').detail).toBe('off: your message waits');
   });
 
-  it('Refresh calls intake_refresh for the context project (design-notes §5.1 rule 7)', async () => {
+  it('Refresh calls work_refresh for the context project (design-notes §5.1 rule 7)', async () => {
     app.workspace = { project: 'blog' };
     entryOf('intake.refresh').run();
     await settle();
-    expect(calls.filter(([k]) => k === 'intake_refresh').map(([, a]) => a)).toEqual([{ project: 'blog' }]);
+    expect(calls.filter(([k]) => k === 'work_refresh').map(([, a]) => a)).toEqual([{ project: 'blog' }]);
   });
 
   it('the input shows the tag, chat_send carries the context, the tag stays, ✕ clears it', async () => {

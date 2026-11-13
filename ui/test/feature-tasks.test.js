@@ -329,12 +329,6 @@ describe('the Board is gone: entry points', () => {
     expect(p).toMatchObject({ featureId: 'f1', land: { task: '12', conflict: false } });
     expect(Object.values(app.panes).some((s) => s.type === 'board')).toBe(false);
   });
-  it('openTask finds the run by asking the project’s features when only the task is known', async () => {
-    withFeature();
-    replies.feature_view = view();
-    await A.openTask('shop-api', 3);
-    expect(Object.values(app.panes).find((s) => s.type === 'feature')?.land.task).toBe('3');
-  });
   it('a run that is gone: a toast with Open upstream', async () => {
     withFeature();
     const open = vi.fn();

@@ -4,6 +4,7 @@
   // PR's link, the time on the right. The text truncates, the time never does.
   import { openUrl } from '../lib/app.svelte.js';
   import { clock } from '../lib/format.js';
+  import { originOf } from '../lib/intake.js';
   import { OUTCOME } from '../lib/status.js';
   import OriginChip from './mission/OriginChip.svelte';
 
@@ -19,7 +20,7 @@
   <span class="text">
     {#if outcome.url}<button class="link" onclick={(e) => (e.stopPropagation(), openUrl(outcome.url))}>{outcome.text}</button>{:else}{outcome.text}{/if}{#if outcome.kind === 'task_done' && outcome.agent}{' '}<span class="muted">({outcome.agent})</span>{/if}
   </span>
-  {#if outcome.origin}<OriginChip origin={outcome.origin} project={outcome.project} suffix="· " />{/if}
+  {#if originOf(outcome)}<OriginChip origin={originOf(outcome)} project={outcome.project} suffix="· " />{/if}
   <span class="muted at">{clock(outcome.at_ms)}</span>
 </div>
 
