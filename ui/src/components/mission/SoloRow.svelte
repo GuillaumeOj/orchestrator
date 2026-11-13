@@ -1,4 +1,5 @@
 <script>
+  import { originOf } from '../../lib/intake.js';
   // Solo row (notes §1.4, Penpot P4.2 Solo row): project › session, the
   // status badge and the waiting-on chip (reason + since, or the activity).
   import StatusBadge from '../StatusBadge.svelte';
@@ -10,7 +11,7 @@
 
 <div class="l1">
   <span class="where"><span class="muted">{rec.project ?? '—'} ›</span> <b>{rec.agent}</b></span>
-  {#if rec.origin}<OriginChip origin={rec.origin} project={rec.project} />{/if}
+  {#if originOf(rec)}<OriginChip origin={originOf(rec)} project={rec.project} />{/if}
   <StatusBadge state={rec.status} />
   <span class="why" class:error={rec.level === 'error'}><WaitingChip {rec} compact /></span>
 </div>

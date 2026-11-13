@@ -1,7 +1,7 @@
 <script>
   // Ready row details (`space`, P4.5 notes §3): the item's text (plain, never HTML or links), both
   // modes' estimates with their basis, the room, labels, milestone / priority / assignees,
-  // when it changed. Loads the full body with `intake_item` once opened (a user action).
+  // when it changed. Loads the full body with `work_node` once opened (a user action).
   import { onMount } from 'svelte';
   import { clock, dayTime } from '../../lib/format.js';
   import { ageText, basisText, exactRange, overRoom, SOURCE_NAME } from '../../lib/intake.js';
@@ -11,13 +11,13 @@
   /** @type {{ item: any, name: string, now: number, hidden?: boolean, onstart?: (m: 'team' | 'solo') => void, onhide?: () => void, onunhide?: () => void, onsource?: () => void }} */
   let { item, name, now, hidden = false, onstart = () => {}, onhide = () => {}, onunhide = () => {}, onsource = () => {} } = $props();
 
-  let full = $state(null); // { item, body, truncated, milestone, … } from intake_item
+  let full = $state(null); // the WorkNode with `body`, `body_clipped` from work_node
   let failed = $state(null);
   let more = $state(false);
 
   onMount(() => {
     let alive = true;
-    invoke('intake_item', { item: item.id })
+    invoke('work_node', { id: item.node ?? item.id, opts: { children: false } })
       .then((r) => alive && (full = r))
       .catch((e) => alive && (failed = errText(e)));
     return () => {
@@ -25,22 +25,24 @@
     };
   });
 
+  const PRIORITY = { 1: 'Urgent', 2: 'High', 3: 'Medium', 4: 'Low' };
   // The front matter block is not shown (its keys appear below).
   const stripFront = (t) => String(t ?? '').replace(/^---\n[\s\S]*?\n---\n?/, '');
   const text = $derived(full ? stripFront(full.body) : item.excerpt);
   const lines = $derived(String(text ?? '').split('\n'));
   const clamped = $derived(!more && lines.length > 12);
   const shown = $derived(clamped ? lines.slice(0, 12).join('\n') : text);
-  const info = $derived(full?.item ?? item);
+  const up = $derived(full?.upstream ?? {});
+  const info = $derived({ updated_at_ms: up.updated_at_ms ?? item.updated_at_ms });
   const est = $derived(item.estimate);
   const room = $derived(est?.room_pp != null ? `${Number(est.room_pp).toFixed(1)} pp left this week${est.room_scope === 'allocation' ? ` for ${name}` : ''}` : '');
   const labels = $derived(item.labels ?? []);
   const rows = $derived(
     [
-      ['Milestone', full?.milestone],
-      ['Priority', full?.priority],
-      ['Points', full?.points],
-      ['Assignees', full?.assignees?.length ? full.assignees.join(', ') : null],
+      ['Milestone', up.milestone],
+      ['Priority', PRIORITY[up.priority] ?? null],
+      ['Points', up.estimate],
+      ['Assignees', up.assignees?.length ? up.assignees.join(', ') : null],
     ].filter(([, v]) => v != null && v !== ''),
   );
   const front = $derived(
@@ -55,7 +57,7 @@
   <div class="hd"><b class="mono">{item.ref}</b> <span class="muted">· {SOURCE_NAME[item.source]}</span></div>
   <div class="body" aria-label="Item text">{shown}{#if full == null && !failed} <span class="muted">Loading…</span>{/if}</div>
   {#if lines.length > 12}<button class="link" tabindex="-1" onclick={(e) => (e.stopPropagation(), (more = !more))}>{more ? 'Show less' : 'Show more'}</button>{/if}
-  {#if full?.truncated}<div class="muted">Shortened to 4 000 characters. Open the source for the rest.</div>{/if}
+  {#if full?.body_clipped}<div class="muted">Shortened to 4 000 characters. Open the source for the rest.</div>{/if}
   {#if failed}<div class="error">Could not load the full text: {failed}</div>{/if}
   <hr />
   <dl>
