@@ -432,6 +432,7 @@ impl Runtime {
         drop(st);
         snap["overwatch"] = json!(self.overwatch_status());
         snap["intake"] = self.intake_view();
+        snap["programs"] = self.programs_snapshot();
         let mut entries = self.db.chat_day(&day).unwrap_or_default();
         self.refresh_undo(&mut entries);
         snap["chat"] = json!({"entries": entries, "day": day});
@@ -483,6 +484,12 @@ impl Runtime {
             .filter(|v| self.intake.publish(v));
         if intake.is_some() {
             topics.insert(crate::intake::TOPIC.into());
+        }
+        // `now.programs`: `{upsert, remove}` since the last one sent (B4, F21).
+        let programs_noted = topics.remove(orch_store::PROGRAMS_TOPIC) | db_topics.remove(orch_store::PROGRAMS_TOPIC);
+        let programs = (force || programs_noted).then(|| self.programs_delta()).flatten();
+        if programs.is_some() {
+            topics.insert(orch_store::PROGRAMS_TOPIC.into());
         }
         let mut st = lock(&self.now.state);
         let queue_moved = st.queue.as_ref() != Some(&queue_now);
@@ -552,6 +559,17 @@ impl Runtime {
             projects: &st.team.projects,
             startup_timeout_ms: self.cfg.startup_timeout.as_millis() as u64,
         });
+        // Spec and PR decisions of a program's features carry the program (F29).
+        {
+            let tags = self.program_of_starts();
+            if !tags.is_empty() {
+                for d in decisions.iter_mut() {
+                    if let Some((t, _)) = d.subject["run"].as_str().and_then(|r| tags.get(r)) {
+                        d.program = Some(t.clone());
+                    }
+                }
+            }
+        }
         // The Overwatch's annotations of cards that have no stored row (D7).
         {
             let mut notes = self.overwatch.annotations.lock().unwrap_or_else(|e| e.into_inner());
@@ -684,6 +702,9 @@ impl Runtime {
         }
         if let (Some(e), Some(i)) = (event.as_mut(), intake) {
             e["intake"] = i;
+        }
+        if let (Some(e), Some(p)) = (event.as_mut(), programs) {
+            e["programs"] = p;
         }
         state.decisions = decisions;
         state.last = Some(world);

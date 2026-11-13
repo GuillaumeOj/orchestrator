@@ -13,6 +13,9 @@ use crate::db::Store;
 use crate::teams::IntakeSource;
 use crate::util::{js, opt_u64};
 
+/// The `now` topic program writes touch.
+pub const PROGRAMS_TOPIC: &str = "programs";
+
 /// The `now` topic intake writes touch.
 pub const TOPIC: &str = "intake";
 
@@ -294,6 +297,56 @@ impl Store {
                 })
             })?;
             Ok(rows.collect::<rusqlite::Result<_>>()?)
+        })
+    }
+
+    /// Stores a program (its whole JSON document); touches the `programs` topic.
+    pub fn upsert_program(&self, id: &str, project: &str, status: &str, data: &Value, now_ms: u64) -> Result<()> {
+        let (id, project, status, data) = (id.to_string(), project.to_string(), status.to_string(), js(data));
+        self.write(move |tx| {
+            tx.execute(
+                "INSERT INTO programs(id, project_id, status, data, created_at_ms, updated_at_ms)
+                 VALUES (?1,?2,?3,?4,?5,?5)
+                 ON CONFLICT(id) DO UPDATE SET status=?3, data=?4, updated_at_ms=?5",
+                params![id, project, status, data, now_ms as i64],
+            )?;
+            Ok(())
+        })?;
+        self.note([PROGRAMS_TOPIC]);
+        Ok(())
+    }
+
+    pub fn program(&self, id: &str) -> Result<Option<Value>> {
+        let id = id.to_string();
+        self.read(move |c| {
+            let s: Option<String> =
+                c.query_row("SELECT data FROM programs WHERE id=?1", [&id], |r| r.get(0)).optional()?;
+            Ok(s.and_then(|s| serde_json::from_str(&s).ok()))
+        })
+    }
+
+    /// The programs of one project (all when `None`), oldest first.
+    pub fn programs(&self, project: Option<&str>) -> Result<Vec<Value>> {
+        let p = project.map(str::to_string);
+        self.read(move |c| {
+            let mut st =
+                c.prepare("SELECT data FROM programs WHERE ?1 IS NULL OR project_id=?1 ORDER BY created_at_ms, id")?;
+            let rows: Vec<String> = st.query_map([p], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
+            Ok(rows.into_iter().filter_map(|s| serde_json::from_str(&s).ok()).collect())
+        })
+    }
+
+    /// The programs in progress (running or paused) of one project (all when `None`): what every
+    /// tick and snapshot reads, without parsing the finished ones.
+    pub fn programs_in_progress(&self, project: Option<&str>) -> Result<Vec<Value>> {
+        let p = project.map(str::to_string);
+        self.read(move |c| {
+            let mut st = c.prepare(
+                "SELECT data FROM programs WHERE status IN ('running','paused') AND (?1 IS NULL OR project_id=?1)
+                 ORDER BY created_at_ms, id",
+            )?;
+            let rows: Vec<String> = st.query_map([p], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
+            Ok(rows.into_iter().filter_map(|s| serde_json::from_str(&s).ok()).collect())
         })
     }
 
@@ -918,5 +971,20 @@ mod tests {
         t.tracker = crate::Tracker::Github { repo: Some("a/other".into()), project_board: None };
         s.set_tracker("p1", &t).unwrap();
         assert!(s.work_nodes(Some("p1")).unwrap().is_empty());
+    }
+
+    #[test]
+    fn programs_are_stored_whole_listed_by_project_and_deleted_with_it() {
+        let (_d, s) = store();
+        s.upsert_program("prg-1", "p1", "running", &json!({"id": "prg-1", "title": "A"}), 1).unwrap();
+        s.upsert_program("prg-2", "p2", "draft", &json!({"id": "prg-2"}), 2).unwrap();
+        s.upsert_program("prg-1", "p1", "done", &json!({"id": "prg-1", "title": "B"}), 3).unwrap();
+        assert_eq!(s.program("prg-1").unwrap().unwrap()["title"], "B");
+        assert!(s.program("nope").unwrap().is_none());
+        assert_eq!(s.programs(None).unwrap().len(), 2);
+        assert_eq!(s.programs(Some("p1")).unwrap().len(), 1);
+        s.delete_project("p1").unwrap();
+        assert!(s.programs(Some("p1")).unwrap().is_empty());
+        assert_eq!(s.programs(None).unwrap().len(), 1);
     }
 }

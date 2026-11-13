@@ -61,6 +61,11 @@ struct Sched {
     inflight: BTreeSet<String>,
 }
 
+/// A test's way to start a program feature without a terminal.
+#[cfg(test)]
+pub(crate) type TestStarter =
+    Box<dyn Fn(&Runtime, &crate::program::Feature) -> Result<(&'static str, String)> + Send + Sync>;
+
 /// The intake refresher's state, on the runtime.
 #[derive(Default)]
 pub struct Refresher {
@@ -69,6 +74,13 @@ pub struct Refresher {
     wake: Condvar,
     /// The `now.intake` last sent.
     published: Mutex<Option<Value>>,
+    /// Tests start features without a terminal: `(kind, id)` of what they started.
+    #[cfg(test)]
+    pub(crate) test_starter: Mutex<Option<TestStarter>>,
+    /// One program pass at a time (B4).
+    pub(crate) prog_lock: Mutex<()>,
+    /// The `now.programs` rows last sent, by id (B4).
+    pub(crate) prog_published: Mutex<Option<std::collections::BTreeMap<String, Value>>>,
     /// Per project: (when the last full tree read started, when the last read started) (ms).
     incr: Mutex<BTreeMap<String, (u64, u64)>>,
     /// Linear's 429 back-off, per project.
@@ -95,7 +107,7 @@ pub(crate) fn tracker_source(t: &TrackerSettings) -> &'static str {
     }
 }
 
-fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+pub(crate) fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
@@ -573,6 +585,7 @@ impl Runtime {
                     }
                     self.intake_estimates_update(true);
                     self.event("-", "work.changed", json!({"project": id}));
+                    self.programs_on_refresh(id);
                     self.event(
                         "-",
                         "intake.refreshed",
@@ -671,6 +684,28 @@ impl Runtime {
         let rows = self.db.intake_listed(None).unwrap_or_default();
         // Every node of the trees, for the breadcrumbs and the children.
         let all = self.db.work_index().unwrap_or_default();
+        let by_node: std::collections::HashMap<(&str, &str), &orch_store::WorkIndex> =
+            all.iter().map(|r| ((r.project_id.as_str(), r.node_id.as_str()), r)).collect();
+        let parents: std::collections::HashSet<(&str, &str)> =
+            all.iter().filter_map(|r| Some((r.project_id.as_str(), r.parent_id.as_deref()?))).collect();
+        // Items of a program in progress are its features', not Ready.
+        let in_program: std::collections::HashSet<(String, String)> = self
+            .db
+            .programs_in_progress(None)
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|v| serde_json::from_value::<crate::program::Program>(v).ok())
+            .filter(|p| matches!(p.status.as_str(), "running" | "paused"))
+            .flat_map(|p| {
+                let project = p.project;
+                p.features.into_iter().filter(|f| !f.skip).flat_map(move |f| {
+                    let project = project.clone();
+                    f.items.into_iter().map(move |i| (project.clone(), i))
+                })
+            })
+            .collect();
+        let rows: Vec<IntakeRow> =
+            rows.into_iter().filter(|r| !in_program.contains(&(r.project_id.clone(), r.node_id.clone()))).collect();
         let inflight = lock(&self.intake.sched).inflight.clone();
         let est = self.intake_est();
         let mut items = vec![];
@@ -692,15 +727,16 @@ impl Runtime {
             let hidden: Vec<&&IntakeRow> = mine.iter().filter(|r| r.state == IntakeState::Hidden).collect();
             let status = self.db.intake_status(&p.id).unwrap_or_default();
             let shown = ready.len().min(src::CAP);
-            // The tree: the node, its ancestors (root first, the project row left out) and the row actions.
-            let ctx = work::Ctx::new(self, p).ok();
+            // The tree: the node, its ancestors (root first, the project row left out) and the row
+            // actions: from the trees' shape only (this runs on every snapshot).
             for r in ready.iter().take(src::CAP).chain(hidden.iter()) {
                 let mut v = item_json(&ItemFields::of_row(r), &facts, &est);
                 v["node"] = json!(r.node_id);
-                if let Some((ctx, i)) = ctx.as_ref().and_then(|c| Some((c, c.index(&r.node_id)?))) {
-                    v["breadcrumb"] = json!(ctx.breadcrumb(i));
-                    v["actions"] = ctx.actions(i);
-                }
+                v["breadcrumb"] = json!(work::crumbs(&by_node, &r.project_id, r.parent_id.as_deref()));
+                v["actions"] = tracker::actions_json(
+                    facts.can_team,
+                    parents.contains(&(r.project_id.as_str(), r.node_id.as_str())),
+                );
                 items.push(v);
             }
             let repo = self.intake_repo_known(p, &source);

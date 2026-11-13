@@ -685,6 +685,19 @@ CREATE TABLE work_history (
 );
 CREATE INDEX work_history_node ON work_history(project_id, node_id, at_ms);
 "#,
+    // 21 (implement-improve-intake B4): programs (contract §4): the whole program
+    // (features with their live states, edges, cuts…) as one JSON document per row.
+    r#"
+CREATE TABLE programs (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    data TEXT NOT NULL,
+    created_at_ms INTEGER NOT NULL,
+    updated_at_ms INTEGER NOT NULL
+);
+CREATE INDEX programs_project ON programs(project_id, status);
+"#,
 ];
 
 pub(crate) fn migrate(c: &mut Connection) -> Result<()> {

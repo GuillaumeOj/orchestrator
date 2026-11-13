@@ -266,6 +266,7 @@ impl Store {
             tx.execute("DELETE FROM transcript_files WHERE project_id=?1", [&id])?;
             tx.execute("DELETE FROM terminals WHERE project_id=?1", [&id])?;
             tx.execute("DELETE FROM work_nodes WHERE project_id=?1", [&id])?;
+            tx.execute("DELETE FROM programs WHERE project_id=?1", [&id])?;
             tx.execute("DELETE FROM work_history WHERE project_id=?1", [&id])?;
             // The viewer and the fetched-children markers of its tree (`work.viewer:<id>`, `work.children:<id>:<node>`).
             let children = format!("work.children:{id}:");
