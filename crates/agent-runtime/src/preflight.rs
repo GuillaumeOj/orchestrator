@@ -169,9 +169,8 @@ mod tests {
             "claude 2.1.323 is newer than the last tested version (2.1.302). Agents still run. \
              To verify it, run `make contract` in an Orchestrator checkout (`docs/app/CONTRACT-TESTS.md`)."
         );
-        assert!(
-            Path::new("../../docs/app/CONTRACT-TESTS.md").exists() || Path::new("docs/app/CONTRACT-TESTS.md").exists()
-        );
+        let doc = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").join(VERIFY_DOC);
+        assert!(doc.exists(), "{VERIFY_DOC} is what the warning points to");
     }
 
     #[test]
