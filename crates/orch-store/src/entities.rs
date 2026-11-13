@@ -9,13 +9,27 @@ use governor::{Calibration, ForecastSnapshot, GovernorAction, PacingPolicy, Queu
 use rusqlite::{OptionalExtension, params};
 use serde_json::Value;
 
+use crate::TrackerSettings;
 use crate::db::Store;
 use crate::model::*;
 use crate::util::{from_js, js, json_row, ms, opt_u64, p, tag};
 
 const PROJECT_COLS: &str = "id, name, path, default_branch, remotes, worktree_root, task_backend, track_orchestrator_dir, settings, created_at_ms, last_active_at_ms, last_fetch_at_ms, last_fetch_error, archived";
 
+/// The columns [`row_project`] reads: the stored ones and the tracker, whose
+/// task backend is the project's `task_backend` (the old column is unread).
+const PROJECT_SELECT: &str = concat!(
+    "id, name, path, default_branch, remotes, worktree_root, task_backend, track_orchestrator_dir, settings, created_at_ms, last_active_at_ms, last_fetch_at_ms, last_fetch_error, archived",
+    ", tracker"
+);
+
 fn row_project(r: &rusqlite::Row) -> rusqlite::Result<Project> {
+    let task_backend = r.get::<_, String>(6)?;
+    let tracker: Option<String> = r.get(14)?;
+    let backend = match tracker.and_then(|t| serde_json::from_str::<crate::TrackerSettings>(&t).ok()) {
+        Some(t) => serde_json::to_value(t.task_backend()).unwrap_or_default(),
+        None => from_js(&task_backend)?,
+    };
     Ok(Project {
         id: r.get(0)?,
         name: r.get(1)?,
@@ -23,7 +37,7 @@ fn row_project(r: &rusqlite::Row) -> rusqlite::Result<Project> {
         default_branch: r.get(3)?,
         remotes: from_js(&r.get::<_, String>(4)?)?,
         worktree_root: PathBuf::from(r.get::<_, String>(5)?),
-        task_backend: from_js(&r.get::<_, String>(6)?)?,
+        task_backend: backend,
         track_orchestrator_dir: r.get(7)?,
         settings: from_js(&r.get::<_, String>(8)?)?,
         created_at_ms: r.get::<_, i64>(9)? as u64,
@@ -94,12 +108,20 @@ impl Store {
         let topics = [orch_protocol::Topic::Project(pr.id.clone()), orch_protocol::Topic::Board(pr.id.clone())];
         self.write_touching(topics, move |tx| {
             Store::reset_cursor_on_change(tx, &pr.id, &pr.backend(), Some(&p(&pr.path)))?;
+            // The tracker follows a changed task backend (a stale copy of the
+            // project never undoes a tracker edit: it carries the same backend).
+            let stored = crate::tracker::read_tracker(tx, &pr.id)?;
+            let tracker = match &stored {
+                Some(t) if t.task_backend() == pr.backend() => None,
+                Some(t) => Some(t.clone().with_backend(&pr.backend())),
+                None => Some(TrackerSettings::from_backend(&pr.backend())),
+            };
             tx.execute(
                 &format!(
                     "INSERT INTO projects({PROJECT_COLS}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)
                      ON CONFLICT(id) DO UPDATE SET name=excluded.name, path=excluded.path,
                        default_branch=excluded.default_branch, remotes=excluded.remotes,
-                       worktree_root=excluded.worktree_root, task_backend=excluded.task_backend,
+                       worktree_root=excluded.worktree_root,
                        track_orchestrator_dir=excluded.track_orchestrator_dir,
                        last_active_at_ms=excluded.last_active_at_ms, last_fetch_at_ms=excluded.last_fetch_at_ms,
                        last_fetch_error=excluded.last_fetch_error, archived=excluded.archived"
@@ -121,6 +143,9 @@ impl Store {
                     pr.archived
                 ],
             )?;
+            if let Some(t) = tracker {
+                tx.execute("UPDATE projects SET tracker=?2 WHERE id=?1", params![pr.id, js(&t)])?;
+            }
             Ok(())
         })
     }
@@ -128,7 +153,7 @@ impl Store {
     pub fn project(&self, id: &str) -> Result<Option<Project>> {
         let id = id.to_string();
         self.read(move |c| {
-            Ok(c.query_row(&format!("SELECT {PROJECT_COLS} FROM projects WHERE id=?1"), [id], row_project)
+            Ok(c.query_row(&format!("SELECT {PROJECT_SELECT} FROM projects WHERE id=?1"), [id], row_project)
                 .optional()?)
         })
     }
@@ -136,7 +161,7 @@ impl Store {
     pub fn project_by_path(&self, path: &Path) -> Result<Option<Project>> {
         let key = p(path);
         self.read(move |c| {
-            Ok(c.query_row(&format!("SELECT {PROJECT_COLS} FROM projects WHERE path=?1"), [key], row_project)
+            Ok(c.query_row(&format!("SELECT {PROJECT_SELECT} FROM projects WHERE path=?1"), [key], row_project)
                 .optional()?)
         })
     }
@@ -145,7 +170,7 @@ impl Store {
     pub fn projects(&self, with_archived: bool) -> Result<Vec<Project>> {
         self.read(move |c| {
             let mut st =
-                c.prepare(&format!("SELECT {PROJECT_COLS} FROM projects WHERE archived=0 OR ?1 ORDER BY name, id"))?;
+                c.prepare(&format!("SELECT {PROJECT_SELECT} FROM projects WHERE archived=0 OR ?1 ORDER BY name, id"))?;
             Ok(st.query_map([with_archived], row_project)?.collect::<rusqlite::Result<_>>()?)
         })
     }
@@ -240,7 +265,15 @@ impl Store {
             tx.execute("DELETE FROM transcript_fts WHERE project_id=?1", [&id])?;
             tx.execute("DELETE FROM transcript_files WHERE project_id=?1", [&id])?;
             tx.execute("DELETE FROM terminals WHERE project_id=?1", [&id])?;
-            tx.execute("DELETE FROM intake_items WHERE project_id=?1", [&id])?;
+            tx.execute("DELETE FROM work_nodes WHERE project_id=?1", [&id])?;
+            tx.execute("DELETE FROM programs WHERE project_id=?1", [&id])?;
+            tx.execute("DELETE FROM work_history WHERE project_id=?1", [&id])?;
+            // The viewer and the fetched-children markers of its tree (`work.viewer:<id>`, `work.children:<id>:<node>`).
+            let children = format!("work.children:{id}:");
+            tx.execute(
+                "DELETE FROM kv WHERE key=?1 OR substr(key, 1, length(?2))=?2",
+                params![format!("work.viewer:{id}"), children],
+            )?;
             tx.execute("DELETE FROM kv WHERE key=?1", [crate::intake::status_key(&id)])?;
             Store::delete_project_teams(tx, &id)?;
             tx.execute("DELETE FROM projects WHERE id=?1", [&id])?;
@@ -695,6 +728,17 @@ impl Store {
                 params![key, value],
             )?;
             Ok(())
+        })
+    }
+
+    /// The settings whose key starts with `prefix`, as `(key, value)`.
+    pub fn settings_prefixed(&self, prefix: &str) -> Result<Vec<(String, Value)>> {
+        let pat = format!("{}%", prefix.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_"));
+        self.read(move |c| {
+            let mut st = c.prepare("SELECT key, value FROM kv WHERE key LIKE ?1 ESCAPE '\\'")?;
+            let rows: Vec<(String, String)> =
+                st.query_map([pat], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
+            Ok(rows.into_iter().filter_map(|(k, v)| Some((k, serde_json::from_str(&v).ok()?))).collect())
         })
     }
 

@@ -30,6 +30,9 @@ function tipParams(p, node = null) {
   return v?.label ? v : null;
 }
 
+/** A tooltip param read when the tooltip shows: the full text, only when the element is cut (ellipsis). */
+export const ifCut = (text) => (/** @type {HTMLElement} */ node) => (node.scrollWidth > node.clientWidth ? text : null);
+
 function fill(t, { label, key, detail }) {
   t.replaceChildren();
   const line = document.createElement('div');

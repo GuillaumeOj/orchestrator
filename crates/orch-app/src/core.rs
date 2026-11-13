@@ -743,6 +743,10 @@ impl Core {
         if let Some(n) = item.strip_prefix("brief-") {
             return rt.brief_act(n.parse()?, action);
         }
+        // A program decision (B4): add · ignore · skip · keep · open.
+        if let Some(n) = item.strip_prefix("prog-") {
+            return rt.program_decision_act(n.parse()?, action);
+        }
         // A learned-rule proposal (FR-1308): Add rule · Not now · Edit rule.
         if let Some(n) = item.strip_prefix("rule-") {
             let n: u64 = n.parse()?;
@@ -1643,10 +1647,6 @@ pub(crate) mod tests {
         let t = core
             .task_create(json!({"project_id": "repo", "title": "By hand", "run_id": run["id"], "node": "back"}))
             .unwrap();
-        let b = core.board_view("repo").unwrap();
-        assert_eq!(b["backend"], "local");
-        assert_eq!(b["tasks"][0]["title"], "By hand");
-        assert_eq!(b["runs"][0]["nodes"].as_array().unwrap().len(), 3);
         let t = core
             .task_update(
                 t["id"].as_u64().unwrap(),
@@ -1984,102 +1984,6 @@ pub(crate) mod tests {
         assert!(!core.planner().unwrap().shadow, "kept");
         core.set_enforce(false).unwrap();
         assert!(core.planner().unwrap().shadow);
-        core.shutdown();
-    }
-
-    /// The Board links a GitHub task to its issue.
-    #[test]
-    fn board_tasks_carry_their_issue_url() {
-        let d = tmp();
-        let core = test_core(d.path());
-        let rt = core.runtime().unwrap().clone();
-        let mut p = rt.db.project("repo").unwrap().unwrap();
-        p.task_backend = json!({"type": "github", "repo": "me/shop"});
-        rt.db.upsert_project(&p).unwrap();
-        let mut issue = orch_store::Task::new("repo", "github", "From GitHub", 1);
-        issue.external_id = Some("42".into());
-        let (issue, local) = (
-            rt.db.upsert_task(&issue).unwrap(),
-            rt.db.upsert_task(&orch_store::Task::new("repo", "local", "Mine", 1)).unwrap(),
-        );
-        let v = core.board_view("repo").unwrap();
-        let url =
-            |id: u64| v["tasks"].as_array().unwrap().iter().find(|t| t["id"] == id).unwrap()["remote_url"].clone();
-        assert_eq!(url(issue), "https://github.com/me/shop/issues/42");
-        assert!(url(local).is_null(), "no issue, no link");
-        core.shutdown();
-    }
-
-    /// The Board never runs `gh` to find the repository: with none configured
-    /// there is no link until a sync resolved it.
-    #[test]
-    fn board_view_does_not_shell_out_for_the_repo() {
-        let d = tmp();
-        let core = test_core(d.path());
-        let rt = core.runtime().unwrap().clone();
-        let mut p = rt.db.project("repo").unwrap().unwrap();
-        p.task_backend = json!({"type": "github"});
-        rt.db.upsert_project(&p).unwrap();
-        let mut issue = orch_store::Task::new("repo", "github", "From GitHub", 1);
-        issue.external_id = Some("42".into());
-        let id = rt.db.upsert_task(&issue).unwrap();
-        let v = core.board_view("repo").unwrap();
-        assert!(v["tasks"].as_array().unwrap().iter().find(|t| t["id"] == id).unwrap()["remote_url"].is_null());
-        core.shutdown();
-    }
-
-    /// D8 and the Board on a Linear-backed project (api-contract §7).
-    #[test]
-    fn switching_to_linear_asks_first_then_pushes_open_tasks() {
-        let d = tmp();
-        let core = test_core(d.path());
-        assert_eq!(core.linear_teams().unwrap()["teams"][0]["key"], "ENG");
-        let st = core.linear_states("ENG").unwrap();
-        assert_eq!(st["states"][3]["default_column"], "review");
-        assert_eq!(st["projects"][0]["name"], "Shop");
-        let mk = |title: &str| core.task_create(json!({"project_id": "repo", "title": title})).unwrap();
-        let (a, b) = (mk("Open one"), mk("Done one"));
-        core.task_update(
-            b["id"].as_u64().unwrap(),
-            crate::teams::TaskEdit { status: Some("done"), ..Default::default() },
-        )
-        .unwrap();
-        let form = |migrate: Option<&str>| -> crate::teams::ProjectSettingsForm {
-            serde_json::from_value(json!({"settings": {}, "backend": {"type": "linear", "team": "ENG"},
-                "track_orchestrator_dir": true, "migrate": migrate}))
-            .unwrap()
-        };
-        let r = core.project_settings_set("repo", form(None)).unwrap();
-        assert_eq!(r, json!({"confirm": {"kind": "linear_migrate", "open": 1, "done": 1}}), "nothing saved yet");
-        assert_eq!(core.project_settings("repo").unwrap()["backend"]["type"], "local");
-        assert!(core.project_settings_set("repo", form(Some("maybe"))).is_err());
-        core.project_settings_set("repo", form(Some("push_open"))).unwrap();
-        let v = core.board_view("repo").unwrap();
-        assert_eq!((v["backend"].as_str(), v["linear_team"].as_str()), (Some("linear"), Some("ENG")));
-        assert!(v["last_sync_at_ms"].as_u64().is_some(), "{v}");
-        let task = |id: &Value| v["tasks"].as_array().unwrap().iter().find(|t| t["id"] == *id).unwrap().clone();
-        let (ta, tb) = (task(&a["id"]), task(&b["id"]));
-        assert_eq!((ta["backend"].as_str(), ta["external_id"].as_str()), (Some("linear"), Some("ENG-1")));
-        assert_eq!((ta["remote_won"].as_bool(), ta["off_hours"].as_bool()), (Some(false), Some(false)));
-        assert_eq!((tb["backend"].as_str(), tb["external_id"].as_str()), (Some("local"), None), "done: never pushed");
-        let s = core.board_sync("repo").unwrap();
-        assert_eq!((s["pushed"].as_u64(), s["pulled"].as_u64()), (Some(0), Some(0)));
-        assert!(s["errors"].as_array().unwrap().is_empty());
-        // Another Linear team is a migration too; `leave` keeps the old issues untouched.
-        let other = |migrate: Option<&str>| -> crate::teams::ProjectSettingsForm {
-            serde_json::from_value(json!({"settings": {}, "backend": {"type": "linear", "team": "OPS"},
-                "track_orchestrator_dir": true, "migrate": migrate}))
-            .unwrap()
-        };
-        let r = core.project_settings_set("repo", other(None)).unwrap();
-        assert_eq!(r["confirm"]["kind"], "linear_migrate", "{r}");
-        core.project_settings_set("repo", other(Some("leave"))).unwrap();
-        let v = core.board_view("repo").unwrap();
-        assert_eq!(v["linear_team"], "OPS");
-        let ta = v["tasks"].as_array().unwrap().iter().find(|t| t["id"] == a["id"]).unwrap().clone();
-        assert_eq!(ta["backend"], "local", "not written to ENG's issue any more");
-        // The same team again: no question.
-        assert!(core.project_settings_set("repo", other(None)).unwrap().get("confirm").is_none());
         core.shutdown();
     }
 

@@ -1,25 +1,16 @@
 <script>
-  // Settings › Pacing › Intake (P4.5 notes p4-5 §7.4, F16): how often Ready to start checks its
-  // sources and the default estimates used until there is history. Plain settings keys.
+  // Settings › Pacing › Intake (P4.5 notes p4-5 §7.4, F16): the default estimates used until there
+  // is history. The refresh interval is per project now (Project settings › Tracker). Plain settings keys.
   import { onMount } from 'svelte';
   import { toast } from '../lib/app.svelte.js';
   import { errText, invoke } from '../lib/ipc.js';
   import { tooltip } from '../lib/tooltip.js';
-  import Select from './Select.svelte';
 
-  const KEYS = { refresh: 'intake.refresh_secs', team: 'intake.default_team_pp', solo: 'intake.default_solo_pp' };
-  const DEFAULTS = { refresh: 600, team: 6, solo: 1.5 };
-  /** @type {[number, string][]} */
-  const EVERY = [
-    [300, '5 min'],
-    [600, '10 min'],
-    [1800, '30 min'],
-    [3600, '1 h'],
-  ];
+  const KEYS = { team: 'intake.default_team_pp', solo: 'intake.default_solo_pp' };
+  const DEFAULTS = { team: 6, solo: 1.5 };
   const RANGE = 'Use a number between 0.5 and 50.';
 
   let held = $state({ ...DEFAULTS }); // the saved values
-  let refresh = $state(String(DEFAULTS.refresh));
   let team = $state(String(DEFAULTS.team));
   let solo = $state(String(DEFAULTS.solo));
   let busy = $state(false);
@@ -33,23 +24,15 @@
   };
   const teamPp = $derived(pp(team));
   const soloPp = $derived(pp(solo));
-  const dirty = $derived(Number(refresh) !== held.refresh || teamPp !== held.team || soloPp !== held.solo);
+  const dirty = $derived(teamPp !== held.team || soloPp !== held.solo);
   const canSave = $derived(!busy && dirty && teamPp != null && soloPp != null);
-  const refreshOptions = $derived(
-    (EVERY.some(([s]) => s === Number(refresh))
-      ? EVERY
-      : /** @type {[number, string][]} */ ([...EVERY, [Number(refresh), `${Math.round(Number(refresh) / 60)} min`]]).sort((a, b) => a[0] - b[0])
-    ).map(([secs, label]) => ({ value: String(secs), label })),
-  );
-
-  /** Any edit (a Select fires no input event) drops the last save's outcome. */
+  /** Any edit drops the last save's outcome. */
   const clearOutcome = () => ((saved = false), (failure = null));
 
   async function load() {
-    const [r, t, s] = await Promise.all(Object.values(KEYS).map((key) => invoke('settings_get', { key }).catch(() => null)));
+    const [t, s] = await Promise.all(Object.values(KEYS).map((key) => invoke('settings_get', { key }).catch(() => null)));
     const num = (v, d) => (typeof v === 'number' && Number.isFinite(v) ? v : d);
-    held = { refresh: num(r, DEFAULTS.refresh), team: num(t, DEFAULTS.team), solo: num(s, DEFAULTS.solo) };
-    refresh = String(held.refresh);
+    held = { team: num(t, DEFAULTS.team), solo: num(s, DEFAULTS.solo) };
     team = String(held.team);
     solo = String(held.solo);
   }
@@ -59,7 +42,7 @@
     busy = true;
     failure = null;
     saved = false;
-    const next = { refresh: Number(refresh), team: teamPp, solo: soloPp };
+    const next = { team: teamPp, solo: soloPp };
     try {
       for (const k of Object.keys(KEYS)) if (next[k] !== held[k]) await invoke('settings_set', { key: KEYS[k], value: next[k] });
       held = next;
@@ -86,11 +69,6 @@
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 <section class="ig" aria-label="Intake" onkeydown={onKey} oninput={clearOutcome}>
   <h3>Intake</h3>
-  <div class="block">
-    <label class="lbl" for="ig-refresh">Refresh every</label>
-    <Select id="ig-refresh" width="hug" bind:value={refresh} options={refreshOptions} onchange={clearOutcome} />
-    <p class="muted help">How often Ready to start checks sources. Refresh in the lane checks at once.</p>
-  </div>
   <div class="block">
     <label class="lbl" for="ig-team">Default estimate, team run</label>
     <input id="ig-team" class="num" class:invalid={teamPp == null} type="text" inputmode="decimal" autocomplete="off" aria-invalid={teamPp == null ? 'true' : undefined} bind:value={team} />

@@ -63,6 +63,9 @@ const item = (id, project, o = {}) => ({
   ref: `#${id.slice(3)}`,
   title: `Title of ${id}`,
   url: `https://github.com/acme/shop/issues/${id.slice(3)}`,
+  node: `gh:acme/shop#${id.slice(3)}`,
+  breadcrumb: [],
+  actions: { team: 'ok', solo: 'ok', program: 'hidden', hide: 'ok' },
   labels: ['ready', 'size:M'],
   updated_at_ms: NOW - 2 * 86400000,
   size: 'M',
@@ -505,9 +508,9 @@ describe('Mission control: the Ready to start lane', () => {
     expect(document.getElementById('orch-tooltip').textContent).toBe('Start team runblog has no team yet');
     // The hidden one is not rendered; the no-source project has its line.
     expect(row(c, 'ready:it_4')).toBeNull();
-    expect(text(row(c, 'intake:nosource'))).toContain('infra has no intake source');
+    expect(text(row(c, 'intake:nosource'))).toContain('infra has no tracker');
     expect(text(row(c, 'intake:nosource'))).toContain('Plan with the Overwatch');
-    expect(text(row(c, 'intake:nosource'))).toContain('Set up intake');
+    expect(text(row(c, 'intake:nosource'))).toContain('Set up tracker');
     // Ready is not attention: not in the footer's counts, and the "Nothing else is moving" line stays.
     expect(text(c.querySelector('.foot'))).not.toMatch(/ready/i);
     expect(calls).toEqual([]);
@@ -520,8 +523,8 @@ describe('Mission control: the Ready to start lane', () => {
     expect(c.querySelector('button[aria-label="Start solo for #1 Title of it_1"]')).toBeTruthy();
   });
 
-  it('t / a / ⏎ open the prefilled dialog through intake_prefill and never start', async () => {
-    replies.intake_prefill = (a) => ({
+  it('t / a / ⏎ open the prefilled dialog through work_prefill and never start', async () => {
+    replies.work_prefill = (a) => ({
       launch: {
         project_id: 'shop-api',
         team_id: 'default-web',
@@ -548,11 +551,11 @@ describe('Mission control: the Ready to start lane', () => {
     expect(sel()).toBe('ready:it_1');
     key(mc, 't');
     await settle();
-    expect(calls.map((x) => [x.cmd, x.args])).toEqual([['intake_prefill', { item: 'it_1', mode: 'team' }]]);
+    expect(calls.map((x) => [x.cmd, x.args])).toEqual([['work_prefill', { id: 'gh:acme/shop#1', mode: 'team' }]]);
     expect(app.overlay).toMatchObject({
       kind: 'launch',
-      intake: { item: 'it_1' },
-      origin: { kind: 'intake', ref: '#1' },
+      intake: { source: 'gh:acme/shop#1' },
+      origin: { kind: 'intake', ref: '#1', node: 'gh:acme/shop#1' },
     });
     expect(intakeUi.starting).toBe('it_1');
     expect(calls.some((x) => x.cmd === 'team_launch' || x.cmd === 'agent_start')).toBe(false);
@@ -560,12 +563,12 @@ describe('Mission control: the Ready to start lane', () => {
     intakeUi.starting = null;
     key(mc, 'a');
     await settle();
-    expect(calls.at(-1)).toMatchObject({ cmd: 'intake_prefill', args: { item: 'it_1', mode: 'solo' } });
-    expect(app.overlay).toMatchObject({ kind: 'new-session', intake: { item: 'it_1' } });
+    expect(calls.at(-1)).toMatchObject({ cmd: 'work_prefill', args: { id: 'gh:acme/shop#1', mode: 'solo' } });
+    expect(app.overlay).toMatchObject({ kind: 'new-session', intake: { source: 'gh:acme/shop#1' } });
   });
 
   it('a stale item shows a toast and opens no dialog (F11)', async () => {
-    replies.intake_prefill = new Error(
+    replies.work_prefill = new Error(
       JSON.stringify({ code: 'stale', message: 'already started', started: { kind: 'run', name: 'checkout' } }),
     );
     const { container: c } = render(MissionPane, { paneId: 'mc' });
@@ -588,11 +591,11 @@ describe('Mission control: the Ready to start lane', () => {
     }
     key(mc, 'x');
     await settle();
-    expect(calls.map((x) => [x.cmd, x.args])).toEqual([['intake_hide', { item: 'it_2' }]]);
+    expect(calls.map((x) => [x.cmd, x.args])).toEqual([['work_hide', { id: 'gh:acme/shop#2' }]]);
     expect(app.toasts.at(-1).text).toBe('Hidden #2. It comes back if it changes at the source.');
     key(mc, 'u');
     await settle();
-    expect(calls.at(-1)).toMatchObject({ cmd: 'intake_unhide', args: { item: 'it_2' } });
+    expect(calls.at(-1)).toMatchObject({ cmd: 'work_unhide', args: { id: 'gh:acme/shop#2' } });
     expect(app.toasts.at(-1).text).toBe('#2 is back in Ready to start.');
   });
 
@@ -602,8 +605,8 @@ describe('Mission control: the Ready to start lane', () => {
     key(c.querySelector('.mc'), 'R', { shiftKey: true });
     await settle();
     expect(calls.map((x) => [x.cmd, x.args])).toEqual([
-      ['intake_refresh', { project: 'shop-api' }],
-      ['intake_refresh', { project: 'blog' }],
+      ['work_refresh', { project: 'shop-api' }],
+      ['work_refresh', { project: 'blog' }],
     ]);
     calls.length = 0;
     app.workspace = { project: 'blog' };
@@ -611,6 +614,143 @@ describe('Mission control: the Ready to start lane', () => {
     key(c.querySelector('.mc'), 'R', { shiftKey: true });
     await settle();
     expect(calls.map((x) => x.args)).toEqual([{ project: 'blog' }]);
+  });
+
+  const select = async (c, k) => {
+    const mc = c.querySelector('.mc');
+    const sel = () => c.querySelector('.row.sel')?.getAttribute('data-key');
+    for (let i = 0; i < 20 && sel() !== k; i++) {
+      key(mc, 'j');
+      await tick();
+    }
+    expect(sel()).toBe(k);
+    return mc;
+  };
+  const crumbs = [
+    { id: 'gh-milestone:acme/shop/3', ref: 'v2', title: 'v2' },
+    { id: 'gh:acme/shop#12', ref: '#12', title: 'Checkout v2' },
+    { id: 'gh:acme/shop#13', ref: '#13', title: 'Address step' },
+  ];
+  const workPane = () => Object.values(app.panes).find((s) => s.type === 'work');
+
+  it('a Ready row shows the breadcrumb on line 2: the chain at 1512, the parent alone when narrow', async () => {
+    app.now.intake.items[0].breadcrumb = crumbs;
+    const { container: c } = render(MissionPane, { paneId: 'mc' });
+    await settle();
+    const r = row(c, 'ready:it_1');
+    expect(text(r.querySelector('.crumb .wide'))).toBe('in v2 › … › #13 Address step');
+    expect(text(r.querySelector('.crumb .narrow'))).toBe('in #13 Address step');
+    expect(r.querySelector('.crumb').getAttribute('title')).toBe('v2 › #12 Checkout v2 › #13 Address step');
+    // Order on line 2: breadcrumb before the project.
+    expect(text(r.querySelector('.l2')).indexOf('in v2')).toBeLessThan(
+      text(r.querySelector('.l2')).indexOf('shop-api'),
+    );
+    expect(row(c, 'ready:it_2').querySelector('.crumb')).toBeNull();
+  });
+
+  it('p on a parent opens the plan dialog hook; a leaf has no Run as program; the ⋯ menu offers it', async () => {
+    app.now.intake.items[0].actions = { team: 'ok', solo: 'ok', program: 'ok', hide: 'ok' };
+    const { container: c } = render(MissionPane, { paneId: 'mc' });
+    await settle();
+    const mc = await select(c, 'ready:it_1');
+    key(mc, 'p');
+    await settle();
+    expect(app.overlay).toMatchObject({ kind: 'program-plan', title: 'Title of it_1' });
+    app.overlay = null;
+    expect(calls).toEqual([]);
+    app.toasts = [];
+    await select(c, 'ready:it_2');
+    key(mc, 'p');
+    await settle();
+    expect(app.overlay).toBeNull();
+    // The menu of the parent row has the entry; the leaf's does not.
+    const labels = async (k) => {
+      click(row(c, k).querySelector('.menuwrap button'));
+      await settle();
+      const out = [...document.body.querySelectorAll('[role="menu"] [role^="menuitem"]')].map((e) => text(e));
+      key(document.body.querySelector('[role="menu"]'), 'Escape');
+      await settle();
+      return out;
+    };
+    const parent = await labels('ready:it_1');
+    expect(parent.some((x) => x.includes('Run as program'))).toBe(true);
+    expect(parent.some((x) => x.includes('Show in Work'))).toBe(true);
+    // §5.3: "Hide from Ready" with ⌫, as in Work.
+    expect(parent.find((x) => x.includes('Hide'))?.trim()).toBe('Hide from Ready ⌫');
+    expect((await labels('ready:it_2')).some((x) => x.includes('Run as program'))).toBe(false);
+  });
+
+  it('w opens Work on the filter’s projects; on a Ready row, Work revealed at that item', async () => {
+    const { container: c } = render(MissionPane, { paneId: 'mc' });
+    await settle();
+    const mc = c.querySelector('.mc');
+    key(mc, 'w');
+    await settle();
+    expect(workPane()).toMatchObject({ type: 'work', projects: null });
+    expect(workPane().land).toBeUndefined();
+    for (const k of Object.keys(app.panes)) if (app.panes[k].type === 'work') delete app.panes[k];
+    await select(c, 'ready:it_2');
+    key(mc, 'w');
+    await settle();
+    expect(workPane()).toMatchObject({ projects: ['shop-api'], land: { reveal: 'gh:acme/shop#2' } });
+    for (const k of Object.keys(app.panes)) if (app.panes[k].type === 'work') delete app.panes[k];
+    app.workspace = { project: 'blog' };
+    await settle();
+    key(mc, 'w');
+    await settle();
+    expect(workPane()).toMatchObject({ projects: ['blog'] });
+  });
+
+  it('the Work button and Browse all open Work; Browse all names the project when one is shown', async () => {
+    const { container: c } = render(MissionPane, { paneId: 'mc' });
+    await settle();
+    click([...c.querySelectorAll('.toolbar button')].find((b) => b.textContent.trim() === 'Work'));
+    await settle();
+    expect(workPane()).toMatchObject({ projects: null });
+    for (const k of Object.keys(app.panes)) if (app.panes[k].type === 'work') delete app.panes[k];
+    app.workspace = { project: 'shop-api' };
+    await settle();
+    const browse = [...c.querySelectorAll('section[aria-label="Ready to start"] .lh button')].find(
+      (b) => b.textContent.trim() === 'Browse all',
+    );
+    expect(browse).toBeTruthy();
+    click(browse);
+    await settle();
+    expect(workPane()).toMatchObject({ projects: ['shop-api'] });
+  });
+
+  it('the lane calls no intake_* command: hide, refresh, start and details use the work commands', async () => {
+    replies.work_prefill = {
+      launch: { project_id: 'shop-api', team_id: 'default-web', slug: 'a', title: 'a', brief: 'b' },
+    };
+    const { container: c } = render(MissionPane, { paneId: 'mc' });
+    await settle();
+    const mc = await select(c, 'ready:it_1');
+    key(mc, 't');
+    await settle();
+    key(mc, 'x');
+    await settle();
+    key(mc, 'R', { shiftKey: true });
+    await settle();
+    expect(calls.map((x) => x.cmd).filter((k) => k.startsWith('intake_'))).toEqual([]);
+  });
+
+  it('run rows show the source chip with its breadcrumb in the tooltip', async () => {
+    const run = app.now.runs ? Object.values(app.now.runs)[0] : null;
+    expect(run).toBeTruthy();
+    run.source = {
+      node: 'gh:acme/shop#14',
+      ref: '#14',
+      title: 'Payment step',
+      tracker: 'github',
+      url: 'u',
+      breadcrumb: crumbs.slice(1, 2),
+    };
+    const { container: c } = render(MissionPane, { paneId: 'mc' });
+    await settle();
+    const chip = c.querySelector(`[data-key="run:${run.run}"] .origin`);
+    expect(chip.textContent).toBe('from #14');
+    expect(chip.getAttribute('title')).toBe('#14 Payment step · in #12 Checkout v2 · u');
   });
 
   it('⇧H toggles the hidden rows, dimmed with Unhide and no Start buttons', async () => {
@@ -625,14 +765,11 @@ describe('Mission control: the Ready to start lane', () => {
     expect(text(c.querySelector('section[aria-label="Ready to start"] .lh'))).toContain('Hide the 1');
   });
 
-  it('space opens the details and loads the full text with intake_item', async () => {
-    replies.intake_item = {
-      item: item('it_1', 'shop-api'),
+  it('space opens the details and loads the full text with work_node', async () => {
+    replies.work_node = {
       body: 'Full body\n\n- one\n- two',
-      truncated: true,
-      milestone: 'v2.1',
-      assignees: ['gu', 'mia'],
-      priority: 'High',
+      body_clipped: true,
+      upstream: { milestone: 'v2.1', assignees: ['gu', 'mia'], priority: 2 },
     };
     const { container: c } = render(MissionPane, { paneId: 'mc' });
     await settle();
@@ -644,7 +781,9 @@ describe('Mission control: the Ready to start lane', () => {
     }
     key(mc, ' ');
     await settle();
-    expect(calls.map((x) => [x.cmd, x.args])).toEqual([['intake_item', { item: 'it_1' }]]);
+    expect(calls.map((x) => [x.cmd, x.args])).toEqual([
+      ['work_node', { id: 'gh:acme/shop#1', opts: { children: false } }],
+    ]);
     const d = text(row(c, 'ready:it_1'));
     expect(d).toContain('Full body');
     expect(d).toContain('Shortened to 4 000 characters');
@@ -676,7 +815,7 @@ describe('Mission control: the Ready to start lane', () => {
     );
     click(row(c, 'intake:error:shop-api').querySelector('.link'));
     await settle();
-    expect(app.window).toMatchObject({ kind: 'project-settings', projectId: 'shop-api', section: 'intake' });
+    expect(app.window).toMatchObject({ kind: 'project-settings', projectId: 'shop-api', section: 'tracker' });
   });
 
   it('a collapsed lane keeps the failure visible in its header', async () => {
@@ -791,6 +930,132 @@ describe('the prefilled dialogs (notes §5)', () => {
     expect(intakeUi.starting).toBeNull();
   });
 
+  const nodeOrigin = (more = {}) => ({
+    kind: 'intake',
+    node: 'gh:acme/shop#13',
+    ref: '#13',
+    title: 'Address step',
+    url: 'https://github.com/acme/shop/issues/13',
+    tracker: 'github',
+    breadcrumb: [{ id: 'gh:acme/shop#12', ref: '#12', title: 'Checkout v2' }],
+    open_sub_issues: 0,
+    blocked_by_open: [],
+    ran_before: null,
+    write_back_line: null,
+    ...more,
+  });
+
+  it('the origin chip carries the parent breadcrumb, tracker and tooltip (improve-intake §5.2)', async () => {
+    app.overlay = launchOverlay({ origin: nodeOrigin() });
+    const { container: c } = render(Dialogs);
+    await settle();
+    const chip = c.querySelector('[data-origin]');
+    expect(text(chip)).toContain('From #13 Address step · in #12 Checkout v2 · GitHub');
+    app.overlay = launchOverlay({
+      origin: nodeOrigin({
+        ref: 'ENG-101',
+        title: 'Email sign-up',
+        tracker: 'linear',
+        breadcrumb: [
+          { id: 'lin-project:p', ref: 'Mobile onboarding', title: 'Mobile onboarding' },
+          { id: 'lin-milestone:m', ref: 'M1 · Sign-up', title: 'M1 · Sign-up' },
+        ],
+      }),
+    });
+    await settle();
+    expect(text(c.querySelector('[data-origin]'))).toContain(
+      'From ENG-101 Email sign-up · in Mobile onboarding › M1 · Sign-up · Linear',
+    );
+  });
+
+  it('shows the scope, blocked, write-back and ran-before lines, in the boards’ order', async () => {
+    app.overlay = launchOverlay({
+      origin: nodeOrigin({
+        open_sub_issues: 2,
+        blocked_by_open: [{ id: 'gh:acme/shop#13', ref: '#13', title: 'x', open: true }],
+        ran_before: { feature: 'checkout-address', merged_at_ms: Date.UTC(2026, 10, 12, 12) },
+        write_back_line: '#13 gets the label orch:running and a comment in GitHub.',
+      }),
+    });
+    const { container: c } = render(Dialogs);
+    await settle();
+    const lines = [...c.querySelectorAll('.note')].map((n) =>
+      n.getAttribute('data-scope') !== null ? 'scope' : n.getAttributeNames().find((a) => a.startsWith('data-')),
+    );
+    expect(lines.filter(Boolean).slice(0, 5)).toEqual([
+      'scope',
+      'data-ran-before',
+      'data-untrusted',
+      'data-blocked',
+      'data-writeback',
+    ]);
+    // The scope line stays under the brief; the others sit just above the buttons (after the dialog's own notes).
+    const follows = (a, b) =>
+      !!(c.querySelector(a).compareDocumentPosition(c.querySelector(b)) & Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(follows('[data-scope]', '.note.what')).toBe(true);
+    expect(follows('.note.what', '[data-ran-before]')).toBe(true);
+    expect(c.querySelector('[data-writeback]').nextElementSibling?.matches('[data-estimate], .foot, .err')).toBe(true);
+    expect(text(c.querySelector('[data-scope]'))).toContain(
+      "2 sub-issues are part of this run's scope. To run them as separate features, use Run as program. Run as program instead",
+    );
+    expect(text(c.querySelector('[data-ran-before]'))).toBe('Ran before as checkout-address · merged 12 Nov');
+    expect(text(c.querySelector('[data-blocked]'))).toContain(
+      'Blocked by #13 in GitHub (open). Starting now ignores that.',
+    );
+    expect(text(c.querySelector('[data-writeback]'))).toBe(
+      'On start: #13 gets the label orch:running and a comment in GitHub.',
+    );
+    // Never disables the start.
+    expect(/** @type {HTMLButtonElement} */ (c.querySelector('button.primary')).disabled).toBe(false);
+  });
+
+  it('no extra line when there is nothing to say', async () => {
+    app.overlay = launchOverlay({ origin: nodeOrigin() });
+    const { container: c } = render(Dialogs);
+    await settle();
+    for (const k of ['scope', 'ran-before', 'blocked', 'writeback']) expect(c.querySelector(`[data-${k}]`)).toBeNull();
+    expect(c.querySelector('[data-untrusted]')).toBeTruthy();
+  });
+
+  it('Run as program instead opens the plan of this node; edited briefs ask before discarding', async () => {
+    app.overlay = launchOverlay({ origin: nodeOrigin({ open_sub_issues: 1 }) });
+    const { container: c } = render(Dialogs);
+    await settle();
+    click(c.querySelector('[data-scope] button'));
+    await settle();
+    expect(app.overlay).toMatchObject({ kind: 'program-plan', title: 'Address step' });
+    // Edited: the confirmation comes first.
+    app.toasts = [];
+    app.overlay = launchOverlay({ origin: nodeOrigin({ open_sub_issues: 1 }) });
+    await settle();
+    await settle();
+    const ta = c.querySelector('textarea');
+    await fireEvent.input(ta, { target: { value: 'my own brief' } });
+    click(c.querySelector('[data-scope] button'));
+    await settle();
+    expect(app.overlay).toMatchObject({ kind: 'confirm', text: 'Discard your edits to the brief?' });
+    expect(app.toasts).toEqual([]);
+    app.overlay.onYes();
+    await settle();
+    expect(app.overlay).toMatchObject({ kind: 'program-plan', title: 'Address step' });
+    expect(intakeUi.starting).toBeNull();
+  });
+
+  it('Cancel on the discard confirmation returns to the start dialog with the edits kept', async () => {
+    app.overlay = launchOverlay({ origin: nodeOrigin({ open_sub_issues: 1 }) });
+    const { container: c } = render(Dialogs);
+    await settle();
+    await settle();
+    await fireEvent.input(c.querySelector('textarea'), { target: { value: 'my own brief' } });
+    click(c.querySelector('[data-scope] button'));
+    await settle();
+    expect(app.overlay).toMatchObject({ kind: 'confirm' });
+    click([...document.body.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Cancel'));
+    await settle();
+    expect(app.overlay).toMatchObject({ kind: 'launch' });
+    expect(c.querySelector('textarea').value).toBe('my own brief');
+  });
+
   it('launch: a stale answer keeps the dialog with a banner and Close', async () => {
     app.overlay = launchOverlay();
     replies.team_launch = new Error(
@@ -890,5 +1155,52 @@ describe('the prefilled dialogs (notes §5)', () => {
     expect(app.overlay).toBeNull();
     expect(intakeUi.starting).toBeNull();
     flushSync();
+  });
+});
+
+describe('breadcrumbs and dialog lines (improve-intake §5.2, §8)', () => {
+  const chain = [
+    { ref: 'v2', title: 'v2' },
+    { ref: '#12', title: 'Checkout v2' },
+    { ref: '#13', title: 'Address step' },
+  ];
+  it('keeps the root and the parent and collapses the middle', () => {
+    expect(I.crumbLine(chain)).toBe('v2 › … › #13 Address step');
+    expect(I.crumbLine(chain.slice(1))).toBe('#12 Checkout v2 › #13 Address step');
+    expect(I.crumbLine(chain, { parentOnly: true })).toBe('#13 Address step');
+    expect(I.crumbLine(chain.slice(0, 1))).toBe('v2');
+    expect(I.crumbLine([])).toBe('');
+    expect(I.crumbTip(chain)).toBe('v2 › #12 Checkout v2 › #13 Address step');
+  });
+  it('writes the lines', () => {
+    expect(I.subIssuesLine(1)).toBe(
+      "1 sub-issue is part of this run's scope. To run them as separate features, use Run as program.",
+    );
+    expect(I.subIssuesLine(0)).toBe('');
+    expect(I.blockedLine([{ ref: '#13' }, { ref: 'acme/api#4' }], 'github')).toBe(
+      'Blocked by #13, acme/api#4 in GitHub (open). Starting now ignores that.',
+    );
+    expect(I.blockedLine([], 'github')).toBe('');
+    expect(I.ranBeforeLine({ feature: 'checkout-address', merged_at_ms: Date.UTC(2026, 10, 12, 12) })).toBe(
+      'Ran before as checkout-address · merged 12 Nov',
+    );
+    expect(I.ranBeforeLine(null)).toBe('');
+  });
+  it('the run source (breadcrumb, tracker) wins over the old origin on rows', () => {
+    const source = {
+      node: 'gh:a#14',
+      ref: '#14',
+      title: 'Payment step',
+      tracker: 'github',
+      breadcrumb: [chain[1]],
+      url: 'u',
+    };
+    expect(I.originOf({ source, origin: { kind: 'intake', ref: '#old' } })).toBe(source);
+    expect(I.originOf({ origin: { kind: 'brief' } })).toEqual({ kind: 'brief' });
+    expect(I.originOf({})).toBeNull();
+    expect(I.originText(source)).toBe('from #14');
+    expect(I.originTip(source)).toBe('#14 Payment step · in #12 Checkout v2 · u');
+    expect(I.originTip({ ...source, deleted: true })).toContain('Deleted in GitHub');
+    expect(I.originLine(source)).toBe('#14 Payment step · GitHub');
   });
 });

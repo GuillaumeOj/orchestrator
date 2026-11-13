@@ -2,13 +2,15 @@
   // A non-item line of the Ready to start lane (P4.5 notes §4.1–§4.2): no source,
   // nothing ready, a source error with its Fix, "+ n more", looking, all hidden.
   // Copy is the notes' (the core's `message` only reaches the tooltip, F3).
-  import { errorInfo, moreCount, rateLimitedUntil } from '../../lib/intake.js';
+  import { moreCount, rateLimitedUntil } from '../../lib/intake.js';
   import { tooltip } from '../../lib/tooltip.js';
+  import { trackerError } from '../../lib/tracker.js';
 
   /** @type {{ line: any, now: number, overwatch?: string, onplan?: () => void, onsetup?: () => void, onrefresh?: () => void, onfix?: () => void, onopen?: () => void, onshow?: () => void }} */
   let { line, now, overwatch = 'asleep', onplan = () => {}, onsetup = () => {}, onrefresh = () => {}, onfix = () => {}, onopen = () => {}, onshow = () => {} } = $props();
 
-  const info = $derived(line.line === 'error' ? errorInfo(line.src.error, line.src, now) : null);
+  // The Tracker copy (notes §10.7) on top of the shared table: linear_complexity, gh_write, linear_write, gh_scope.
+  const info = $derived(line.line === 'error' ? trackerError(line.src.error, line.src.type, line.src.label?.split(' · ')[0] ?? null, now) : null);
   const tail = $derived(overwatch === 'off' ? ' (off: your message waits)' : overwatch === 'down' ? ' (down: your message waits)' : '');
   const fixLabel = $derived(info?.fix === 'gh_scope' ? 'Copy command' : info?.fix === 'retry' ? 'Retry' : info?.fix ? 'Fix' : null);
   // A refresh that stopped at the read bound undercounts: "n+", or just "+ more" when nothing was counted.
@@ -18,11 +20,11 @@
 
 <div class="ln" data-line={line.line} class:err={line.line === 'error'}>
   {#if line.line === 'nosource'}
-    <span>{line.nameText} {line.many ? 'have' : 'has'} no intake source</span>
+    <span>{line.nameText} {line.many ? 'have' : 'has'} no tracker</span>
     <span class="muted">·</span>
     <button class="link" tabindex="-1" use:tooltip={{ label: 'Plan with the Overwatch', key: '⏎' }} onclick={(e) => (e.stopPropagation(), onplan())}>Plan with the Overwatch{tail}</button>
     <span class="muted">·</span>
-    <button class="link" tabindex="-1" use:tooltip={{ label: 'Set up intake', key: 'e' }} onclick={(e) => (e.stopPropagation(), onsetup())}>Set up intake</button>
+    <button class="link" tabindex="-1" use:tooltip={{ label: 'Set up tracker', key: 'e' }} onclick={(e) => (e.stopPropagation(), onsetup())}>Set up tracker</button>
   {:else if line.line === 'empty'}
     <span class="muted">{line.merged ? `Nothing ready in ${line.count} projects` : `Nothing ready in ${line.src.label}`}</span>
     <span class="muted">·</span>

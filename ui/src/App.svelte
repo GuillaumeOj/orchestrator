@@ -15,6 +15,7 @@
   import Palette from './components/Palette.svelte';
   import PlanChooser from './components/PlanChooser.svelte';
   import PlannerWindow from './components/PlannerWindow.svelte';
+  import ProgramPlanDialog from './components/ProgramPlanDialog.svelte';
   import ProjectSettingsWindow from './components/ProjectSettingsWindow.svelte';
   import SettingsWindow from './components/SettingsWindow.svelte';
   import ShortcutsSheet from './components/ShortcutsSheet.svelte';
@@ -167,6 +168,7 @@
   {:else if app.window?.kind === 'shortcuts'}<ShortcutsSheet />{/if}
   {#if app.overlay?.kind === 'palette' || app.overlay?.kind === 'jump'}{#key app.overlay.kind}<Palette mode={app.overlay.kind} />{/key}{/if}
   {#if app.overlay?.kind === 'plan-project'}<PlanChooser />{/if}
+  {#if app.overlay?.kind === 'program-plan'}{#key app.overlay}<ProgramPlanDialog />{/key}{/if}
   <Dialogs />
   <Toasts />
 </div>

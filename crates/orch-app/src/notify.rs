@@ -216,6 +216,7 @@ mod tests {
             deciding_until_ms: None,
             annotation: None,
             created_ms: 0,
+            program: None,
             agent: Some(agent.into()),
             synthesized: false,
             decision: None,

@@ -3,27 +3,30 @@
   // run: docs from the integration branch (rendered), tasks, the team with
   // live states, the timeline (FR-408) with a message box (FR-409), artifacts
   // and the PR, and the Design section (P3). Keys: e open the doc in nvim, b
-  // board, c canvas, p pause / resume the team, m message, d Design,
-  // N publish / refresh the docs in Notion (FR-505).
+  // Tasks (focus), w show the source in Work, c canvas, p pause / resume the team,
+  // m message, d Design, N publish / refresh the docs in Notion (FR-505). While Tasks has
+  // focus its own keys apply and the pane's e / m / p do not (notes §12.5).
   import { onMount, untrack } from 'svelte';
   import AgentChip from '../components/AgentChip.svelte';
   import DesignSection from '../components/DesignSection.svelte';
+  import SourceHeader from '../components/feature/SourceHeader.svelte';
+  import TasksSection from '../components/feature/TasksSection.svelte';
   import Markdown from '../components/Markdown.svelte';
   import Menu from '../components/Menu.svelte';
   import PrLine from '../components/PrLine.svelte';
   import Select from '../components/Select.svelte';
   import StatusBadge from '../components/StatusBadge.svelte';
-  import TaskModelChip from '../components/TaskModelChip.svelte';
-  import { app, confirm, openAgent, openBoard, openCanvas, openEditor, openUrl, refresh, toast } from '../lib/app.svelte.js';
+  import HintRow from '../components/work/HintRow.svelte';
+  import { app, boardNotice, confirm, openAgent, openCanvas, openEditor, openUrl, refresh, toast } from '../lib/app.svelte.js';
   import { deliveryMark } from '../lib/delivery.js';
   import { isDesign } from '../lib/ecosystem.js';
   import { ago, dayHm, plural } from '../lib/format.js';
   import { errText, invoke } from '../lib/ipc.js';
   import { isTypingTarget } from '../lib/keyboard.js';
-  import { backendLabel, remoteName } from '../lib/linear.js';
   import { onTopics, runAttention, runPhase, statusOf } from '../lib/now.svelte.js';
-  import { docRepoPath, handle, runFinished, runStateColor, runStateLabel, TL_FILTERS, timelineFilter, timelineText } from '../lib/teams.js';
-  import { tooltip } from '../lib/tooltip.js';
+  import { docRepoPath, runFinished, runStateColor, runStateLabel, TL_FILTERS, timelineFilter, timelineText } from '../lib/teams.js';
+  import { ifCut, tooltip } from '../lib/tooltip.js';
+  import { openWork } from '../lib/work.js';
 
   let { paneId } = $props();
   const spec = $derived(app.panes[paneId]);
@@ -45,6 +48,7 @@
   let root;
   let msgBox = $state(null);
   let design = $state(null);
+  let tasksSec = $state(null);
   // Notion (FR-505): what the core says, and whether Publish can work at all.
   let notion = $state(null); // notion_status
   let notionReady = $state(null); // null = unknown; else { ok, why }
@@ -69,10 +73,7 @@
           .join(' · ')
       : '',
   );
-  /** A tooltip param read when the tooltip shows: the full text, only when the element is cut (ellipsis). */
-  const ifCut = (text) => (node) => (node.scrollWidth > node.clientWidth ? text : null);
 
-  const byStatus = (s) => (v?.tasks ?? []).filter((t) => t.status === s);
   const events = $derived((v?.timeline ?? []).filter(timelineFilter(tl)).slice(0, 60));
   const lead = $derived(v?.team?.nodes?.find((n) => n.is_lead)?.id ?? 'lead');
   /** An agent's role from the run's own team (app_state may not list a new agent yet). */
@@ -217,7 +218,7 @@
     if (!v) return [];
     const nr = notionReady;
     return [
-      { id: 'board', icon: '\u{F0570}', label: 'Board', key: 'b', run: () => openBoard(v.feature.project_id) },
+      { id: 'work', icon: '\u{F0570}', label: 'Show source in Work', key: 'w', disabled: !canShowInWork, reason: 'No tracker item for this feature', run: showInWork },
       { id: 'canvas', icon: '\u{F1546}', label: 'Canvas', key: 'c', disabled: !run, reason: 'No team run yet', run: () => openCanvas(run.team_id, v.feature.project_id) },
       { separator: true },
       {
@@ -233,6 +234,38 @@
     ];
   });
 
+  const canShowInWork = $derived(!!run?.source && !run.source.deleted);
+
+  // The hint row (notes §9, board ii-feature-*): the Tasks keys while Tasks has focus, else the pane's.
+  let taskHints = $state([]);
+  let tasksFocused = $state(false);
+  const trackFocus = () => queueMicrotask(() => (tasksFocused = !!root?.querySelector('[data-tasks]')?.contains(document.activeElement)));
+  const paneHints = $derived([
+    ['b', 'tasks'],
+    ...(canShowInWork ? [['w', 'show in Work']] : []),
+    ...(docPath && v?.feature?.integration_worktree ? [['e', 'edit doc']] : []),
+    ['m', 'message'],
+    ...(run && !runFinished(run.status) ? [['p', paused ? 'resume' : 'pause']] : []),
+  ]);
+  const showInWork = () => openWork({ projects: [v.feature.project_id], reveal: run?.source?.node ?? null });
+
+  /** `b`: Tasks takes the focus (the first time after the update, the Board's removal toast too). */
+  function focusTasks() {
+    boardNotice();
+    tasksSec?.focus();
+  }
+
+  // One-shot landing request (a task link, the run inspector's "Show tasks"): the same pane keeps the
+  // request while it loads; Tasks consumes it by its `seq`.
+  const land = $derived(spec?.land ?? null);
+  let landedTasks = 0;
+  $effect(() => {
+    if (land?.tasks && !land.task && v && land.seq !== landedTasks) {
+      landedTasks = land.seq;
+      untrack(() => tasksSec?.focus());
+    }
+  });
+
   function openDoc() {
     const wt = v?.feature?.integration_worktree;
     if (!wt || !docPath) return;
@@ -244,10 +277,13 @@
       if (e.key === 'Escape' && !e.defaultPrevented) (root?.focus(), e.preventDefault());
       return;
     }
+    // Tasks has focus: its keys (handled there) shadow the pane's e / m / p only.
+    if (e.target.closest?.('[data-tasks]') && ['e', 'm', 'p'].includes(e.key)) return;
     if (e.metaKey || e.ctrlKey || e.altKey || !v) return;
     const k = e.key;
     if (k === 'e') openDoc();
-    else if (k === 'b') openBoard(v.feature.project_id);
+    else if (k === 'b') focusTasks();
+    else if (k === 'w' && canShowInWork) showInWork();
     else if (k === 'c' && run) openCanvas(run.team_id, v.feature.project_id);
     else if (k === 'p' && run && !runFinished(run.status)) act(paused ? 'resume' : 'pause');
     else if (k === 'm') msgBox?.focus();
@@ -276,7 +312,8 @@
 </script>
 
 <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
-<div class="feature" tabindex="0" data-pane-focus bind:this={root} onkeydown={onKey} role="region" aria-label="Feature">
+<div class="feature" tabindex="0" data-pane-focus bind:this={root} onkeydown={onKey} onfocusin={trackFocus} onfocusout={trackFocus} role="region" aria-label="Feature">
+  <div class="fscroll">
   {#if error}
     <p class="muted pad">Could not load the feature: {error}</p>
   {:else if !v}
@@ -302,6 +339,8 @@
       </div>
       <div class="row2 muted" use:tooltip={ifCut(metaText)}>{metaText}</div>
     </header>
+
+    <SourceHeader {run} brief={v.run?.brief ?? v.feature?.brief ?? null} project={v.feature.project_id} reload={load} />
 
     {#if notionReady && !notionReady.ok && !notion?.page_url}<p class="nline muted">{notionReady.why}</p>{/if}
     {#if publishError || notion?.error}
@@ -332,31 +371,6 @@
 
         <DesignSection bind:this={design} {v} />
 
-        <section class="card">
-          <div class="cardh"><b>Tasks</b><span class="muted">{backendLabel(v.project?.backend)} · {byStatus('done').length}/{v.tasks.length} done</span></div>
-          <div class="taskcols">
-            {#each [['in_progress', 'In progress', 'working'], ['review', 'Review', 'waiting_gate'], ['ready', 'Ready', 'idle'], ['done', 'Done', 'done']] as [s, label, st] (s)}
-              {@const list = byStatus(s)}
-              {#if list.length || s !== 'done'}
-                <div class="tcol">
-                  <div class="colh"><StatusBadge state={st} compact /> {label} <span class="muted">{list.length}</span></div>
-                  {#each list as t (t.id)}
-                    <div class="task">
-                      <div class="tt"><span class="muted mono">{handle(t)}</span><span class="grow"></span><span class="muted">{remoteName(t.backend)}</span></div>
-                      <div class="title">{t.title} <TaskModelChip task={t} /></div>
-                      <div class="tt">
-                        {#if t.node}<AgentChip id={t.node} role={v.team?.nodes?.find((n) => n.id === t.node)?.role_id ?? t.node} />{/if}
-                        <span class="grow"></span>
-                        {#if s === 'ready' && t.depends_on.some((d) => v.tasks.find((x) => x.id === d)?.status !== 'done')}<span class="blocked">{'\u{F051F}'} blocked by {t.depends_on.map((d) => `T-${d}`).join(', ')}</span>
-                        {:else if t.branch}<span class="muted mono">{t.branch.split('/').pop()}</span>{/if}
-                      </div>
-                    </div>
-                  {:else}<span class="muted">—</span>{/each}
-                </div>
-              {/if}
-            {/each}
-          </div>
-        </section>
       </div>
 
       <div class="right">
@@ -406,7 +420,11 @@
         </section>
       </div>
     </div>
+
+    <TasksSection bind:this={tasksSec} bind:hints={taskHints} {v} reload={load} {land} onleave={() => root?.focus()} />
   {/if}
+  </div>
+  {#if v}<HintRow hints={tasksFocused ? taskHints : paneHints} />{/if}
 </div>
 
 <style>
@@ -447,19 +465,25 @@
   .feature {
     flex: 1;
     min-height: 0;
+    display: flex;
+    flex-direction: column;
+    outline: none;
+    font: var(--text-label);
+  }
+  /* The content scrolls above the hint row; its width is the container of the narrow rules (here and in Tasks). */
+  .fscroll {
+    flex: 1;
+    min-height: 0;
     overflow: auto;
     display: flex;
     flex-direction: column;
     gap: var(--space-md);
     padding: var(--space-lg);
-    outline: none;
-    font: var(--text-label);
+    container-type: inline-size;
   }
   .cardh,
-  .tt,
   .ev,
-  .msg,
-  .colh {
+  .msg {
     display: flex;
     align-items: center;
     gap: var(--space-sm);
@@ -576,34 +600,6 @@
     max-height: 50vh;
     overflow: auto;
   }
-  .taskcols {
-    display: flex;
-    gap: var(--space-sm);
-    align-items: flex-start;
-  }
-  .tcol {
-    flex: 1;
-    min-width: 0;
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-xs);
-  }
-  .task {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-xs);
-    padding: var(--space-sm) var(--space-md);
-    background: var(--color-surface-raised);
-    border: var(--border-width-default) solid var(--color-border-subtle);
-    border-radius: var(--radius-md);
-  }
-  .title {
-    font: var(--text-body-strong);
-  }
-  .blocked {
-    color: var(--color-status-queued);
-    font: var(--text-caption);
-  }
   /* Team card: one grid, a subgrid per row, so the columns line up. */
   .agents {
     display: grid;
@@ -669,7 +665,8 @@
   .pad {
     padding: var(--space-xl);
   }
-  @container (max-width: 900px) {
+  /* Docs and Team side by side down to the 1280 board (≈ 860 px), stacked below. */
+  @container (max-width: 720px) {
     .cols {
       flex-direction: column;
     }

@@ -4,6 +4,7 @@
 // app state, the clock or the core; callers pass `now` and the data.
 
 import { clock, plural, startOfDay } from './format.js';
+import { TRACKERS } from './source.js';
 
 /** Source names in copy (notes: GitHub, Linear, Repo docs). */
 export const SOURCE_NAME = { github: 'GitHub', linear: 'Linear', repo_docs: 'Repo docs', none: 'No source' };
@@ -141,9 +142,12 @@ export function shortRef(item, siblings = []) {
  */
 export const moreCount = (more, partial) => (partial ? (more > 0 ? `${more}+` : '') : String(more));
 
+/** Labels the app never shows (P4.5 §2): `size:*` / `size/*` and `orch` / `orch:*`. */
+export const isShownLabel = (l) => !/^size[:/]/i.test(l) && !/^orch(:|$)/i.test(l);
+
 /** Up to two labels as chips (+n), without `size:*` / `size/*` and `orch*` (§2). */
 export function shownLabels(item) {
-  const all = (item?.labels ?? []).filter((l) => !/^size[:/]/i.test(l) && !/^orch(:|$)/i.test(l));
+  const all = (item?.labels ?? []).filter(isShownLabel);
   return { chips: all.slice(0, 2), more: Math.max(0, all.length - 2) };
 }
 
@@ -221,13 +225,76 @@ export const rateLimitedUntil = (source, now = Date.now()) =>
 
 // ---------------------------------------------------------------- the dialogs (notes §5)
 
-/** The origin chip (§5.1) of a prefill: { ref, source, url, text }. */
+// ---------------------------------------------------------------- breadcrumbs (improve-intake notes §3, §8)
+
+/** One crumb in words: "#12 Checkout v2", or just its title when the ref is the title ("v2", a Linear project). */
+const crumbWord = (c) => (/^(#\d+|[A-Z][A-Z0-9]*-\d+)$/.test(c.ref ?? '') ? `${c.ref} ${c.title}` : c.title || c.ref);
+
+/**
+ * The Breadcrumb rule (notes §3): ancestors root first, `›` separated; the root and the parent are always kept,
+ * the middle collapses to `…`. `parentOnly` (Ready rows at 1280, §8) keeps the parent alone. '' without ancestors.
+ */
+export function crumbLine(crumbs, { parentOnly = false } = {}) {
+  const segs = (crumbs ?? []).map(crumbWord);
+  if (!segs.length) return '';
+  if (parentOnly || segs.length === 1) return segs.at(-1);
+  return (segs.length > 2 ? [segs[0], '…', segs.at(-1)] : segs).join(' › ');
+}
+
+/** The full breadcrumb for a tooltip: every ancestor, no collapse. */
+export const crumbTip = (crumbs) => (crumbs ?? []).map(crumbWord).join(' › ');
+
+/** The tracker's name in copy: "GitHub", "Linear", "the backlog". */
+export const trackerName = (t) => (t === 'local' || t === 'repo_docs' ? 'the backlog' : (TRACKERS[t] ?? t ?? ''));
+
+// ---------------------------------------------------------------- the dialogs (notes §5)
+
+/**
+ * The origin chip (§5.1; improve-intake §5.2) of a prefill: { ref, source, url, text, tip }. A node origin
+ * reads "From #13 Address step · in #12 Checkout v2 · GitHub" (the parent, or root › … › parent).
+ */
 export function originChip(origin) {
   if (!origin) return null;
   if (origin.kind === 'brief')
     return { text: `From the Overwatch's brief · ${origin.title ?? 'brief'}`, brief: true, decision: origin.decision };
-  const name = SOURCE_NAME[origin.source] ?? origin.source;
-  return { text: `From ${origin.ref} · ${name}`, url: origin.url ?? null, source: origin.source, ref: origin.ref };
+  const tracker = origin.tracker ?? (origin.source === 'repo_docs' ? 'local' : origin.source);
+  const name = origin.tracker ? trackerName(tracker) : (SOURCE_NAME[origin.source] ?? origin.source);
+  const from = `From ${origin.ref}${origin.title ? ` ${origin.title}` : ''}`;
+  // The parent alone; under a Linear milestone, "project › milestone" (§5.2).
+  const bc = origin.breadcrumb ?? [];
+  const underMilestone = bc.at(-1)?.id?.startsWith('lin-milestone:');
+  const crumb = crumbLine(underMilestone ? bc.slice(-2) : bc, { parentOnly: !underMilestone });
+  return {
+    text: [from, crumb && `in ${crumb}`, name].filter(Boolean).join(' · '),
+    tip: crumbTip(origin.breadcrumb),
+    url: origin.url ?? null,
+    source: tracker,
+    name,
+    ref: origin.ref,
+  };
+}
+
+/** Under the brief (§5.2): "2 sub-issues are part of this run's scope. …"; '' without open sub-issues. */
+export const subIssuesLine = (n) =>
+  n > 0
+    ? `${n === 1 ? '1 sub-issue is' : `${n} sub-issues are`} part of this run's scope. To run them as separate features, use Run as program.`
+    : '';
+
+/** Above the buttons (§5.2): "Blocked by #13 in GitHub (open). Starting now ignores that."; '' when none. */
+export function blockedLine(blockers, tracker) {
+  const refs = (blockers ?? []).map((d) => d.ref);
+  return refs.length
+    ? `Blocked by ${refs.join(', ')} in ${trackerName(tracker)} (open). Starting now ignores that.`
+    : '';
+}
+
+/** D3 d: "Ran before as checkout-address · merged 12 Nov"; '' when it did not. */
+export function ranBeforeLine(ran) {
+  if (!ran) return '';
+  const day = ran.merged_at_ms
+    ? new Date(ran.merged_at_ms).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })
+    : '';
+  return `Ran before as ${ran.feature ?? 'a feature'}${day ? ` · merged ${day}` : ''}`;
 }
 
 /** The `stale` error as the dialog's banner (§5.3). */
@@ -240,7 +307,7 @@ export function staleBanner(err) {
   return 'Already started.';
 }
 
-/** The toast when `intake_prefill` answers `stale` (§5.3). */
+/** The toast when `work_prefill` answers `stale` (§5.3). */
 export function staleToast(err, ref = '') {
   const started = err?.started;
   if (started) return `${ref} was already started: ${started.name}.`.trim();
@@ -253,7 +320,8 @@ export function staleOf(e) {
   const o = e && typeof e === 'object' ? e : null;
   if (o?.code === 'stale') return o;
   try {
-    const j = JSON.parse(String(e?.message ?? e));
+    const raw = String(e?.message ?? e);
+    const j = JSON.parse(raw.slice(Math.max(0, raw.indexOf('{'))));
     return j?.code === 'stale' ? j : null;
   } catch {
     return null;
@@ -262,24 +330,37 @@ export function staleOf(e) {
 
 // ---------------------------------------------------------------- origin marks (notes §6)
 
+/** What a row, agent or outcome was started from: its `source` (a tracker node, with the breadcrumb) or its `origin` (a brief). */
+export const originOf = (rec) => (rec?.source?.node ? rec.source : (rec?.origin ?? null));
+
 /** The row chip: `from #123`, `from ENG-42`, `from checkout-v2.md`, `from brief`. */
 export function originText(origin) {
   if (!origin) return '';
   if (origin.kind === 'brief') return 'from brief';
-  return `from ${origin.short ?? origin.ref}`;
+  // A program's feature names its program (improve-intake notes §7.1): "from #14 · Checkout v2".
+  return `from ${origin.short ?? origin.ref}${origin.program?.title ? ` · ${origin.program.title}` : ''}`;
 }
 
+/** The chip's tooltip: the item, where it sits in the tree, and its link; "Deleted in GitHub" when it is gone (S14). */
 export function originTip(origin) {
   if (!origin) return '';
   if (origin.kind === 'brief') return `From the Overwatch's brief${origin.title ? `: ${origin.title}` : ''}`;
-  return origin.ref ? `${origin.ref}${origin.url ? ` · ${origin.url}` : ''}` : '';
+  if (!origin.ref) return '';
+  const crumb = crumbTip(origin.breadcrumb);
+  const gone = origin.deleted ? `Deleted in ${trackerName(origin.tracker)}` : '';
+  return [`${origin.ref}${origin.title ? ` ${origin.title}` : ''}`, crumb && `in ${crumb}`, gone, origin.url]
+    .filter(Boolean)
+    .join(' · ');
 }
 
 /** The details line / Inspector value (§6): "#123 Refunds on partial orders · GitHub ↗". */
 export function originLine(origin, title = null) {
   if (!origin) return '';
   if (origin.kind === 'brief') return `the Overwatch's brief${origin.title ? `: ${origin.title}` : ''}`;
-  return `${origin.ref}${title ? ` ${title}` : ''} · ${SOURCE_NAME[origin.source] ?? origin.source}`;
+  const name = origin.tracker
+    ? (TRACKERS[origin.tracker] ?? origin.tracker)
+    : (SOURCE_NAME[origin.source] ?? origin.source);
+  return `${origin.ref}${(title ?? origin.title) ? ` ${title ?? origin.title}` : ''} · ${name}`;
 }
 
 /** Markdown without links or images (notes §8.3): `[t](u)` → `t (u)`, `![alt](u)` → `alt`. */
@@ -316,3 +397,7 @@ export const reportTip = (intake) =>
   intake?.untracked_items?.length
     ? `Not from intake: ${intake.untracked_items.map((x) => `${x.kind} ${x.ref}`).join(', ')}`
     : '';
+
+/** The path a repo-doc item opens: from its `local:<path>` node id when it has one, else its ref. */
+export const docPath = (rec) =>
+  typeof rec?.node === 'string' && rec.node.startsWith('local:') ? rec.node.slice(6) : rec?.ref;

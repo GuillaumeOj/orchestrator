@@ -435,21 +435,6 @@ pub async fn preset_update(core: CoreState<'_>, team: String, scope: orch_team::
 }
 
 #[tauri::command]
-pub async fn board_view(core: CoreState<'_>, project: String) -> Res<Value> {
-    blocking(core, move |c| c.board_view(&project)).await
-}
-
-#[tauri::command]
-pub async fn board_sync(core: CoreState<'_>, project: String) -> Res<Value> {
-    blocking(core, move |c| c.board_sync(&project)).await
-}
-
-#[tauri::command]
-pub async fn board_open_sync(core: CoreState<'_>, project: String) -> Res<Value> {
-    blocking(core, move |c| c.board_open_sync(&project)).await
-}
-
-#[tauri::command]
 pub async fn task_create(core: CoreState<'_>, form: Value) -> Res<Value> {
     blocking(core, move |c| c.task_create(form)).await
 }
@@ -584,68 +569,127 @@ pub async fn notion_status(core: CoreState<'_>, feature: String) -> Res<Value> {
     blocking(core, move |c| c.notion_status(&feature)).await
 }
 
-#[tauri::command]
-pub async fn linear_teams(core: CoreState<'_>) -> Res<Value> {
-    blocking(core, |c| c.linear_teams()).await
-}
+// ---- implement-improve-intake B1: tracker settings (api-contract §1)
 
 #[tauri::command]
-pub async fn linear_states(core: CoreState<'_>, team: String) -> Res<Value> {
-    blocking(core, move |c| c.linear_states(&team)).await
+pub async fn tracker_settings(core: CoreState<'_>, project: String) -> Res<Value> {
+    blocking(core, move |c| c.runtime()?.tracker_settings(&project)).await
 }
 
-// ---- P4.5 intake (api-contract §3.1)
-
+/// Validates and stores; `migrate` answers the `{confirm}` of a switch to
+/// Linear for a project with tasks (D8).
 #[tauri::command]
-pub async fn intake_source(core: CoreState<'_>, project: String) -> Res<Value> {
-    blocking(core, move |c| c.runtime()?.intake_source(&project)).await
-}
-
-/// Validates, stores and refreshes at once: `{ preview }`.
-#[tauri::command]
-pub async fn intake_source_set(core: CoreState<'_>, project: String, source: Value) -> Res<Value> {
-    blocking(core, move |c| c.runtime()?.intake_source_set(&project, &source)).await
-}
-
-#[tauri::command]
-pub async fn intake_preview(core: CoreState<'_>, project: String, source: Value) -> Res<Value> {
-    blocking(core, move |c| c.runtime()?.intake_preview(&project, &source)).await
-}
-
-#[tauri::command]
-pub async fn intake_options(core: CoreState<'_>, project: String, source: Value) -> Res<Value> {
-    blocking(core, move |c| c.runtime()?.intake_options(&project, &source)).await
-}
-
-#[tauri::command]
-pub async fn intake_refresh(core: CoreState<'_>, project: Option<String>) -> Res<Value> {
-    blocking(core, move |c| c.runtime()?.intake_refresh(project.as_deref())).await
-}
-
-#[tauri::command]
-pub async fn intake_item(core: CoreState<'_>, item: String) -> Res<Value> {
-    blocking(core, move |c| c.runtime()?.intake_item(&item)).await
-}
-
-#[tauri::command]
-pub async fn intake_hide(core: CoreState<'_>, item: String) -> Res<Value> {
-    blocking(core, move |c| c.runtime()?.intake_hide(&item)).await
-}
-
-#[tauri::command(rename_all = "snake_case")]
-pub async fn intake_prefill(
+pub async fn tracker_settings_set(
     core: CoreState<'_>,
-    item: Option<String>,
-    brief_decision: Option<String>,
-    mode: Option<String>,
+    project: String,
+    settings: Value,
+    migrate: Option<String>,
 ) -> Res<Value> {
-    blocking(core, move |c| c.runtime()?.intake_prefill(item.as_deref(), brief_decision.as_deref(), mode.as_deref()))
-        .await
+    blocking(core, move |c| c.tracker_settings_set(&project, &settings, migrate.as_deref())).await
 }
 
 #[tauri::command]
-pub async fn intake_unhide(core: CoreState<'_>, item: String) -> Res<Value> {
-    blocking(core, move |c| c.runtime()?.intake_unhide(&item)).await
+pub async fn tracker_preview(core: CoreState<'_>, project: String, settings: Value) -> Res<Value> {
+    blocking(core, move |c| c.runtime()?.tracker_preview(&project, &settings)).await
+}
+
+#[tauri::command]
+pub async fn tracker_options(core: CoreState<'_>, project: String, tracker: Value) -> Res<Value> {
+    blocking(core, move |c| c.runtime()?.tracker_options(&project, &tracker)).await
+}
+
+#[tauri::command]
+pub async fn tracker_notice_dismiss(core: CoreState<'_>, project: String) -> Res<Value> {
+    blocking(core, move |c| c.runtime()?.tracker_notice_dismiss(&project)).await
+}
+
+// ---- implement-improve-intake B3: Work (api-contract §2)
+
+#[tauri::command]
+pub async fn work_tree(
+    core: CoreState<'_>,
+    scope: Value,
+    parents: Option<Value>,
+    filter: Option<Value>,
+    after: Option<String>,
+) -> Res<Value> {
+    blocking(core, move |c| {
+        c.runtime()?.work_tree(
+            &scope,
+            &parents.unwrap_or(Value::Null),
+            &filter.unwrap_or(Value::Null),
+            after.as_deref(),
+        )
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn work_search(core: CoreState<'_>, scope: Value, query: String, filter: Option<Value>) -> Res<Value> {
+    blocking(core, move |c| c.runtime()?.work_search(&scope, &query, &filter.unwrap_or(Value::Null))).await
+}
+
+#[tauri::command]
+pub async fn work_node(core: CoreState<'_>, id: String, opts: Option<Value>) -> Res<Value> {
+    blocking(core, move |c| c.runtime()?.work_node(&id, &opts.unwrap_or(Value::Null))).await
+}
+
+#[tauri::command]
+pub async fn work_reveal(core: CoreState<'_>, id: String) -> Res<Value> {
+    blocking(core, move |c| c.runtime()?.work_reveal(&id)).await
+}
+
+#[tauri::command]
+pub async fn work_refresh(core: CoreState<'_>, project: Option<String>) -> Res<Value> {
+    blocking(core, move |c| c.runtime()?.work_refresh(project.as_deref())).await
+}
+
+#[tauri::command]
+pub async fn work_hide(core: CoreState<'_>, id: String) -> Res<Value> {
+    blocking(core, move |c| c.runtime()?.work_hide(&id)).await
+}
+
+#[tauri::command]
+pub async fn work_unhide(core: CoreState<'_>, id: String) -> Res<Value> {
+    blocking(core, move |c| c.runtime()?.work_unhide(&id)).await
+}
+
+#[tauri::command]
+pub async fn work_prefill(core: CoreState<'_>, id: String, mode: Option<String>) -> Res<Value> {
+    blocking(core, move |c| c.runtime()?.work_prefill(&id, mode.as_deref())).await
+}
+
+#[tauri::command]
+pub async fn brief_prefill(core: CoreState<'_>, decision: String, mode: Option<String>) -> Res<Value> {
+    blocking(core, move |c| c.runtime()?.brief_prefill(&decision, mode.as_deref())).await
+}
+
+// ---- implement-improve-intake B4: programs (api-contract §4)
+
+#[tauri::command]
+pub async fn program_plan(core: CoreState<'_>, roots: Value, grouping: String, opts: Option<Value>) -> Res<Value> {
+    blocking(core, move |c| c.runtime()?.program_plan(&roots, &grouping, &opts.unwrap_or(Value::Null))).await
+}
+
+#[tauri::command]
+pub async fn program_start(core: CoreState<'_>, program: Value) -> Res<Value> {
+    blocking(core, move |c| c.runtime()?.program_start(&program)).await
+}
+
+#[tauri::command]
+pub async fn program_update(core: CoreState<'_>, id: String, patch: Value) -> Res<Value> {
+    blocking(core, move |c| c.runtime()?.program_update(&id, &patch)).await
+}
+
+#[tauri::command]
+pub async fn program(core: CoreState<'_>, id: String) -> Res<Value> {
+    blocking(core, move |c| c.runtime()?.program(&id)).await
+}
+
+/// Repeats the write-back that failed on a node (contract §5).
+#[tauri::command]
+pub async fn writeback_retry(core: CoreState<'_>, node: String) -> Res<Value> {
+    blocking(core, move |c| c.runtime()?.writeback_retry(&node)).await
 }
 
 /// `queue_off_hours`: `entry` and `task` are string ids per the contract

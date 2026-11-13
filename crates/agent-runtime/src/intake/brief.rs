@@ -130,7 +130,7 @@ impl Runtime {
         match action {
             "launch" | "edit" => {
                 let mode = item.payload["mode"].as_str().map(str::to_string);
-                let prefill = self.intake_prefill(None, Some(&id), mode.as_deref())?;
+                let prefill = self.brief_prefill(&id, mode.as_deref())?;
                 Ok(json!({
                     "ok": true, "open": "launch", "prefill": prefill, "intake": {"brief_decision": id},
                     "focus": if action == "edit" { json!("brief") } else { Value::Null },

@@ -343,21 +343,19 @@ impl<G: Gh> GithubIssues<G> {
         Ok(())
     }
 
-    /// The issues a sync reads, through the REST issues endpoint, paged.
-    /// No `since`: every open issue and the closed `orch` ones.
-    /// With `since` (the last cursor): every issue changed since a minute
-    /// before it, open or closed. Pull requests are skipped.
+    /// The issues a sync reads, through the REST issues endpoint, paged: the
+    /// team tasks only (the `orch` label; the tracker's own issues are the
+    /// Work tree's, not tasks). No `since`: every one, open or closed. With
+    /// `since` (the last cursor): every one changed since a minute before
+    /// it. Pull requests are skipped.
     pub fn list(&self, since: Option<&str>) -> Result<Listing> {
         let repo = self.repo()?;
         let window = since_window(since);
-        let (raw, coverage) = match window {
-            Some((_, from)) => (self.pages(&repo, &format!("state=all&since={from}"))?, Coverage::ChangedSince),
-            None => {
-                let mut v = self.pages(&repo, "state=open")?;
-                v.extend(self.pages(&repo, &format!("state=closed&labels={LABEL}"))?);
-                (v, Coverage::OpenAndManaged)
-            }
+        let (query, coverage) = match window {
+            Some((_, from)) => (format!("state=all&labels={LABEL}&since={from}"), Coverage::ChangedSince),
+            None => (format!("state=all&labels={LABEL}"), Coverage::OpenAndManaged),
         };
+        let raw = self.pages(&repo, &query)?;
         let issues = raw.iter().filter(|v| v.get("pull_request").is_none()).filter_map(parse_issue).collect();
         Ok(listing(issues, coverage, window.map(|(t, _)| t)))
     }
@@ -426,7 +424,8 @@ mod tests {
         fn run(&self, args: &[String]) -> Result<String> {
             assert!(!args.iter().any(|a| a == "-f" || a == "-F"), "a list is a GET: {args:?}");
             assert_eq!(args[..2], ["api", "--paginate"]);
-            if args[2].contains("state=closed") { Ok("[]".into()) } else { Ok(self.0.clone()) }
+            assert!(args[2].contains("labels=orch"), "only team tasks are listed: {args:?}");
+            Ok(self.0.clone())
         }
     }
 

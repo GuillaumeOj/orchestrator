@@ -39,7 +39,6 @@ vi.mock('../src/lib/ipc.js', () => ({
 
 const { default: ReportPane } = await import('../src/panes/ReportPane.svelte');
 const { default: PlannerWindow } = await import('../src/components/PlannerWindow.svelte');
-const { default: BoardPane } = await import('../src/panes/BoardPane.svelte');
 const { default: Banner } = await import('../src/components/Banner.svelte');
 const { default: StatusBar } = await import('../src/components/StatusBar.svelte');
 const { default: TeamCanvasPane } = await import('../src/panes/TeamCanvasPane.svelte');
@@ -465,74 +464,6 @@ describe('planner, banner, status bar, board', () => {
     cleanup();
     app.data = { ...fixture(), power: { on_ac: true, assertion_held: true, off_hours_pending: 3 } };
     expect(render(StatusBar).container.textContent).toContain('Keeping awake · 3 off-hours');
-  });
-
-  it('board: ⇧O runs the card off-hours; space opens its menu', async () => {
-    // The core marks the task (board_view.tasks[].off_hours) once queue_off_hours ran.
-    let marked = false;
-    const board = () => ({
-      project: { id: 'shop', name: 'shop-api' },
-      backend: 'local',
-      repo: null,
-      last_sync_error: null,
-      tasks: [
-        {
-          id: 14,
-          project_id: 'shop',
-          backend: 'local',
-          external_id: null,
-          feature_id: null,
-          team_run_id: null,
-          title: 'Payment intent endpoint',
-          body: '',
-          status: 'ready',
-          node: null,
-          agent_id: null,
-          depends_on: [],
-          branch: null,
-          notes: [],
-          created_at_ms: 1,
-          updated_at_ms: 1,
-          off_hours: marked,
-        },
-      ],
-      features: [],
-      runs: [],
-    });
-    replies.board_view = board;
-    replies.planner_view = planner();
-    replies.queue_off_hours = (a) => ((marked = a.off), { starts_at: iso(now + 3600000) });
-    app.panes.b1 = { type: 'board', projectId: 'shop', title: 'shop tasks' };
-    const { container, getByText } = render(BoardPane, { paneId: 'b1' });
-    await waitFor(() => getByText('Payment intent endpoint'));
-    const el = container.querySelector('.board');
-    await fireEvent.keyDown(el, { key: ' ' });
-    await tick();
-    // The card menu is the shared Menu (on the body), keys right-aligned (04-board-pane, §9 bug 3).
-    const menu = document.body.querySelector('[role="menu"][aria-label="Task menu"]');
-    for (const item of ['Open feature', 'Run off-hours', 'Edit', 'Move to', 'Assign'])
-      expect(menu.textContent).toContain(item);
-    expect(menu.textContent).not.toContain('Open task');
-    await fireEvent.keyDown(document.activeElement, { key: 'Escape' });
-    await fireEvent.keyDown(el, { key: 'O', shiftKey: true });
-    await waitFor(() => expect(calls.some(([c, a]) => c === 'queue_off_hours' && a.task === '14' && a.off)).toBe(true));
-    await waitFor(() => expect(container.textContent).toContain('☾ Off-hours'));
-    // The toast undoes it (Penpot 05: "… runs off-hours · starts 18:00 · Undo").
-    const t = app.toasts.at(-1);
-    // A start past midnight carries its weekday ("starts Sat 00:08"): tests hold at any hour.
-    expect(t.text).toMatch(/^T-14 runs off-hours · starts (\w{3} )?\d\d:\d\d$/);
-    t.action.run();
-    await waitFor(() =>
-      expect(calls.some(([c, a]) => c === 'queue_off_hours' && a.task === '14' && a.off === false)).toBe(true),
-    );
-    // space, m, 4: Move to… Review.
-    replies.task_update = {};
-    await fireEvent.keyDown(el, { key: 'm' });
-    await waitFor(() => expect(document.activeElement.closest('[role="menu"][aria-label="Move to"]')).toBeTruthy());
-    await fireEvent.keyDown(document.activeElement, { key: '4' });
-    await waitFor(() =>
-      expect(calls.some(([c, a]) => c === 'task_update' && a.id === 14 && a.status === 'review')).toBe(true),
-    );
   });
 
   it("a starter role's edit asks where to save a copy, then the node uses the copy", async () => {

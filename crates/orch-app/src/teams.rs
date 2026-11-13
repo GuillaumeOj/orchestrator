@@ -24,6 +24,31 @@ pub struct ProjectSettingsForm {
     pub migrate: Option<String>,
 }
 
+/// D8: what a change of Linear team or project does to the project's tasks.
+struct BackendMove {
+    relink: bool,
+    push: Vec<orch_store::Task>,
+    detach: Vec<orch_store::Task>,
+}
+
+/// D8: whether a change of tracker moves the tasks **to** Linear, and whether
+/// it leaves an old Linear team (so the tasks left there are relinked). A
+/// change to Linear, or to a set of teams that shares none with the old one;
+/// editing the scope only (another project, one team more or less) keeps the
+/// tasks where they are.
+fn linear_move(old: &orch_store::Tracker, new: &orch_store::Tracker) -> (bool, bool) {
+    use orch_store::Tracker::Linear;
+    let teams = |t: &orch_store::Tracker| -> std::collections::BTreeSet<String> {
+        match t {
+            Linear { teams, .. } => teams.iter().map(|t| t.to_ascii_lowercase()).collect(),
+            _ => Default::default(),
+        }
+    };
+    let to_linear =
+        matches!(new, Linear { .. }) && (!matches!(old, Linear { .. }) || teams(old).is_disjoint(&teams(new)));
+    (to_linear, to_linear && matches!(old, Linear { .. }))
+}
+
 /// Every feature with its latest run, for the sidebar (Projects → Features
 /// → agents), the palette and ⌘P. A deleted (archived) feature is listed,
 /// flagged `archived`, while one of its agents is not deleted: its team is
@@ -158,108 +183,6 @@ impl Core {
         self.runtime()?.feature_asset(feature_id, path)
     }
 
-    /// The Board (FR-502): a project's tasks in one model whatever the
-    /// backend, with the nodes each active run can assign to.
-    pub fn board_view(&self, project_id: &str) -> Result<Value> {
-        let rt = self.runtime()?;
-        let p = rt.db.project(project_id)?.ok_or_else(|| anyhow!("no project {project_id}"))?;
-        let features = rt.db.features(Some(project_id))?;
-        // One query for the active runs (newest first), then each feature's snapshot.
-        let mut active: std::collections::HashMap<String, orch_store::TeamRun> = std::collections::HashMap::new();
-        for r in rt.db.runs(None, true)? {
-            active.entry(r.feature_id.clone()).or_insert(r);
-        }
-        let runs: Vec<Value> = features
-            .iter()
-            .filter_map(|f| {
-                let run = active.remove(&f.id)?;
-                let (team, _) = rt.db.team_version(&run.team_scope, &run.team_id, run.team_version).ok()??;
-                let nodes = team
-                    .nodes
-                    .into_iter()
-                    .map(|n| json!({"id": n.id, "role": n.role_id, "lead": n.is_lead}))
-                    .collect::<Vec<_>>();
-                Some(json!({"id": run.id, "feature_id": f.id, "slug": f.slug, "status": run.status, "nodes": nodes}))
-            })
-            .collect();
-        let backend = p.backend();
-        let last = rt.last_sync(project_id);
-        let won: Vec<u64> = last["conflicts"].as_array().into_iter().flatten().filter_map(Value::as_u64).collect();
-        let marks = rt.off_hours_marks();
-        // The repository issue URLs point to: the configured one, else what
-        // the first sync resolved for the checkout (no link before; the
-        // render never runs `gh`).
-        let github_repo = match backend {
-            TaskBackendConfig::Github { .. } => rt.tasks_for(&p).known_github_repo(),
-            _ => None,
-        };
-        let tasks: Vec<Value> = rt
-            .db
-            .tasks(Some(project_id), None, None)?
-            .into_iter()
-            .map(|t| {
-                let off = marks.tasks.contains(&t.id) || t.team_run_id.as_ref().is_some_and(|r| marks.runs.contains(r));
-                let mut v = json!(t);
-                v["remote_won"] = json!(won.contains(&t.id));
-                v["off_hours"] = json!(off);
-                v["remote_url"] = match (&github_repo, &t.external_id) {
-                    (Some(repo), Some(n)) if t.backend == "github" => {
-                        json!(format!("https://github.com/{repo}/issues/{n}"))
-                    }
-                    _ => Value::Null,
-                };
-                v
-            })
-            .collect();
-        Ok(json!({
-            "project": {"id": p.id, "name": p.name},
-            "backend": backend.kind(),
-            "repo": match &backend { TaskBackendConfig::Github { repo } => json!(repo), _ => Value::Null },
-            "linear_team": match &backend { TaskBackendConfig::Linear { team, .. } => json!(team), _ => Value::Null },
-            "last_sync_at_ms": last["at_ms"],
-            "last_sync": last.get("report").cloned().unwrap_or(Value::Null),
-            "last_sync_error": self
-                .sync_errors
-                .lock()
-                .ok()
-                .and_then(|m| m.get(project_id).cloned())
-                .map(Value::from)
-                .unwrap_or_else(|| last["error"].clone()),
-            "tasks": tasks,
-            "features": features.iter().map(|f| json!({"id": f.id, "slug": f.slug})).collect::<Vec<_>>(),
-            "runs": runs,
-        }))
-    }
-
-    /// The Board opened: syncs the project's remote backend unless it was
-    /// synced less than a minute ago, and watches it for the background sync.
-    pub fn board_open_sync(&self, project_id: &str) -> Result<Value> {
-        let rt = self.runtime()?;
-        let p = rt.db.project(project_id)?.ok_or_else(|| anyhow!("no project {project_id}"))?;
-        let Some(r) = rt.open_sync(&p) else { return Ok(json!({"synced": false})) };
-        self.record_sync(project_id, &r);
-        Ok(json!({"synced": true, "report": r?.summary()}))
-    }
-
-    /// Keeps (or clears) the sync error the Board shows for a project.
-    fn record_sync(&self, project_id: &str, r: &Result<orch_tasks::SyncReport>) {
-        if let Ok(mut m) = self.sync_errors.lock() {
-            match r {
-                Ok(_) => m.remove(project_id),
-                Err(e) => m.insert(project_id.to_string(), format!("{e:#}")),
-            };
-        }
-    }
-
-    /// The Board's `r`: sync the project's remote backend now (FR-503).
-    pub fn board_sync(&self, project_id: &str) -> Result<Value> {
-        let rt = self.runtime()?;
-        let p = rt.db.project(project_id)?.ok_or_else(|| anyhow!("no project {project_id}"))?;
-        let r = rt.sync_tasks(&p);
-        self.record_sync(project_id, &r);
-        Ok(r?.summary())
-    }
-
     pub fn task_create(&self, f: Value) -> Result<Value> {
         #[derive(Deserialize)]
         struct F {
@@ -312,65 +235,57 @@ impl Core {
     /// without it nothing is saved and the answer is `{confirm: {kind:
     /// "linear_migrate", open, done}}`. `push_open` gives the open tasks to
     /// Linear (created at the sync that follows); `leave` keeps every task
-    /// local and unsynced. Done tasks are never pushed.
-    pub fn project_settings_set(&self, project_id: &str, f: ProjectSettingsForm) -> Result<Value> {
-        let rt = self.runtime()?;
-        let p = rt.db.project(project_id)?.ok_or_else(|| anyhow!("no project {project_id}"))?;
-        let mut raw = f.settings;
-        raw.remove("external_files");
-        let mut general: ProjectSettings = serde_json::from_value(Value::Object(raw))?;
-        let old = p.backend();
-        // A change to Linear, or to another Linear team or project (D8).
-        let to_linear = match (&old, &f.backend) {
-            (
-                TaskBackendConfig::Linear { team: a, project: pa, .. },
-                TaskBackendConfig::Linear { team: b, project: pb, .. },
-            ) => a != b || pa != pb,
-            (_, TaskBackendConfig::Linear { .. }) => true,
-            _ => false,
-        };
-        let relink = to_linear && old.kind() == "linear";
-        let mut push = vec![];
-        let mut detach = vec![];
+    /// local and unsynced. Done tasks are never pushed. `Err(confirm)` here
+    /// is that answer.
+    fn plan_backend_move(
+        &self,
+        rt: &agent_runtime::runtime::Runtime,
+        project_id: &str,
+        old: &orch_store::Tracker,
+        new: &orch_store::Tracker,
+        migrate: Option<&str>,
+    ) -> Result<std::result::Result<BackendMove, Value>> {
+        let (to_linear, relink) = linear_move(old, new);
+        let mut mv = BackendMove { relink, push: vec![], detach: vec![] };
         if to_linear {
             let tasks = rt.db.tasks(Some(project_id), None, None)?;
             let (open, done): (Vec<_>, Vec<_>) =
                 tasks.into_iter().partition(|t| t.status != orch_team::TaskStatus::Done);
             if !open.is_empty() || !done.is_empty() {
-                match f.migrate.as_deref() {
+                match migrate {
                     None => {
-                        return Ok(
-                            json!({"confirm": {"kind": "linear_migrate", "open": open.len(), "done": done.len()}}),
-                        );
+                        return Ok(Err(json!({"kind": "linear_migrate", "open": open.len(), "done": done.len()})));
                     }
                     Some("push_open") => {
-                        push = open;
-                        detach = done;
+                        mv.push = open;
+                        mv.detach = done;
                     }
-                    Some("leave") => detach = open.into_iter().chain(done).collect(),
+                    Some("leave") => mv.detach = open.into_iter().chain(done).collect(),
                     Some(other) => bail!("migrate {other:?}: use push_open or leave"),
                 }
             }
         }
-        let (backend, track) = (f.backend, f.track_orchestrator_dir);
-        rt.db.update_project_settings(project_id, move |e| {
-            // FR-112: the stored list stays as the transaction read it.
-            general.external_files = std::mem::take(&mut e.settings.external_files);
-            e.settings = general;
-            (e.backend, e.track_orchestrator_dir) = (backend, track);
-            Ok(())
-        })?;
+        Ok(Ok(mv))
+    }
+
+    /// What D8 does once the new backend is stored.
+    fn finish_backend_move(
+        &self,
+        rt: &agent_runtime::runtime::Runtime,
+        project_id: &str,
+        mv: BackendMove,
+    ) -> Result<()> {
         // From one Linear team or project to another: the old issues are not
         // the new team's, so the tasks not pushed stay local (never written
         // to the old issues again).
-        if relink {
-            for mut t in detach.into_iter().filter(|t| t.backend == "linear") {
+        if mv.relink {
+            for mut t in mv.detach.into_iter().filter(|t| t.backend == "linear") {
                 t.backend = "local".into();
                 rt.db.upsert_task(&t)?;
             }
         }
-        if !push.is_empty() {
-            for mut t in push {
+        if !mv.push.is_empty() {
+            for mut t in mv.push {
                 (t.backend, t.external_id, t.remote_updated_at) = ("linear".into(), None, None);
                 rt.db.upsert_task(&t)?;
             }
@@ -382,21 +297,77 @@ impl Core {
                 }
             }
         }
+        Ok(())
+    }
+
+    pub fn project_settings_set(&self, project_id: &str, f: ProjectSettingsForm) -> Result<Value> {
+        let rt = self.runtime()?;
+        rt.db.project(project_id)?.ok_or_else(|| anyhow!("no project {project_id}"))?;
+        let mut raw = f.settings;
+        raw.remove("external_files");
+        let mut general: ProjectSettings = serde_json::from_value(Value::Object(raw))?;
+        let old = rt.db.tracker(project_id)?;
+        let new = old.clone().with_backend(&f.backend);
+        let mv = match self.plan_backend_move(rt, project_id, &old.tracker, &new.tracker, f.migrate.as_deref())? {
+            Ok(mv) => mv,
+            Err(confirm) => return Ok(json!({"confirm": confirm})),
+        };
+        let (backend, track) = (f.backend, f.track_orchestrator_dir);
+        rt.db.update_project_settings(project_id, move |e| {
+            // FR-112: the stored list stays as the transaction read it.
+            general.external_files = std::mem::take(&mut e.settings.external_files);
+            e.settings = general;
+            (e.backend, e.track_orchestrator_dir) = (backend, track);
+            Ok(())
+        })?;
+        self.finish_backend_move(rt, project_id, mv)?;
         self.project_settings(project_id)
     }
 
-    pub fn linear_teams(&self) -> Result<Value> {
-        self.runtime()?.linear_teams()
-    }
-
-    pub fn linear_states(&self, team: &str) -> Result<Value> {
-        self.runtime()?.linear_states(team)
+    /// `tracker_settings_set`: the tracker form's save. The D8 flow of a
+    /// switch to Linear is the project settings': `migrate` answers its
+    /// `{confirm}`.
+    pub fn tracker_settings_set(&self, project_id: &str, settings: &Value, migrate: Option<&str>) -> Result<Value> {
+        let rt = self.runtime()?;
+        rt.db.project(project_id)?.ok_or_else(|| anyhow!("no project {project_id}"))?;
+        let s = agent_runtime::intake::tracker::parse_settings(settings)?;
+        let old = rt.db.tracker(project_id)?;
+        let mv = match self.plan_backend_move(rt, project_id, &old.tracker, &s.tracker, migrate)? {
+            Ok(mv) => mv,
+            Err(confirm) => return Ok(json!({"confirm": confirm})),
+        };
+        let out = rt.tracker_commit(project_id, &s)?;
+        self.finish_backend_move(rt, project_id, mv)?;
+        Ok(out)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_scope_only_edit_does_not_move_the_tasks() {
+        use orch_store::Tracker;
+        let lin = |t: &[&str], p: Option<&[&str]>| Tracker::Linear {
+            teams: t.iter().map(|s| s.to_string()).collect(),
+            projects: p.map(|p| p.iter().map(|s| s.to_string()).collect()),
+        };
+        let gh = Tracker::Github { repo: Some("me/shop".into()), project_board: None };
+        let local = Tracker::Local { backlog_glob: None };
+        // Scope only: a project added, a team added or removed (one stays), the case of a key.
+        assert_eq!(linear_move(&lin(&["ENG"], None), &lin(&["ENG"], Some(&["p1"]))), (false, false));
+        assert_eq!(linear_move(&lin(&["ENG"], None), &lin(&["ENG", "OPS"], None)), (false, false));
+        assert_eq!(linear_move(&lin(&["ENG", "OPS"], None), &lin(&["OPS"], None)), (false, false));
+        assert_eq!(linear_move(&lin(&["eng"], None), &lin(&["ENG"], None)), (false, false));
+        // To Linear from another kind: the D8 question, nothing to relink.
+        assert_eq!(linear_move(&gh, &lin(&["ENG"], None)), (true, false));
+        assert_eq!(linear_move(&local, &lin(&["ENG"], None)), (true, false));
+        // Another team altogether: relinked.
+        assert_eq!(linear_move(&lin(&["ENG"], None), &lin(&["OPS"], None)), (true, true));
+        // Away from Linear: nothing.
+        assert_eq!(linear_move(&lin(&["ENG"], None), &gh), (false, false));
+    }
 
     #[test]
     fn forms_parse_like_the_ui_sends_them() {

@@ -1,11 +1,11 @@
 // Intake actions (P4.5, spec §3.3, §3.5; notes p4-5 §2.2, §5, §8): what a user press does.
-// Every start goes through `intake_prefill` and the existing launch / new-session dialogs;
+// Every start goes through `work_prefill` and the existing launch / new-session dialogs;
 // nothing here starts work. Mission control stays a pure render of `now`: these run on a key
 // or a click only.
 
 import { app, askOverwatch, openProjectSettings, openSettings, openUrl, projects, toast } from './app.svelte.js';
 import { UNDO_MS } from './inbox.js';
-import { GH_SCOPE_COMMAND, integrationsRow, staleOf, staleToast } from './intake.js';
+import { docPath, GH_SCOPE_COMMAND, integrationsRow, staleOf, staleToast } from './intake.js';
 import { errText, invoke } from './ipc.js';
 
 /** Session-only state of the lane and of planning (notes §1.1, §8.1). */
@@ -19,7 +19,7 @@ export const intakeUi = $state({
 // ---------------------------------------------------------------- dialogs
 
 /**
- * Opens the launch or new-session overlay with a prefill from `intake_prefill`
+ * Opens the launch or new-session overlay with a prefill from `work_prefill` or `brief_prefill`
  * ({launch} or {session}); `intake` is what the submit carries ({item} or {brief_decision});
  * `origin` feeds the "From …" chip, `over` the estimate line, `focus` ('brief') the field.
  */
@@ -37,29 +37,50 @@ export function openPrefilled(
     app.overlay = { kind: 'new-session', prefill: prefill.session, intake, origin, item, focus };
 }
 
-/** Start team run / Start solo from a Ready row (notes §2.2): the dialog, never a start. */
-export async function startItem(item, mode) {
+/**
+ * Start team run / Start solo from a node (t / a, a Ready row, Work): the dialog from `work_prefill`, never a
+ * start. `item` (a Ready item or a node) feeds the estimate line; the origin carries the breadcrumb and the lines
+ * the dialog shows above its buttons (sub-issues, blocked by, write-back, ran before; improve-intake notes §5.2).
+ * @param {string} id the WorkNode id
+ * @param {'team' | 'solo'} mode
+ */
+export async function startNode(id, mode, { item = null, ref = '' } = {}) {
   if (intakeUi.starting) return;
-  intakeUi.starting = item.id;
+  const key = item?.id ?? id;
+  intakeUi.starting = key;
   try {
-    const r = await invoke('intake_prefill', { item: item.id, mode });
+    const r = await invoke('work_prefill', { id, mode });
     openPrefilled(r, {
-      intake: { item: item.id },
-      origin: { kind: 'intake', item: item.id, source: item.source, ref: item.ref, url: item.url ?? null },
+      intake: { source: id },
+      origin: {
+        kind: 'intake',
+        ref: item?.ref ?? ref,
+        url: item?.url ?? null,
+        tracker: item?.tracker,
+        ...r?.origin,
+        node: id,
+        open_sub_issues: r?.open_sub_issues ?? 0,
+        blocked_by_open: r?.blocked_by_open ?? [],
+        ran_before: r?.ran_before ?? null,
+        write_back_line: r?.write_back_line ?? null,
+      },
       item,
     });
-    if (!app.overlay || app.overlay.item?.id !== item.id) intakeUi.starting = null;
+    if (app.overlay?.intake?.source !== id) intakeUi.starting = null;
   } catch (e) {
     intakeUi.starting = null;
     const stale = staleOf(e);
-    toast(stale ? staleToast(stale, item.ref) : errText(e), { kind: 'error' });
+    toast(stale ? staleToast(stale, item?.ref ?? ref) : errText(e), { kind: 'error' });
   }
 }
+
+/** Start from a Ready row: its node id (`now.intake` items carry `node`). */
+export const startItem = (item, mode) => startNode(item.node ?? item.id, mode, { item });
 
 /** A brief card's Launch / Edit (notes §8.3): the dialog with the proposed mode. */
 export async function startBrief(decision, mode, { edit = false } = {}) {
   try {
-    const r = await invoke('intake_prefill', { brief_decision: decision.id, mode });
+    const r = await invoke('brief_prefill', { decision: decision.id, mode });
     openPrefilled(r, {
       intake: { brief_decision: decision.id },
       origin: { kind: 'brief', decision: decision.id, title: decision.title ?? decision.payload?.title ?? null },
@@ -85,7 +106,7 @@ export async function refreshIntake(projectIds) {
   // `undefined` is every project; an empty list (a filter with no source) is none.
   if (projectIds && !projectIds.length) return;
   try {
-    await Promise.all((projectIds ?? [null]).map((project) => invoke('intake_refresh', project ? { project } : {})));
+    await Promise.all((projectIds ?? [null]).map((project) => invoke('work_refresh', project ? { project } : {})));
   } catch (e) {
     toast(`Could not refresh: ${errText(e)}`, { kind: 'error' });
   }
@@ -94,7 +115,7 @@ export async function refreshIntake(projectIds) {
 /** Hide ("Not now", x): the toast follows the core's answer, with Undo for 5 s (notes §2.2). */
 export async function hideItem(item) {
   try {
-    await invoke('intake_hide', { item: item.id });
+    await invoke('work_hide', { id: item.node ?? item.id });
   } catch (e) {
     return toast(`Could not hide ${item.ref}: ${errText(e)}`, { kind: 'error' });
   }
@@ -108,7 +129,7 @@ export async function hideItem(item) {
 
 export async function unhideItem(item) {
   try {
-    await invoke('intake_unhide', { item: item.id });
+    await invoke('work_unhide', { id: item.node ?? item.id });
     toast(`${item.ref} is back in Ready to start.`);
   } catch (e) {
     toast(`Could not unhide ${item.ref}: ${errText(e)}`, { kind: 'error' });
@@ -133,10 +154,13 @@ export async function undoHide(h = intakeUi.lastHide) {
 export async function openSource(item, openEditor) {
   if (item.url) return openUrl(item.url);
   const p = projects().find((x) => x.id === item.project);
-  if (p) openEditor?.(item.ref, null, { projectId: p.id });
+  if (p) openEditor?.(docPath(item), null, { projectId: p.id });
 }
 
 // ---------------------------------------------------------------- errors, set up
+
+/** Source errors whose Fix is in Project settings › Tracker (notes §10.7). */
+const TRACKER_FIXES = { linear_complexity: true, gh_write: true, linear_write: true };
 
 /** The error line's Fix (notes §4.2): where `fix` sends the user; Copy command for `gh_scope`. */
 export async function fixSource(src, refresh = () => refreshIntake([src.project])) {
@@ -150,12 +174,13 @@ export async function fixSource(src, refresh = () => refreshIntake([src.project]
       toast(`Run it in a terminal, then Refresh: ${GH_SCOPE_COMMAND}`);
     }
   } else if (fix === 'integrations') openSettings('integrations', integrationsRow(code));
-  else if (fix === 'settings') openProjectSettings(src.project, 'intake');
+  // The Tracker fixes (limit the projects, turn off write-back) are made in Project settings › Tracker.
+  else if (fix === 'settings' || TRACKER_FIXES[code]) openProjectSettings(src.project, 'tracker');
   else return refresh();
 }
 
-/** Set up intake (e): Project settings › Intake. */
-export const setUpIntake = (project) => openProjectSettings(project, 'intake');
+/** Set up intake (e): Project settings › Tracker. */
+export const setUpIntake = (project) => openProjectSettings(project, 'tracker');
 
 // ---------------------------------------------------------------- Plan with the Overwatch (notes §8.1)
 

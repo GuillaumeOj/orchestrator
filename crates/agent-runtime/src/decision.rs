@@ -28,6 +28,7 @@ pub fn decision_id(kind: &str, id: u64) -> String {
         "question" => format!("q-{id}"),
         "rule_proposal" => format!("rule-{id}"),
         "brief" => format!("brief-{id}"),
+        "program" => format!("prog-{id}"),
         _ => format!("alert-{id}"),
     }
 }
@@ -128,6 +129,9 @@ pub struct Decision {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub annotation: Option<Value>,
     pub created_ms: u64,
+    /// B4 (F29): the program a spec / PR decision of a program feature belongs to.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub program: Option<Value>,
     /// The store's agent, for routing (`subject.agent` too).
     #[serde(skip)]
     pub agent: Option<String>,
@@ -290,6 +294,18 @@ fn kind_of(i: &InboxItem) -> (&'static str, Option<&'static str>) {
         "notion" => ("notion", None),
         "rule_proposal" => ("rule_proposal", None),
         "brief" => ("brief", None),
+        "program" => (
+            match s(&i.payload, "kind") {
+                "program_new_item" => "program_new_item",
+                "program_item_closed" => "program_item_closed",
+                "program_dependency_added" => "program_dependency_added",
+                "program_done" => "program_done",
+                "program_feature_failed" => "program_feature_failed",
+                "writeback_failing" => "writeback_failing",
+                _ => "program_done",
+            },
+            None,
+        ),
         _ if i.payload.get("source").and_then(Value::as_str) == Some("notion") => ("notion", None),
         _ => ("alert", None),
     }
@@ -301,7 +317,9 @@ fn level_of(kind: &str) -> u8 {
         "permission" | "question" | "gate" | "trust" | "wait" => 1,
         "budget" | "ask" | "notion" => 3,
         // Blocks nobody: never notifies, not in the badge (P4.4).
-        "rule_proposal" | "brief" => 4,
+        "rule_proposal" | "brief" | "program_dependency_added" | "program_done" => 4,
+        // A child added or closed upstream, a feature failed: needs you, not urgent (notes §7.3).
+        "program_new_item" | "program_item_closed" | "program_feature_failed" | "writeback_failing" => 3,
         _ => 2,
     }
 }
@@ -352,6 +370,25 @@ fn brief_card(p: &Value) -> (String, String, Vec<Value>, Vec<Action>) {
     let actions =
         vec![act("launch", "Launch", Some("⏎")), act("edit", "Edit", Some("e")), act("dismiss", "Dismiss", Some("r"))];
     (cut(s(p, "title"), 80), line, ctx, actions)
+}
+
+/// The cards of the program decisions (notes §7.3): title, text, actions.
+fn program_card(kind: &str, p: &Value) -> (String, String, Vec<Value>, Vec<Action>) {
+    let actions = match kind {
+        "program_new_item" => vec![act("add", "Add to program", Some("⏎")), act("ignore", "Ignore", Some("r"))],
+        "program_item_closed" => vec![act("skip", "Skip it", Some("⏎")), act("keep", "Keep", Some("r"))],
+        // A dependent of work outside the program that failed or was cancelled: start it anyway, or skip it.
+        "program_feature_failed" if !p["dependency"].is_null() => {
+            vec![act("start_anyway", "Start anyway", Some("⏎")), act("skip", "Skip it", Some("x"))]
+        }
+        "program_feature_failed" => vec![act("open", "Open feature", Some("⏎")), act("skip", "Skip it", Some("x"))],
+        "writeback_failing" => {
+            vec![act("settings", "Open settings", Some("⏎")), act("turn_off", "Turn off write-back", None)]
+        }
+        _ => vec![act("open", "Open program", Some("⏎"))],
+    };
+    let text = s(p, "text");
+    (cut(s(p, "title"), 80), cut(text, 120), vec![markdown(text, None)], actions)
 }
 
 /// A stored item as a Decision.
@@ -514,6 +551,15 @@ fn stored(cx: &Ctx, i: &InboxItem) -> Decision {
         }
         ("rule_proposal", _) => rule_proposal_card(p),
         ("brief", _) => brief_card(p),
+        (
+            k @ ("program_new_item"
+            | "program_item_closed"
+            | "program_dependency_added"
+            | "program_done"
+            | "program_feature_failed"
+            | "writeback_failing"),
+            _,
+        ) => program_card(k, p),
         ("budget", _) => {
             let reason = if s(p, "reason").is_empty() { first_line.as_str() } else { s(p, "reason") };
             let mut ctx = vec![markdown(&i.body, None)];
@@ -608,6 +654,7 @@ fn stored(cx: &Ctx, i: &InboxItem) -> Decision {
         deciding_until_ms: deciding,
         annotation: p.get("annotation").filter(|a| a.is_object()).cloned(),
         created_ms: i.created_at_ms,
+        program: None,
         agent: i.agent_id.clone(),
         synthesized: false,
         decision: i.decision.clone(),
@@ -648,6 +695,7 @@ fn synth(
         deciding_until_ms: None,
         annotation: None,
         created_ms,
+        program: None,
         agent: agent.map(str::to_string),
         synthesized: true,
         decision: None,

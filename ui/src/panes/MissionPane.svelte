@@ -6,6 +6,7 @@
   // `lanes()` (lib/mission.js); this pane keeps the selection, the open
   // lanes and details, and the keys (notes §3.1).
   import { untrack } from 'svelte';
+  import ProgramRow from '../components/mission/ProgramRow.svelte';
   import QueueRow from '../components/mission/QueueRow.svelte';
   import ReadyDetails from '../components/mission/ReadyDetails.svelte';
   import ReadyLine from '../components/mission/ReadyLine.svelte';
@@ -23,10 +24,10 @@
     contextProjectId,
     focusCard,
     now30,
-    openBoard,
     openEditor,
     openReport,
     openSession,
+    openTask,
     openUrl,
     projectName,
     projects,
@@ -36,13 +37,16 @@
   } from '../lib/app.svelte.js';
   import { mb, startOfDay } from '../lib/format.js';
   import { isOpen } from '../lib/inbox.js';
-  import { ageText, modeOf, rateLimitedUntil } from '../lib/intake.js';
+  import { ageText, modeOf, originOf, rateLimitedUntil } from '../lib/intake.js';
   import { fixSource, hideItem, intakeUi, openSource, planWithOverwatchIn, refreshIntake, setUpIntake, startItem, undoHide, unhideItem } from '../lib/intake.svelte.js';
   import { isTypingTarget } from '../lib/keyboard.js';
   import { allowed, COUNT_KEYS, DONE_ROWS, decisionOf, defaultTarget, footerText, hiddenText, lanes, looseText, rowIndex, stops, target } from '../lib/mission.js';
   import { attention } from '../lib/now.svelte.js';
+  import { liveCapText, SUBROWS_OPEN_MAX } from '../lib/program.js';
+  import { TRACKERS } from '../lib/source.js';
   import { LEVEL } from '../lib/status.js';
   import { tooltip } from '../lib/tooltip.js';
+  import { cancelProgram, openProgram, openProgramFeature, openProgramPlan, openProgramSource, openWork, togglePause } from '../lib/work.js';
 
   let { paneId } = $props();
 
@@ -52,6 +56,7 @@
   let idleOpen = $state(false);
   let showAll = $state(false);
   let details = $state({});
+  let subrows = $state({}); // program id → sub-rows shown (default: ≤ 5 features)
   let busy = $state(null); // the agent an action waits on
   let lastAt = 0; // the selection's last stop index (a row that leaves gives its place to the next)
 
@@ -155,12 +160,29 @@
     confirm(`Kill ${id}?`, 'It loses its current turn. Its process group and leftover processes in its worktree get SIGTERM, then SIGKILL after 5 s.', () => act(id, 'kill'), 'Kill');
   }
 
+  // ---- Programs (improve-intake notes §7.1, §12.2)
+
+  const subOpen = (p) => subrows[p.id] ?? p.features.length <= SUBROWS_OPEN_MAX;
+  const toggleSubs = (p) => (subrows = { ...subrows, [p.id]: !subOpen(p) });
+  /** The tracker's name for a project's sub-row flags ("closed in GitHub"). */
+  const trackerFor = (project) => TRACKERS[(app.now.intake?.sources ?? []).find((s) => s.project === project)?.type] ?? 'the tracker';
+  const liveCap = $derived(liveCapText(app.now.counts?.global));
+  const progActs = (p) => ({
+    ontoggle: () => toggleSubs(p),
+    onopen: () => openProgram(p.id, p.title),
+    onpause: () => togglePause(p),
+    oncancel: () => cancelProgram(p),
+    onsource: () => openProgramSource(p.id),
+    onfeature: (f) => openProgramFeature(p, f),
+  });
+
   /** `o` on an outcome (notes §1.7). */
   function openOutcome(o) {
+    if (o.kind === 'program' && o.program) return openProgram(o.program);
     if (o.url) return openUrl(o.url);
     if (o.kind === 'turn_done' && o.agent) return openSession(o.agent);
     if (o.kind === 'report_ready') return openReport(o.report ?? 'current');
-    if (o.kind === 'sync_conflict' && o.project) return openBoard(o.project, o.task ?? null);
+    if (o.kind === 'sync_conflict' && o.project) return openTask(o.project, o.task, { run: o.run, feature: o.feature, conflict: true, remote_url: o.remote_url, ref: o.ref, tracker: o.tracker });
     if (o.run && index.has(`run:${o.run}`)) return reveal(`run:${o.run}`);
     if (o.agent) return openSession(o.agent);
   }
@@ -187,6 +209,7 @@
     if (row?.kind === 'outcome') return openOutcome(row.outcome);
     if (row?.kind === 'ready') return row.hidden ? unhideItem(row.item) : startItem(row.item, modeOf(row.item));
     if (row?.kind === 'iline') return lineAct(row);
+    if (row?.kind === 'program') return openProgram(row.program.id, row.program.title);
     if (t) openSession(t);
   }
 
@@ -195,7 +218,22 @@
   const refreshLane = () => refreshIntake((app.now.intake?.sources ?? []).filter((s) => s.type !== 'none' && (!filter || filter.includes(s.project))).map((s) => s.project));
 
   /** A Ready item's actions, for its row and its details. */
-  const itemActs = (it) => ({ onstart: (m) => startItem(it, m), onhide: () => hideItem(it), onunhide: () => unhideItem(it), onsource: () => openSource(it, openEditor) });
+  const itemActs = (it) => ({
+    onstart: (m) => startItem(it, m),
+    onhide: () => hideItem(it),
+    onunhide: () => unhideItem(it),
+    onsource: () => openSource(it, openEditor),
+    onprogram: () => runAsProgram(it),
+    onwork: () => showInWork(it),
+  });
+
+  /** `p` / ⋯ "Run as program": the plan dialog of this parent (F5 implements it behind the hook). */
+  const runAsProgram = (it) => it.node && it.actions?.program === 'ok' && openProgramPlan([it.node], { title: it.title });
+
+  /** `w` on a Ready row: Work revealed at that item; elsewhere, Work on the filter's projects (all without a filter). */
+  const showInWork = (it) => openWork({ projects: [it.project], reveal: it.node ?? null });
+  const browseScope = $derived(filter ?? (ps.length === 1 ? [ps[0].id] : null));
+  const browse = () => openWork({ projects: browseScope });
 
   /** ⏎ / a click on a line (notes §4.1, §10.1). */
   function lineAct(r) {
@@ -218,6 +256,14 @@
       e.preventDefault();
       fn();
     };
+    // A program row (notes §12.2): p pause / resume, ⇧K cancel, space sub-rows, o source; ⏎ below.
+    if (row?.kind === 'program') {
+      const p = row.program;
+      if (k === 'K' && e.shiftKey) return run(() => cancelProgram(p));
+      if (k === 'p') return run(() => togglePause(p));
+      if (k === ' ') return run(() => toggleSubs(p));
+      if (k === 'o') return run(() => openProgramSource(p.id));
+    }
     // ⇧K kills; k (and a caps-lock K) moves up (notes §3.2).
     if (k === 'K' && e.shiftKey) return t && trec ? run(() => kill(t)) : undefined;
     if (k === 'j' || k === 'ArrowDown') return run(() => move(1));
@@ -226,6 +272,7 @@
     if (k === 'l' || k === 'ArrowRight') return run(() => moveChip(1));
     if (k === 'R' && e.shiftKey) return run(refreshLane);
     if (k === 'H' && e.shiftKey) return run(() => (intakeUi.showHidden = !intakeUi.showHidden));
+    if (k === 'w') return run(() => (row?.kind === 'ready' && row.item.node ? showInWork(row.item) : browse()));
     if (k === 'u' && intakeUi.lastHide) return run(undoHide);
     if (row?.kind === 'ready') {
       const it = row.item;
@@ -233,6 +280,7 @@
       if (!row.hidden && k === 'a') return run(() => startItem(it, 'solo'));
       if (k === 'x' || k === 'Backspace') return run(() => (row.hidden ? unhideItem(it) : hideItem(it)));
       if (k === 'o') return run(() => openSource(it, openEditor));
+      if (k === 'p' && !row.hidden && it.actions?.program === 'ok') return run(() => runAsProgram(it));
     }
     if (row?.kind === 'iline' && k === 'e' && (row.line === 'nosource' || row.line === 'error')) return run(() => setUp(row));
     if (k === 'Enter') return run(onEnter);
@@ -282,6 +330,13 @@
     <div role="row" aria-selected={sel} data-key={r.key}>
       <div role="gridcell"><OutcomeRow outcome={r.outcome} selected={sel} onselect={() => setSel(r.key)} /></div>
     </div>
+  {:else if r.kind === 'program'}
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <div class="row program" class:sel role="row" tabindex="-1" aria-selected={sel} data-key={r.key} onclick={() => setSel(r.key)}>
+      <div role="gridcell" class="cell">
+        <ProgramRow row={r.program} name={projectName(r.program.project) ?? ''} tracker={trackerFor(r.program.project)} open={subOpen(r.program)} {liveCap} {...progActs(r.program)} />
+      </div>
+    </div>
   {:else if r.kind === 'ready' || r.kind === 'iline'}
     <!-- svelte-ignore a11y_click_events_have_key_events -->
     <div class="row ready" class:iline={r.kind === 'iline'} class:sel role="row" tabindex="-1" aria-selected={sel} data-key={r.key} onclick={() => setSel(r.key)}>
@@ -310,7 +365,7 @@
             {looseText(r.count)} · <button type="button" class="linkbtn" tabindex="-1" use:tooltip={{ label: 'Show card', key: 'd' }} onclick={(e) => (e.stopPropagation(), focusCard(r.ids[0]))}>Show card</button>
           </div>
         {/if}
-        {#if details[r.key] && r.kind !== 'decisions'}<RowDetails ids={ids(r)} {now} origin={r.kind === 'run' ? r.run.origin : r.agent?.origin} />{/if}
+        {#if details[r.key] && r.kind !== 'decisions'}<RowDetails ids={ids(r)} {now} origin={originOf(r.kind === 'run' ? r.run : r.agent)} />{/if}
       </div>
     </div>
   {/if}
@@ -321,6 +376,8 @@
   <div class="toolbar">
     <b>Mission control</b>
     <span class="muted">{ctx ? `in ${projectName(ctx)}` : 'every project'} · follows the project context</span>
+    <span class="grow"></span>
+    <button type="button" class="btn" tabindex="-1" onclick={browse} use:tooltip={{ label: 'Work', key: 'w', detail: 'Browse GitHub, Linear and local work of the shown projects' }}>Work</button>
   </div>
 
   <div class="scroll" role="grid" aria-label="Mission control rows" aria-readonly="true">
@@ -355,7 +412,7 @@
             <h3 class="lh" class:sel={selKey === `lane:${lane.id}`} data-key="lane:{lane.id}">
               <button class="lbtn" tabindex="-1" aria-expanded={!shut} onclick={() => (collapsed = toggle(collapsed, lane.id))}>
                 <span class="chev" aria-hidden="true">{shut ? '›' : '⌄'}</span>
-                <span style:color={LEVEL[lane.level].color} aria-hidden="true">{LEVEL[lane.level].icon}</span>
+                <span style:color={LEVEL[lane.level].color} aria-hidden="true">{lane.icon ?? LEVEL[lane.level].icon}</span>
                 <b class:quiet={lane.id === 'ready'}>{lane.rows.length || lane.id !== 'needs_you' ? lane.label : 'Nothing needs you'}</b>
                 {#if lane.count}<span class="muted">· {lane.count}</span>{/if}
               </button>
@@ -367,6 +424,7 @@
                   {#if st.refreshing}refreshing…{:else if st.failed}{st.failed === 1 ? '1 source failed' : `${st.failed} sources failed`}{:else if st.oldest != null}updated {ageText(st.oldest, now)}{/if}
                 </span>
                 {#if st.withSource}
+                  <button class="btn ghost rbtn" tabindex="-1" onclick={browse} use:tooltip={{ label: 'Browse all', key: 'w', detail: browseScope?.length === 1 ? `Open Work for ${projectName(browseScope[0])}` : 'Open Work for the shown projects' }}>Browse all</button>
                   <button class="btn ghost rbtn" tabindex="-1" disabled={st.refreshing || (app.now.intake?.sources ?? []).some((s) => (!filter || filter.includes(s.project)) && rateLimitedUntil(s, now))} onclick={refreshLane} use:tooltip={{ label: 'Refresh', key: '⇧R', detail: 'Check GitHub, Linear and repo docs now' }}>{st.refreshing ? 'Refreshing…' : 'Refresh'}</button>
                 {/if}
                 {#if !shut && st.hidden > 0}
