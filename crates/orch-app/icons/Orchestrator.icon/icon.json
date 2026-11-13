@@ -49,7 +49,6 @@
     },
     {
       "blend-mode" : "normal",
-      "blur-material" : null,
       "layers" : [
         {
           "image-name" : "prompt-cursor.svg",
