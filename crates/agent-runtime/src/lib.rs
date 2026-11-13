@@ -33,6 +33,7 @@ pub mod pr;
 pub mod preflight;
 pub mod presets;
 pub mod procs;
+pub mod program;
 pub mod project_files;
 pub mod projects;
 pub mod pty;

@@ -22,8 +22,8 @@ pub use db::{Pending, Store, Tx, schema_version};
 pub use ecosystem::IntegrationRow;
 pub use events::{AuditEntry, Event, Retention, RunEvent};
 pub use intake::{
-    BRIEF_SOURCE as INTAKE_BRIEF_SOURCE, IntakeRow, IntakeState, IntakeStatus, IntakeUpsert, TOPIC as INTAKE_TOPIC,
-    WorkEvent, WorkIndex,
+    BRIEF_SOURCE as INTAKE_BRIEF_SOURCE, IntakeRow, IntakeState, IntakeStatus, IntakeUpsert, PROGRAMS_TOPIC,
+    TOPIC as INTAKE_TOPIC, WorkEvent, WorkIndex,
 };
 pub use migrations::SCHEMA_VERSION;
 pub use model::*;

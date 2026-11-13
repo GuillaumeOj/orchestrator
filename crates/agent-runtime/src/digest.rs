@@ -14,8 +14,17 @@ use serde_json::{Value, json};
 use crate::runtime::Runtime;
 
 /// The events an outcome is made of.
-pub const KINDS: [&str; 7] =
-    ["task.done", "git.merge", "run.state", "run.pr_opened", "turn.done", "weekly_report", "task.sync_conflict"];
+pub const KINDS: [&str; 9] = [
+    "task.done",
+    "git.merge",
+    "run.state",
+    "run.pr_opened",
+    "turn.done",
+    "weekly_report",
+    "task.sync_conflict",
+    "program.done",
+    "program.cancelled",
+];
 
 /// Settings key prefix of the per-day "seen" watermark (`digest.seen.2026-10-29`).
 pub const SEEN_KEY: &str = "digest.seen";
@@ -157,6 +166,17 @@ pub fn outcome(ev: &Event, run: Option<&str>, names: &Names, seen_up_to: u64, tz
                 None => "Weekly report is ready".into(),
             };
             ("report_ready", text)
+        }
+        // A program that ended (B4, F21): one outcome line in Done today.
+        "program.done" | "program.cancelled" => {
+            extra.insert("program".into(), d.get("id").cloned().unwrap_or(Value::Null));
+            let title = s("title");
+            if ev.kind == "program.done" {
+                let merged = d.get("merged").and_then(Value::as_u64).unwrap_or(0);
+                ("program", format!("Program {title} done · {merged} merged"))
+            } else {
+                ("program", format!("Program {title} cancelled"))
+            }
         }
         "task.sync_conflict" => {
             let remote = s("remote");
