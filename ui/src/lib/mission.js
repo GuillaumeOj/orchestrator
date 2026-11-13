@@ -5,6 +5,7 @@
 import { clock, dayHm, plural, startOfDay, waited } from './format.js';
 import { agentOf, isOpen } from './inbox.js';
 import { modeOf, shortRef } from './intake.js';
+import { programRows, laneHeader as programsHeader } from './program.js';
 import { STATUS } from './status.js';
 
 // ---------------------------------------------------------------- phase stepper
@@ -259,6 +260,8 @@ export function rowCount(rows) {
 const LANES = [
   { id: 'needs_you', label: 'Needs you', level: 'needs_you' },
   { id: 'running', label: 'Running', level: 'running' },
+  // Programs (improve-intake notes §7.1): between Running and Waiting on; not attention (no badge).
+  { id: 'programs', label: 'Programs', level: 'running' },
   { id: 'waiting', label: 'Waiting on', level: 'waiting' },
   { id: 'queued', label: 'Queued', level: 'queued' },
   { id: 'ready', label: 'Ready to start', level: 'ready' },
@@ -397,6 +400,7 @@ export function lanes(now, filter = null, at = Date.now(), { projects = [], show
   const byLane = {
     needs_you: needs,
     running: rows.running,
+    programs: programRows(now?.programs, shown),
     waiting: rows.waiting,
     queued: rows.queued,
     ready: ready.rows,
@@ -404,6 +408,10 @@ export function lanes(now, filter = null, at = Date.now(), { projects = [], show
   };
   const out = LANES.map((l) => {
     if (l.id === 'ready') return { ...l, ...ready };
+    if (l.id === 'programs') {
+      const header = programsHeader(byLane.programs.map((r) => r.program));
+      return { ...l, rows: byLane.programs, count: header.slice(l.label.length + 3), header, status: null };
+    }
     const count = rowCount(byLane[l.id]);
     return { ...l, rows: byLane[l.id], count, header: count ? `${l.label} · ${count}` : l.label, status: null };
   }).filter((l) => l.id === 'needs_you' || l.rows.length);

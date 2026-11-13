@@ -8,7 +8,7 @@
   import { app, now30, openUrl, projectName } from '../../lib/app.svelte.js';
   import { byWords, lineMarker, verbText } from '../../lib/chat.js';
   import { clock, dayTime, waited } from '../../lib/format.js';
-  import { agentOf, blockOf, deliveryPrimary, keyless, parked, restarted, subjectLine } from '../../lib/inbox.js';
+  import { agentOf, blockOf, deliveryPrimary, isProgramCard, keyless, parked, restarted, subjectLine } from '../../lib/inbox.js';
   import {
     decidingName,
     decidingShare,
@@ -20,6 +20,7 @@
     refLabel,
     SOURCES_SHOWN,
   } from '../../lib/overwatch.js';
+  import { programTag } from '../../lib/program.js';
   import { decisionKind, LIFECYCLE } from '../../lib/status.js';
   import { tooltip } from '../../lib/tooltip.js';
   import ContextBlocks from '../ContextBlocks.svelte';
@@ -169,6 +170,7 @@
     <span class="muted age">{line ? '' : waited(d.created_ms, now)}</span>
   </div>
   <div class="title">{cardTitle}</div>
+  {#if programTag(d)}<div class="ptag" data-program-tag><span aria-hidden="true">{'\u{F0328}'}</span> {programTag(d)}</div>{/if}
   {#if subjectLine(d)}<div class="subject secondary">{subjectLine(d)}</div>{/if}
   {#if askText}<div class="why muted" data-asks>{askText}</div>{/if}
   {#if d.summary && !d.context?.length}<p class="summary">{d.summary}</p>{/if}
@@ -215,7 +217,7 @@
       {#each keyed as x (x.id)}
         <button
           class="btn"
-          class:primary={x.key === 'a' || x.id === 'launch' || (x.id === 'answer' && answered) || (d.kind === 'error' && x.id === 'resume') || primary === x.id}
+          class:primary={x.key === 'a' || x.id === 'launch' || (x.id === 'answer' && answered) || (d.kind === 'error' && x.id === 'resume') || primary === x.id || (isProgramCard(d) && x.key === '⏎')}
           class:ghost={x.key === 'o' && primary !== x.id}
           class:rec={x.id === recId}
           aria-label={x.id === recId ? `${x.label}, recommended by the Overwatch` : undefined}
@@ -423,5 +425,9 @@
     .ring {
       display: none;
     }
+  }
+  .ptag {
+    color: var(--color-accent-default);
+    font: var(--text-caption);
   }
 </style>

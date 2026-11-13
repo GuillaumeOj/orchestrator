@@ -78,6 +78,7 @@
     stripText,
     workingText,
   } from '../../lib/overwatch.js';
+  import { nextSpec, nextSpecText } from '../../lib/program.js';
   import { tooltip } from '../../lib/tooltip.js';
   import OutcomeRow from '../OutcomeRow.svelte';
   import ChatInput from './ChatInput.svelte';
@@ -94,6 +95,7 @@
 
   let foldOpen = $state(false);
   let sel = $state(null); // 'c:<decision id>' | 'fold' | 'digest'
+  let nextOf = $state(null); // { after, id, text }: the "Next: <feature>'s spec" bar under an approved program spec
   let marked = $state(new Set());
   let reply = $state(null); // { id, action }
   let choices = $state({}); // decision id → the options block's choices
@@ -744,9 +746,15 @@
   /** Decide (5 s undo window, on the card); focus goes to the next card still waiting. */
   function send(d, action, message = null) {
     const at = t.cards.findIndex((c) => c.id === d.id);
-    const next = [...t.cards.slice(at + 1), ...t.cards.slice(0, Math.max(at, 0))].find(
-      (c) => c.id !== d.id && !pendingOf(c.id) && !marked.has(c.id),
-    );
+    // Approving a program's spec: the next pending spec of that program gets the focus (notes §7.5).
+    const spec = action === 'approve' ? nextSpec(app.now.decisions, d) : null;
+    const chained = spec && t.cards.find((c) => c.id === spec.id && !pendingOf(c.id));
+    nextOf = chained ? { after: d.id, id: spec.id, text: nextSpecText(spec) } : null;
+    const next =
+      chained ??
+      [...t.cards.slice(at + 1), ...t.cards.slice(0, Math.max(at, 0))].find(
+        (c) => c.id !== d.id && !pendingOf(c.id) && !marked.has(c.id),
+      );
     if (cur === `c:${d.id}` && next) sel = `c:${next.id}`;
     decide(d, action, message);
   }
@@ -783,6 +791,14 @@
     const s = new Set(expanded);
     s.has(key) ? s.delete(key) : s.add(key);
     expanded = s;
+  }
+
+  /** The "Next: …'s spec" bar: select that card and bring it into view. */
+  async function showNext(id) {
+    sel = `c:${id}`;
+    nextOf = null;
+    await tick();
+    feed?.querySelector(`[data-decision="${CSS.escape(id)}"]`)?.scrollIntoView({ block: 'nearest' });
   }
 
   /** "↳ after": scroll to the earlier decision's line, expand it, focus it (notes §3). */
@@ -1052,6 +1068,9 @@
             onhold={(on) => typed(it.id, on)}
           />
         </article>
+        {#if nextOf?.after === it.id && app.now.decisions[nextOf.id]}
+          <button type="button" class="nextspec" data-next-spec use:tooltip={{ label: 'Show the next spec', key: '⏎' }} onclick={() => showNext(nextOf.id)}>{nextOf.text} · ⏎</button>
+        {/if}
       {/if}
     {/each}
     {#each unsent as u (u.entry.id)}
@@ -1477,5 +1496,18 @@
   }
   .chat:focus-within .head {
     box-shadow: inset 0 -2px 0 var(--color-accent-default);
+  }
+  .nextspec {
+    display: block;
+    width: 100%;
+    margin: var(--space-xs) 0;
+    padding: var(--space-xs) var(--space-sm);
+    border: 0;
+    border-radius: var(--radius-sm);
+    background: var(--color-surface-selected);
+    color: var(--color-text-primary);
+    font: var(--text-label);
+    text-align: left;
+    cursor: pointer;
   }
 </style>

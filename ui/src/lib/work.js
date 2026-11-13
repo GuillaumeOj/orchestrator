@@ -1,7 +1,8 @@
 // Entry to the Work browser (improve-intake notes §1.2): every caller (sidebar, Project pane, palette,
 // leader ⌘; b, Feature "Show in Work", run inspector) goes through `openWork`. One tab per scope:
 // the same scope focuses its tab (and lands the reveal / search there), another opens a new tab.
-import { addPane, app, findPane, showPane, toast } from './app.svelte.js';
+import { addPane, app, confirm, findPane, openUrl, showPane, toast } from './app.svelte.js';
+import { errText, invoke } from './ipc.js';
 import { scopeKey } from './workmodel.js';
 
 /** The pane spec's scope: sorted, unique ids, or null for every project. */
@@ -28,16 +29,87 @@ export function openWork({ projects = null, reveal = null, find = false } = {}) 
 }
 
 /**
- * Run as program (`p`): the plan dialog of `roots` (one node, or ≥ 2 siblings). F5 implements the
- * dialog; until then a toast says so.
+ * Run as program (`p`): the plan dialog of `roots` (one node, or ≥ 2 siblings), improve-intake
+ * notes §6. `title`: what the dialog names before the plan arrives ("#12 Checkout v2").
  * @param {string[]} roots
  * @param {{ title?: string }} [opts]
  */
 export function openProgramPlan(roots, { title = '' } = {}) {
-  toast(`Run as program${title ? ` · ${title}` : ''}: programs are not available yet (${roots.length} selected).`);
+  if (!roots?.length) return;
+  app.overlay = { kind: 'program-plan', roots: [...roots], title };
 }
 
-/** Open program (`p` on a program root, the program chip): the Program view (F5); a toast until then. */
-export function openProgram(id, title = '') {
-  toast(`Program ${title || id}: the Program view is not available yet.`);
+/** Open program (`p` on a program root, the chip, the palette, a card): the Program view, one tab per program. */
+export function openProgram(id, title = '', { add = null } = {}) {
+  if (!id) return;
+  const row = app.now.programs?.[id];
+  const name = title || row?.title || '';
+  // A one-shot request the pane clears: the row editor of a new upstream item (a card's Add to program).
+  const land = add ? { add, seq: Date.now() } : null;
+  const existing = findPane((s) => s.type === 'program' && s.programId === id);
+  if (existing) {
+    if (land) app.panes[existing] = { ...app.panes[existing], land };
+    return showPane(existing);
+  }
+  addPane({
+    type: 'program',
+    programId: id,
+    programTitle: name,
+    projectId: row?.project ?? null,
+    ...(land ? { land } : {}),
+  });
+}
+
+/** `program_update(id, patch)`: the Program as the core stored it; a refusal toasts and gives null. */
+export async function updateProgram(id, patch) {
+  try {
+    return await invoke('program_update', { id, patch });
+  } catch (e) {
+    toast(`Could not update the program: ${errText(e)}`, { kind: 'error' });
+    return null;
+  }
+}
+
+/** Pause / resume (`p`): confirm-less, with the §7.2 toasts. */
+export async function togglePause(p) {
+  const pause = p.status !== 'paused';
+  const r = await updateProgram(p.id, pause ? { pause: true } : { resume: true });
+  if (r) toast(pause ? `${p.title} paused. Running features continue.` : `${p.title} resumed.`);
+  return r;
+}
+
+/** Cancel program (`⇧K`), after the §7.2 confirm. */
+/** @param {any} p @param {(r: any) => void} [then] */
+export function cancelProgram(p, then = (_r) => {}) {
+  confirm(
+    `Cancel ${p.title}?`,
+    'Running features keep running as normal features; waiting ones are dropped.',
+    async () => then(await updateProgram(p.id, { cancel: true })),
+    'Cancel program',
+    'Keep',
+  );
+}
+
+/** Skip a feature (`x`), after the §7.2 confirm. */
+/** @param {any} p @param {any} f @param {(r: any) => void} [then] */
+export function skipFeature(p, f, then = (_r) => {}) {
+  confirm(
+    `Skip ${f.slug}?`,
+    'Features after it no longer wait for it.',
+    async () => then(await updateProgram(p.id, { skip: f.key })),
+    'Skip',
+    'Keep',
+  );
+}
+
+/** `o` on a program row: its source item upstream (the first root), in the browser. */
+export async function openProgramSource(id) {
+  try {
+    const p = await invoke('program', { id });
+    const node = p?.root?.[0] ? await invoke('work_node', { id: p.root[0], opts: { children: false } }) : null;
+    if (node?.url) return openUrl(node.url);
+    toast(`${p?.root_ref ?? 'The source item'} has no link to open.`);
+  } catch (e) {
+    toast(`Could not open the link: ${errText(e)}`, { kind: 'error' });
+  }
 }

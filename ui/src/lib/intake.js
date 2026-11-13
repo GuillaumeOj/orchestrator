@@ -336,7 +336,8 @@ export const originOf = (rec) => (rec?.source?.node ? rec.source : (rec?.origin 
 export function originText(origin) {
   if (!origin) return '';
   if (origin.kind === 'brief') return 'from brief';
-  return `from ${origin.short ?? origin.ref}`;
+  // A program's feature names its program (improve-intake notes §7.1): "from #14 · Checkout v2".
+  return `from ${origin.short ?? origin.ref}${origin.program?.title ? ` · ${origin.program.title}` : ''}`;
 }
 
 /** The chip's tooltip: the item, where it sits in the tree, and its link; "Deleted in GitHub" when it is gone (S14). */

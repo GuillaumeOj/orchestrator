@@ -45,6 +45,8 @@ export const actionByKey = (d, key) =>
   d?.actions?.find((a) => (KEY_ALIAS[a.key] ?? a.key) === (KEY_ALIAS[key] ?? key)) ?? null;
 /** A brief card (P4.5): level 4 like a rule proposal; the dialog it opens is not a decision. */
 export const isBrief = (d) => d?.kind === 'brief';
+/** A program card (improve-intake notes §7.3): its keys are its actions' (⏎, r, x). */
+export const isProgramCard = (d) => typeof d?.kind === 'string' && d.kind.startsWith('program_');
 /** A decision's context block of that type, if any. */
 export const blockOf = (d, type) => d?.context?.find((b) => b.type === type) ?? null;
 /** The delivery card's primary action (ux-brief §1): Open pane when the CLI did
@@ -75,6 +77,8 @@ export function intentFor(d, id) {
   // A brief's Launch and Edit open the prefilled dialog; only Dismiss decides.
   if (isBrief(d) && (id === 'launch' || id === 'edit')) return { kind: 'brief', edit: id === 'edit' };
   if (id === 'in_pane') return { kind: 'pane' };
+  // A program card's Add to program opens the row editor at once: nothing is decided until Add.
+  if (isProgramCard(d) && id === 'add') return { kind: 'core', action: id };
   if (id === 'reply' || id === 'answer') return { kind: id };
   // A Notion comment, a battery or budget note: the core says where to go.
   if (id === 'open' && agentOf(d) && d.kind !== 'notion') return { kind: 'pane' };
@@ -85,6 +89,12 @@ export function intentFor(d, id) {
 /** What a key does on the selected decision (null: not handled). */
 export function keyIntent(key, d) {
   if (key === '⏎') key = 'enter';
+  if (isProgramCard(d) && ['enter', 'r', 'x'].includes(key)) {
+    const act = actionByKey(d, key);
+    if (act) return intentFor(d, act.id);
+    if (key === 'x') return { kind: 'mark' };
+    return null;
+  }
   if (isBrief(d) && ['enter', 'e', 'r'].includes(key)) {
     const act = actionByKey(d, key);
     return act ? intentFor(d, act.id) : null;
@@ -170,6 +180,11 @@ export function pendingVerb(d, action) {
       return action === 'add' ? 'Adding rule' : 'Not now';
     case 'brief':
       return 'Dismissing';
+    case 'program_new_item':
+      return action === 'ignore' ? 'Ignoring' : 'Adding';
+    case 'program_item_closed':
+    case 'program_feature_failed':
+      return action === 'skip' ? 'Skipping' : action === 'keep' ? 'Keeping' : 'Opening';
     case 'permission':
       return { approve: 'Allowing once', always: 'Always allowing' }[action] ?? 'Denying';
     case 'startup':
@@ -198,7 +213,7 @@ export function pendingToast(d, action) {
   const verb = pendingVerb(d, action);
   if (d.kind === 'permission') return `${verb}${who(d)}${what(d)}`;
   if (d.kind === 'budget') return `${verb} · ${d.title}`;
-  if (d.kind === 'rule_proposal' || d.kind === 'brief') return `${verb} · ${cut(d.title, 40)}`;
+  if (d.kind === 'rule_proposal' || d.kind === 'brief' || isProgramCard(d)) return `${verb} · ${cut(d.title, 40)}`;
   if (verb === 'Dismissing' && d.kind !== 'startup' && d.kind !== 'delivery') return `${verb} · ${cut(d.title, 40)}`;
   return `${verb}${who(d)}`;
 }
@@ -298,6 +313,13 @@ export function effectText(d, mine = {}) {
       return d.kind === 'ask' ? `Kept queued · ${agent}${eta}` : `Skipped · ${d.title}`;
     case 'deleted':
       return `Deleted · ${agent}`;
+    // Program cards (improve-intake notes §7.3): the program was edited, or the card was settled by an edit.
+    case 'ignored':
+      return `Ignored · ${cut(d.title, 40)}`;
+    case 'kept':
+      return `Kept · ${cut(d.title, 40)}`;
+    case 'resolved':
+      return `Done in the program · ${cut(d.title, 40)}`;
     default:
       return null;
   }
