@@ -16,8 +16,8 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::Duration;
 
 use anyhow::{Result, anyhow};
-use orch_store::{GithubIntakeFilter, IntakeRow, IntakeSource, IntakeState, Project};
-use orch_tasks::intake::{self as src, Backoff, Fetched, LinearQuery, Listing, SourceError};
+use orch_store::{GithubIntakeFilter, IntakeRow, IntakeSource, IntakeState, Project, Tracker, TrackerSettings};
+use orch_tasks::intake::{self as src, Backoff, SourceError};
 use serde_json::{Value, json};
 
 use crate::runtime::Runtime;
@@ -27,6 +27,7 @@ pub mod estimate;
 pub mod report;
 pub mod start;
 pub mod tracker;
+pub mod work;
 
 pub use start::IntakeLink;
 
@@ -35,6 +36,8 @@ pub const TOPIC: &str = orch_store::INTAKE_TOPIC;
 /// (B1: now `TrackerSettings::refresh_secs`, per project).
 pub const REFRESH_SECS_KEY: &str = "intake.refresh_secs";
 pub const DEFAULT_REFRESH_SECS: u64 = 600;
+/// A tree read is a full one at least this often (an incremental read cannot see deletions).
+const FULL_EVERY_MS: u64 = 3_600_000;
 /// Start-up refreshes are this far apart, per project.
 pub const STAGGER_MS: u64 = 2000;
 /// How often repo-docs branch tips are checked.
@@ -66,6 +69,8 @@ pub struct Refresher {
     wake: Condvar,
     /// The `now.intake` last sent.
     published: Mutex<Option<Value>>,
+    /// Per project: (when the last full tree read started, when the last read started) (ms).
+    incr: Mutex<BTreeMap<String, (u64, u64)>>,
     /// Linear's 429 back-off, per project.
     backoff: Mutex<BTreeMap<String, Arc<Backoff>>>,
     /// The estimator's history and rooms (spec §3.4).
@@ -74,6 +79,20 @@ pub struct Refresher {
     pub(crate) claims: Mutex<BTreeSet<String>>,
     /// When the history was last read (ms): at most once a minute.
     pub(crate) est_at: std::sync::atomic::AtomicU64,
+}
+
+/// Whether the tracker has anything to read.
+fn readable(t: &TrackerSettings) -> bool {
+    !matches!(t.tracker, Tracker::Local { backlog_glob: None })
+}
+
+/// The `source` the cache rows carry: the old intake names.
+pub(crate) fn tracker_source(t: &TrackerSettings) -> &'static str {
+    match t.tracker {
+        Tracker::Github { .. } => "github",
+        Tracker::Linear { .. } => "linear",
+        Tracker::Local { .. } => "repo_docs",
+    }
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -318,15 +337,15 @@ impl Runtime {
         s.clamp(60, 3600) * 1000
     }
 
-    /// Projects with a source, by id.
-    fn intake_projects(&self) -> Vec<(Project, IntakeSource)> {
+    /// Projects with something to read (a remote tracker, or a Local one with a backlog glob), by id.
+    fn intake_projects(&self) -> Vec<(Project, TrackerSettings)> {
         self.db
             .projects(false)
             .unwrap_or_default()
             .into_iter()
             .filter_map(|p| {
-                let s = self.db.intake_source(&p.id).ok()?;
-                (!s.is_none()).then_some((p, s))
+                let t = self.db.tracker(&p.id).ok()?;
+                readable(&t).then_some((p, t))
             })
             .collect()
     }
@@ -369,6 +388,16 @@ impl Runtime {
 
     /// Asks for a refresh of `project` (all when `None`) at the next pass.
     pub fn intake_request(&self, project: Option<&str>) {
+        // Asked for (a user's Refresh, a settings change): a full read, not an incremental one.
+        {
+            let mut m = lock(&self.intake.incr);
+            match project {
+                Some(p) => {
+                    m.remove(p);
+                }
+                None => m.clear(),
+            }
+        }
         let mut s = lock(&self.intake.sched);
         match project {
             Some(p) => {
@@ -386,11 +415,12 @@ impl Runtime {
         self.tip_check_of(&self.intake_projects());
     }
 
-    fn tip_check_of(&self, projects: &[(Project, IntakeSource)]) {
-        for (p, s) in projects {
-            let IntakeSource::RepoDocs { branch, .. } = &s else { continue };
-            let branch = branch.clone().unwrap_or_else(|| base_branch(p));
-            let tip = src::branch_tip(&p.path, &branch);
+    fn tip_check_of(&self, projects: &[(Project, TrackerSettings)]) {
+        for (p, t) in projects {
+            if !matches!(t.tracker, Tracker::Local { backlog_glob: Some(_) }) {
+                continue;
+            }
+            let tip = src::branch_tip(&p.path, &base_branch(p));
             let read = self.db.intake_status(&p.id).map(|st| st.tip).unwrap_or_default();
             if tip.is_some() && tip != read {
                 self.intake_request(Some(&p.id));
@@ -412,29 +442,37 @@ impl Runtime {
         Ok(r)
     }
 
-    /// Lists `source` for `p` (no store write): the listing and, for repo
-    /// docs, the tip it was read at.
-    fn intake_fetch(&self, p: &Project, source: &IntakeSource) -> Result<(Listing, Option<String>), SourceError> {
-        match source {
-            IntakeSource::None => Ok((Listing::default(), None)),
-            IntakeSource::Github { repo, filter } => {
+    /// Reads the tracker's tree for `p` (no store write). `since`: an
+    /// incremental read of what changed (GitHub / Linear). For Local, the
+    /// tip it was read at.
+    pub(crate) fn tree_fetch(
+        &self,
+        p: &Project,
+        t: &TrackerSettings,
+        since: Option<&str>,
+    ) -> Result<(src::Tree, Option<String>), SourceError> {
+        let now_ms = orch_protocol::now_ms();
+        match &t.tracker {
+            Tracker::Github { repo, project_board } => {
                 let repo = self.intake_repo(p, repo.as_deref())?;
-                Ok((src::github(self.gh_in(p).as_ref(), &repo, filter)?, None))
-            }
-            IntakeSource::Linear { team, project, label, include_backlog } => {
-                let q = LinearQuery {
-                    team,
-                    project: project.as_deref(),
-                    label: label.as_deref(),
-                    include_backlog: *include_backlog,
+                let o = src::GithubTree {
+                    repo: &repo,
+                    board: project_board.as_ref().map(|b| (b.owner.as_str(), b.number)),
+                    group_by_milestone: t.group_by_milestone,
+                    since,
+                    now_ms,
                 };
-                let gql = self.linear_transport();
-                Ok((src::linear(gql.as_ref(), &self.intake.backoff(&p.id), orch_protocol::now_ms(), &q)?, None))
+                Ok((src::github_tree(self.gh_in(p).as_ref(), &o)?, None))
             }
-            IntakeSource::RepoDocs { glob, branch } => {
-                let branch = branch.clone().unwrap_or_else(|| base_branch(p));
-                let (l, tip) = src::repo_docs(&p.path, glob, &branch)?;
-                Ok((l, Some(tip)))
+            Tracker::Linear { teams, projects } => {
+                let q = src::LinearTree { teams, projects: projects.as_deref().unwrap_or(&[]), since, now_ms };
+                let gql = self.linear_transport();
+                Ok((src::linear_tree(gql.as_ref(), &self.intake.backoff(&p.id), &q)?, None))
+            }
+            Tracker::Local { backlog_glob: None } => Ok((src::Tree { full: true, ..Default::default() }, None)),
+            Tracker::Local { backlog_glob: Some(glob) } => {
+                let (tree, tip) = src::local_tree(&p.path, glob, &base_branch(p))?;
+                Ok((tree, Some(tip)))
             }
         }
     }
@@ -469,65 +507,127 @@ impl Runtime {
 
     fn intake_refresh_inner(&self, id: &str) {
         let Ok(Some(p)) = self.db.project(id) else { return };
-        let Ok(source) = self.db.intake_source(id) else { return };
-        if source.is_none() {
+        let Ok(t) = self.db.tracker(id) else { return };
+        if !readable(&t) {
             return;
         }
+        // The migrated GitHub default (label `ready`) is asked of the repository here, once, not on a settings read.
+        let t = if self.db.tracker_ready_pending(id).unwrap_or(false) {
+            self.resolve_pending_ready(&p);
+            // (it may have emptied the default: the settings are read again)
+            match self.db.tracker(id) {
+                Ok(t) => t,
+                Err(_) => return,
+            }
+        } else {
+            t
+        };
+        // `@me` of the Work filters: asked of the tracker once.
+        self.resolve_viewer(&p, &t);
         let t0 = std::time::Instant::now();
         let mut status = self.db.intake_status(id).unwrap_or_default();
-        // Repo docs at the tip already read: nothing can have changed (the
-        // glob is the stored source's; a source change clears the status).
-        if let IntakeSource::RepoDocs { branch, .. } = &source {
-            let branch = branch.clone().unwrap_or_else(|| base_branch(&p));
-            if status.error.is_none() && status.tip.is_some() && status.tip == src::branch_tip(&p.path, &branch) {
-                status.refreshed_at_ms = Some(orch_protocol::now_ms());
-                let _ = self.db.set_intake_status(id, &status);
-                return;
-            }
+        // Local at the tip already read: nothing can have changed (a tracker
+        // change clears the status).
+        if let Tracker::Local { backlog_glob: Some(_) } = &t.tracker
+            && status.error.is_none()
+            && status.tip.is_some()
+            && status.tip == src::branch_tip(&p.path, &base_branch(&p))
+        {
+            status.refreshed_at_ms = Some(orch_protocol::now_ms());
+            let _ = self.db.set_intake_status(id, &status);
+            return;
         }
-        let got = self.intake_fetch(&p, &source);
-        // Changed while we listed: this answer is the old source's.
-        if self.db.intake_source(id).ok().as_ref() != Some(&source) {
+        // A full read first, then what changed since, and a full one every hour (catches deletions and closes).
+        let started = orch_protocol::now_ms();
+        let since = lock(&self.intake.incr)
+            .get(id)
+            .filter(|(full_at, _)| started.saturating_sub(*full_at) < FULL_EVERY_MS)
+            .map(|(_, at)| src::tree_since(*at));
+        let got = self.tree_fetch(&p, &t, since.as_deref());
+        // Changed while we listed: this answer is the old tracker's.
+        if self.db.tracker(id).ok().as_ref() != Some(&t) {
             self.intake_request(Some(id));
             return;
         }
         let now = orch_protocol::now_ms();
+        let kind = tracker_source(&t);
         match got {
-            Ok((listing, tip)) => {
-                let rows = listing.items.iter().map(Fetched::upsert).collect();
-                if let Err(e) = self.db.intake_apply(id, source.kind(), rows, now) {
+            Ok((tree, tip)) => {
+                let rows: Vec<_> = tree.nodes.iter().map(src::Node::upsert).collect();
+                if let Err(e) = self.db.intake_apply(id, kind, rows.clone(), tree.full, now) {
                     status.error = Some(SourceError::new("failed", format!("{e:#}")).json());
                 } else {
                     status.error = None;
+                    status.offline = false;
                     status.refreshed_at_ms = Some(now);
-                    status.more = listing.more();
-                    status.partial = listing.partial;
+                    status.more = 0;
+                    status.partial = tree.partial;
                     status.tip = tip;
+                    status.warning = tree.warning.map(str::to_string);
                     // An empty answer has no link to give: the last one stays.
-                    status.url = listing.url.or(status.url.take());
+                    status.url = tree.url.or(status.url.take());
+                    {
+                        let mut m = lock(&self.intake.incr);
+                        let full_at = if tree.full { started } else { m.get(id).map_or(started, |(f, _)| *f) };
+                        m.insert(id.to_string(), (full_at, started));
+                    }
                     self.intake_estimates_update(true);
+                    self.event("-", "work.changed", json!({"project": id}));
                     self.event(
                         "-",
                         "intake.refreshed",
-                        json!({"project": id, "source": source.kind(), "count": listing.items.len(),
+                        json!({"project": id, "source": kind, "count": rows.len(),
                                "ms": t0.elapsed().as_millis() as u64}),
                     );
                 }
+            }
+            Err(e) if e.code == "offline" => {
+                // F15: the cache is shown, nothing to fix.
+                status.offline = true;
+                status.error = None;
             }
             Err(e) => {
                 let same = status.error.as_ref().is_some_and(|o| o["code"] == e.code);
                 if !same {
                     self.event("-", "intake.error", json!({"project": id, "code": e.code}));
                 }
+                status.offline = false;
                 status.error = Some(e.json());
             }
         }
         let _ = self.db.set_intake_status(id, &status);
     }
 
+    /// F38: one refresh in flight per project, and a caller joins it: if one
+    /// is running this waits for its end (it answers the caller too) instead
+    /// of starting another; otherwise it runs one now (a full read, as any
+    /// asked-for refresh). False when it gave up waiting.
+    pub fn intake_join(&self, id: &str) -> bool {
+        let deadline = std::time::Instant::now() + WAIT_INFLIGHT;
+        loop {
+            let s = lock(&self.intake.sched);
+            if !s.inflight.contains(id) {
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                return false;
+            }
+            let _ = self.intake.wake.wait_timeout(s, Duration::from_millis(100));
+            // The one joined has ended (it may have started again: one more turn).
+            if !lock(&self.intake.sched).inflight.contains(id) {
+                return true;
+            }
+        }
+        lock(&self.intake.incr).remove(id);
+        self.intake_refresh_project(id);
+        true
+    }
+
     /// Refreshes now, waiting for one in flight to end first (a source
     /// change must not be answered by the old source's refresh).
     fn intake_refresh_now(&self, id: &str) {
+        // A settings change: the tree is read whole, not since the last read.
+        lock(&self.intake.incr).remove(id);
         let deadline = std::time::Instant::now() + WAIT_INFLIGHT;
         // Retried: the refresher thread can take the slot between the wait
         // and our own start.
@@ -569,6 +669,8 @@ impl Runtime {
     pub fn intake_view(&self) -> Value {
         let projects = self.db.projects(false).unwrap_or_default();
         let rows = self.db.intake_listed(None).unwrap_or_default();
+        // Every node of the trees, for the breadcrumbs and the children.
+        let all = self.db.work_index().unwrap_or_default();
         let inflight = lock(&self.intake.sched).inflight.clone();
         let est = self.intake_est();
         let mut items = vec![];
@@ -580,6 +682,9 @@ impl Runtime {
                     "error": null, "refreshed_at_ms": null, "url": null, "count": 0, "more": 0, "partial": false, "hidden": 0}));
                 continue;
             }
+            let mine_nodes: Vec<&orch_store::WorkIndex> = all.iter().filter(|n| n.project_id == p.id).collect();
+            let ids: std::collections::HashSet<&str> = mine_nodes.iter().map(|n| n.node_id.as_str()).collect();
+            let roots = mine_nodes.iter().filter(|n| n.parent_id.as_deref().is_none_or(|q| !ids.contains(q))).count();
             let facts = self.project_facts(p);
             let mine: Vec<&IntakeRow> =
                 rows.iter().filter(|r| r.project_id == p.id && r.source == source.kind()).collect();
@@ -587,8 +692,16 @@ impl Runtime {
             let hidden: Vec<&&IntakeRow> = mine.iter().filter(|r| r.state == IntakeState::Hidden).collect();
             let status = self.db.intake_status(&p.id).unwrap_or_default();
             let shown = ready.len().min(src::CAP);
+            // The tree: the node, its ancestors (root first, the project row left out) and the row actions.
+            let ctx = work::Ctx::new(self, p).ok();
             for r in ready.iter().take(src::CAP).chain(hidden.iter()) {
-                items.push(item_json(&ItemFields::of_row(r), &facts, &est));
+                let mut v = item_json(&ItemFields::of_row(r), &facts, &est);
+                v["node"] = json!(r.node_id);
+                if let Some((ctx, i)) = ctx.as_ref().and_then(|c| Some((c, c.index(&r.node_id)?))) {
+                    v["breadcrumb"] = json!(ctx.breadcrumb(i));
+                    v["actions"] = ctx.actions(i);
+                }
+                items.push(v);
             }
             let repo = self.intake_repo_known(p, &source);
             let state = if inflight.contains(&p.id) {
@@ -611,6 +724,10 @@ impl Runtime {
                 // An error answers nothing: the last refresh's bound is not shown with it.
                 "partial": status.partial && status.error.is_none(),
                 "hidden": hidden.len(),
+                "warning": status.warning,
+                "offline": status.offline,
+                // What the cache holds (team tasks are not nodes): the project row's and the status line's.
+                "counts": {"items": mine_nodes.len(), "roots": roots, "ready": ready.len()},
             }));
         }
         json!({"items": items, "sources": sources})
@@ -660,20 +777,7 @@ impl Runtime {
     pub fn intake_preview(&self, project: &str, source: &Value) -> Result<Value> {
         let p = self.intake_project(project)?;
         let s = parse_source(source)?;
-        let facts = self.project_facts(&p);
-        let est = self.intake_est();
-        Ok(match self.intake_fetch(&p, &s) {
-            Ok((l, _)) => {
-                let items: Vec<Value> = l
-                    .items
-                    .iter()
-                    .take(PREVIEW)
-                    .map(|f| item_json(&ItemFields::of_upsert(&f.upsert(), &p.id, s.kind()), &facts, &est))
-                    .collect();
-                json!({"count": l.items.len(), "more": l.more(), "partial": l.partial, "items": items, "error": null})
-            }
-            Err(e) => json!({"count": 0, "more": 0, "partial": false, "items": [], "error": e.json()}),
-        })
+        Ok(self.preview_source(&p, &self.db.tracker(project)?.with_intake(&s)))
     }
 
     /// `intake_options`: what the settings form offers for a (partial,

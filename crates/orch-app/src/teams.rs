@@ -31,6 +31,24 @@ struct BackendMove {
     detach: Vec<orch_store::Task>,
 }
 
+/// D8: whether a change of tracker moves the tasks **to** Linear, and whether
+/// it leaves an old Linear team (so the tasks left there are relinked). A
+/// change to Linear, or to a set of teams that shares none with the old one;
+/// editing the scope only (another project, one team more or less) keeps the
+/// tasks where they are.
+fn linear_move(old: &orch_store::Tracker, new: &orch_store::Tracker) -> (bool, bool) {
+    use orch_store::Tracker::Linear;
+    let teams = |t: &orch_store::Tracker| -> std::collections::BTreeSet<String> {
+        match t {
+            Linear { teams, .. } => teams.iter().map(|t| t.to_ascii_lowercase()).collect(),
+            _ => Default::default(),
+        }
+    };
+    let to_linear =
+        matches!(new, Linear { .. }) && (!matches!(old, Linear { .. }) || teams(old).is_disjoint(&teams(new)));
+    (to_linear, to_linear && matches!(old, Linear { .. }))
+}
+
 /// Every feature with its latest run, for the sidebar (Projects → Features
 /// → agents), the palette and ⌘P. A deleted (archived) feature is listed,
 /// flagged `archived`, while one of its agents is not deleted: its team is
@@ -325,20 +343,12 @@ impl Core {
         &self,
         rt: &agent_runtime::runtime::Runtime,
         project_id: &str,
-        old: &TaskBackendConfig,
-        new: &TaskBackendConfig,
+        old: &orch_store::Tracker,
+        new: &orch_store::Tracker,
         migrate: Option<&str>,
     ) -> Result<std::result::Result<BackendMove, Value>> {
-        // A change to Linear, or to another Linear team or project (D8).
-        let to_linear = match (old, new) {
-            (
-                TaskBackendConfig::Linear { team: a, project: pa, .. },
-                TaskBackendConfig::Linear { team: b, project: pb, .. },
-            ) => a != b || pa != pb,
-            (_, TaskBackendConfig::Linear { .. }) => true,
-            _ => false,
-        };
-        let mut mv = BackendMove { relink: to_linear && old.kind() == "linear", push: vec![], detach: vec![] };
+        let (to_linear, relink) = linear_move(old, new);
+        let mut mv = BackendMove { relink, push: vec![], detach: vec![] };
         if to_linear {
             let tasks = rt.db.tasks(Some(project_id), None, None)?;
             let (open, done): (Vec<_>, Vec<_>) =
@@ -394,11 +404,13 @@ impl Core {
 
     pub fn project_settings_set(&self, project_id: &str, f: ProjectSettingsForm) -> Result<Value> {
         let rt = self.runtime()?;
-        let p = rt.db.project(project_id)?.ok_or_else(|| anyhow!("no project {project_id}"))?;
+        rt.db.project(project_id)?.ok_or_else(|| anyhow!("no project {project_id}"))?;
         let mut raw = f.settings;
         raw.remove("external_files");
         let mut general: ProjectSettings = serde_json::from_value(Value::Object(raw))?;
-        let mv = match self.plan_backend_move(rt, project_id, &p.backend(), &f.backend, f.migrate.as_deref())? {
+        let old = rt.db.tracker(project_id)?;
+        let new = old.clone().with_backend(&f.backend);
+        let mv = match self.plan_backend_move(rt, project_id, &old.tracker, &new.tracker, f.migrate.as_deref())? {
             Ok(mv) => mv,
             Err(confirm) => return Ok(json!({"confirm": confirm})),
         };
@@ -419,9 +431,10 @@ impl Core {
     /// `{confirm}`.
     pub fn tracker_settings_set(&self, project_id: &str, settings: &Value, migrate: Option<&str>) -> Result<Value> {
         let rt = self.runtime()?;
-        let p = rt.db.project(project_id)?.ok_or_else(|| anyhow!("no project {project_id}"))?;
+        rt.db.project(project_id)?.ok_or_else(|| anyhow!("no project {project_id}"))?;
         let s = agent_runtime::intake::tracker::parse_settings(settings)?;
-        let mv = match self.plan_backend_move(rt, project_id, &p.backend(), &s.task_backend(), migrate)? {
+        let old = rt.db.tracker(project_id)?;
+        let mv = match self.plan_backend_move(rt, project_id, &old.tracker, &s.tracker, migrate)? {
             Ok(mv) => mv,
             Err(confirm) => return Ok(json!({"confirm": confirm})),
         };
@@ -442,6 +455,29 @@ impl Core {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_scope_only_edit_does_not_move_the_tasks() {
+        use orch_store::Tracker;
+        let lin = |t: &[&str], p: Option<&[&str]>| Tracker::Linear {
+            teams: t.iter().map(|s| s.to_string()).collect(),
+            projects: p.map(|p| p.iter().map(|s| s.to_string()).collect()),
+        };
+        let gh = Tracker::Github { repo: Some("me/shop".into()), project_board: None };
+        let local = Tracker::Local { backlog_glob: None };
+        // Scope only: a project added, a team added or removed (one stays), the case of a key.
+        assert_eq!(linear_move(&lin(&["ENG"], None), &lin(&["ENG"], Some(&["p1"]))), (false, false));
+        assert_eq!(linear_move(&lin(&["ENG"], None), &lin(&["ENG", "OPS"], None)), (false, false));
+        assert_eq!(linear_move(&lin(&["ENG", "OPS"], None), &lin(&["OPS"], None)), (false, false));
+        assert_eq!(linear_move(&lin(&["eng"], None), &lin(&["ENG"], None)), (false, false));
+        // To Linear from another kind: the D8 question, nothing to relink.
+        assert_eq!(linear_move(&gh, &lin(&["ENG"], None)), (true, false));
+        assert_eq!(linear_move(&local, &lin(&["ENG"], None)), (true, false));
+        // Another team altogether: relinked.
+        assert_eq!(linear_move(&lin(&["ENG"], None), &lin(&["OPS"], None)), (true, true));
+        // Away from Linear: nothing.
+        assert_eq!(linear_move(&lin(&["ENG"], None), &gh), (false, false));
+    }
 
     #[test]
     fn forms_parse_like_the_ui_sends_them() {

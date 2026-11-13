@@ -24,6 +24,20 @@ pub struct IntakeLink {
     pub item: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub brief_decision: Option<String>,
+    /// A node of the tracker tree (`gh:acme/shop#13`), started from Work.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+}
+
+impl IntakeLink {
+    /// The link a start carries: its `intake`, or a bare `source` node id.
+    pub fn of(intake: Option<&IntakeLink>, source: Option<&str>) -> Option<IntakeLink> {
+        match (intake, source) {
+            (Some(l), _) => Some(l.clone()),
+            (None, Some(s)) => Some(IntakeLink { source: Some(s.to_string()), ..Default::default() }),
+            (None, None) => None,
+        }
+    }
 }
 
 /// Where started runs and sessions came from, by run id and agent id.
@@ -31,6 +45,9 @@ pub struct IntakeLink {
 pub(crate) struct Origins {
     pub runs: std::collections::BTreeMap<String, Value>,
     pub agents: std::collections::BTreeMap<String, Value>,
+    /// `run.source` (contract §2, F23): the tree node, by run id and agent id.
+    pub src_runs: std::collections::BTreeMap<String, Value>,
+    pub src_agents: std::collections::BTreeMap<String, Value>,
 }
 
 /// What a start claimed, held until it succeeded or failed.
@@ -222,17 +239,33 @@ impl Runtime {
             }
             _ => bail!(bad("item", "give an item or a brief decision")),
         };
-        let mode = mode.unwrap_or(&suggested);
+        self.prefill_forms(&project, &title, &text, &suggested, team.as_deref(), slug, url, mode)
+    }
+
+    /// The launch or new-session form of mode `mode` (else the `suggested` one).
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn prefill_forms(
+        &self,
+        project: &Project,
+        title: &str,
+        text: &str,
+        suggested: &str,
+        team: Option<&str>,
+        slug: Option<String>,
+        url: Option<String>,
+        mode: Option<&str>,
+    ) -> Result<Value> {
+        let mode = mode.unwrap_or(suggested);
         Ok(match mode {
             "team" => {
                 // A brief's slug stays unless an open feature took it since
                 // (an archived one comes back on launch, as `propose_brief` allows).
                 let slug = slug
                     .filter(|s| self.db.feature_by_slug(&project.id, s).ok().flatten().is_none_or(|f| f.archived))
-                    .unwrap_or_else(|| self.intake_slug(&project.id, &title));
+                    .unwrap_or_else(|| self.intake_slug(&project.id, title));
                 json!({"launch": {
                     "project_id": project.id,
-                    "team_id": self.intake_team(&project, team.as_deref()),
+                    "team_id": self.intake_team(project, team),
                     "slug": slug, "title": title, "brief": text, "base": null, "off_hours": false,
                 }})
             }
@@ -240,12 +273,45 @@ impl Runtime {
                 let done = url.map(|u| format!("\n\nWhen done, say so; the item is {u}")).unwrap_or_default();
                 json!({"session": {
                     "project_id": project.id,
-                    "name": self.intake_agent_name(&title),
+                    "name": self.intake_agent_name(title),
                     "message": format!("Brief from the user:\n\n{text}{done}"),
                 }})
             }
             other => bail!(bad("mode", format!("mode is team or solo, not {other:?}"))),
         })
+    }
+
+    /// The node `node` of `project` (fresh from the store).
+    pub(crate) fn node_row(&self, project: &str, node: &str) -> Result<IntakeRow> {
+        self.db
+            .work_node_rows(node)?
+            .into_iter()
+            .find(|r| r.project_id == project)
+            .ok_or_else(|| anyhow!(json!({"code": "not_found", "message": format!("no node {node:?}")}).to_string()))
+    }
+
+    /// Whether the run a node was started from has merged (the node may run again).
+    pub(crate) fn node_ran_before(&self, r: &IntakeRow) -> bool {
+        r.state == IntakeState::Started
+            && r.started_kind.as_deref() == Some("run")
+            && r.started_ref
+                .as_deref()
+                .and_then(|id| self.db.run(id).ok().flatten())
+                .is_some_and(|run| run.status == orch_team::RunState::Done)
+    }
+
+    /// Why a node can't be started now (`stale`), else the node: an issue or
+    /// a backlog file that is not running (a hidden one, or one whose run
+    /// merged, can start). Closed upstream is the UI's disabled action, not a refusal.
+    pub(crate) fn startable_row(&self, r: &IntakeRow) -> Result<IntakeRow> {
+        if !matches!(r.kind.as_str(), "issue" | "local") {
+            bail!(bad("intake", format!("{} is not an item to start: run it as a program", r.reference)));
+        }
+        match r.state {
+            IntakeState::Ready | IntakeState::Hidden => Ok(r.clone()),
+            IntakeState::Started if self.node_ran_before(r) => Ok(r.clone()),
+            IntakeState::Started => self.ready_row(&format!("it_{}", r.id)),
+        }
     }
 
     /// Before a start: no other start holds the item (or brief), then it is
@@ -255,16 +321,19 @@ impl Runtime {
         enum Link<'l> {
             Item(&'l str),
             Brief(&'l str),
+            Node(Box<IntakeRow>),
         }
-        let link = match link.map(|l| (l.item.as_deref(), l.brief_decision.as_deref())) {
-            None | Some((None, None)) => return Ok(Claim { rt: self, held: None }),
-            Some((Some(_), Some(_))) => bail!(bad("intake", "an item or a brief decision, not both")),
-            Some((Some(i), None)) => Link::Item(i),
-            Some((None, Some(b))) => Link::Brief(b),
+        let link = match link.map(|l| (l.item.as_deref(), l.brief_decision.as_deref(), l.source.as_deref())) {
+            None | Some((None, None, None)) => return Ok(Claim { rt: self, held: None }),
+            Some((Some(i), None, None)) => Link::Item(i),
+            Some((None, Some(b), None)) => Link::Brief(b),
+            Some((None, None, Some(n))) => Link::Node(Box::new(self.node_row(project, n)?)),
+            Some(_) => bail!(bad("intake", "an item, a brief decision or a source, not several")),
         };
-        let key = match link {
+        let key = match &link {
             Link::Item(i) => format!("it_{}", item_id(i)?),
             Link::Brief(b) => crate::decision::decision_id("brief", brief_n(b)?),
+            Link::Node(r) => format!("it_{}", r.id),
         };
         if !self.intake.claims.lock().unwrap_or_else(|e| e.into_inner()).insert(key.clone()) {
             return Err(stale("already started", None));
@@ -279,6 +348,7 @@ impl Runtime {
                 }
                 Claimed::Item(r)
             }
+            Link::Node(r) => Claimed::Item(self.startable_row(&r)?),
             Link::Brief(b) => {
                 let d = self.open_brief(b)?;
                 if d.payload["project"].as_str() != Some(project) {
@@ -301,9 +371,14 @@ impl Runtime {
                 self.event("-", "intake.untracked_start", json!({"project": project, "kind": kind, "ref": name}));
             }
             Some(Claimed::Item(r)) => {
-                match self.db.intake_mark_started(r.id, kind, reference) {
-                    Ok(true) => {}
-                    // Gone upstream (or hidden) while the start ran: no origin to keep.
+                // A node that ran before (its run merged) starts again: the new run is its mark.
+                let started = match self.db.intake_mark_started(r.id, kind, reference) {
+                    Ok(false) => self.db.intake_restart(r.id, kind, reference),
+                    other => other,
+                };
+                match started {
+                    Ok(true) => self.work_log(r, "started", (kind == "run").then_some(name), None),
+                    // Gone upstream while the start ran: no origin to keep.
                     Ok(false) => {
                         eprintln!("warn: intake item it_{} was no longer ready when {kind} {reference} started", r.id)
                     }
@@ -344,6 +419,7 @@ impl Runtime {
         match self.db.intake_return(kind, reference) {
             Ok(rows) => {
                 for r in rows {
+                    self.work_log(&r, "returned", None, Some(why));
                     self.event("-", "intake.returned", json!({"item": format!("it_{}", r.id), "why": why}));
                 }
             }
@@ -389,7 +465,17 @@ impl Runtime {
     /// F13, F14), by `(kind, ref)`.
     pub(crate) fn intake_origins(&self) -> Origins {
         let mut out = Origins::default();
-        for r in self.db.intake_started().unwrap_or_default() {
+        let started = self.db.intake_started().unwrap_or_default();
+        // The breadcrumbs of the started nodes: one read of the trees' shape.
+        let index = if started.iter().any(|r| r.source != INTAKE_BRIEF_SOURCE) {
+            self.db.work_index().unwrap_or_default()
+        } else {
+            vec![]
+        };
+        let by_node: std::collections::HashMap<(&str, &str), &orch_store::WorkIndex> =
+            index.iter().map(|n| ((n.project_id.as_str(), n.node_id.as_str()), n)).collect();
+        let mut trackers: std::collections::HashMap<String, orch_store::TrackerSettings> = Default::default();
+        for r in started {
             let (Some(kind), Some(reference)) = (r.started_kind.clone(), r.started_ref.clone()) else { continue };
             let v = if r.source == INTAKE_BRIEF_SOURCE {
                 json!({"kind": "brief", "decision": r.reference, "title": r.title})
@@ -397,9 +483,30 @@ impl Runtime {
                 json!({"kind": "intake", "item": format!("it_{}", r.id), "source": r.source, "ref": r.reference,
                        "url": r.url})
             };
+            let source = (r.source != INTAKE_BRIEF_SOURCE).then(|| {
+                let (mut chain, mut up) = (vec![], r.parent_id.as_deref());
+                while let Some(n) = up.and_then(|p| by_node.get(&(r.project_id.as_str(), p))) {
+                    if chain.len() > 50 {
+                        break;
+                    }
+                    chain.push(json!({"id": n.node_id, "ref": n.reference, "title": n.title}));
+                    up = n.parent_id.as_deref();
+                }
+                chain.reverse();
+                let t = trackers
+                    .entry(r.project_id.clone())
+                    .or_insert_with(|| self.db.tracker(&r.project_id).unwrap_or_default());
+                super::work::source_json(&r, chain, t)
+            });
             match kind.as_str() {
-                "run" => out.runs.insert(reference, v),
-                _ => out.agents.insert(reference, v),
+                "run" => {
+                    out.src_runs.extend(source.map(|s| (reference.clone(), s)));
+                    out.runs.insert(reference, v)
+                }
+                _ => {
+                    out.src_agents.extend(source.map(|s| (reference.clone(), s)));
+                    out.agents.insert(reference, v)
+                }
             };
         }
         out
