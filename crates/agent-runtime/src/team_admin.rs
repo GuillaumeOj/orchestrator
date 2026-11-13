@@ -459,6 +459,31 @@ mod tests {
         assert_eq!(lists(&gh), 4, "synced again");
     }
 
+    /// B1: the task sync reads the tracker, whatever way it was set.
+    #[test]
+    fn the_task_sync_follows_the_tracker() {
+        let (_d, rt, gh) = github_runtime();
+        let p = project(&rt, "p", json!({"type": "local"}));
+        assert!(rt.open_sync(&p).is_none(), "Local: nothing to sync");
+        let mut t = rt.db.tracker("p").unwrap();
+        t.tracker = orch_store::Tracker::Github { repo: Some("me/shop".into()), project_board: None };
+        t.ready = orch_store::ReadyFilter::defaults("github");
+        rt.db.set_tracker("p", &t).unwrap();
+        let p = rt.db.project("p").unwrap().unwrap();
+        assert!(rt.open_sync(&p).unwrap().is_ok());
+        let repos: std::collections::BTreeSet<_> =
+            gh.0.lock().unwrap().iter().filter(|c| c.contains("--paginate")).map(|c| c.contains("me/shop")).collect();
+        assert_eq!(repos, [true].into(), "the tracker's repository is listed");
+        // Back to Local: no more sync.
+        t.tracker = orch_store::Tracker::Local { backlog_glob: None };
+        t.ready = orch_store::ReadyFilter::Local;
+        rt.db.set_tracker("p", &t).unwrap();
+        let p = rt.db.project("p").unwrap().unwrap();
+        let before = lists(&gh);
+        assert!(rt.open_sync(&p).is_none());
+        assert_eq!(lists(&gh), before);
+    }
+
     /// Two syncs at once of a project with a never-pushed task make one issue.
     #[test]
     fn concurrent_syncs_of_a_project_create_one_issue() {

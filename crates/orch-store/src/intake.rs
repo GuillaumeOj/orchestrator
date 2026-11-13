@@ -4,7 +4,7 @@
 //! upstream is deleted unless it was started (kept for the report); a hidden
 //! one comes back when it changes upstream.
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -139,40 +139,19 @@ fn row(r: &rusqlite::Row) -> rusqlite::Result<IntakeRow> {
 }
 
 impl Store {
-    /// The project's intake source (`None` when unset or unreadable).
+    /// The project's intake source, as the tracker's Ready filter states it
+    /// (`None` when the filter matches by nothing).
     pub fn intake_source(&self, project: &str) -> Result<IntakeSource> {
-        let id = project.to_string();
-        self.read(move |c| {
-            let s: Option<Option<String>> =
-                c.query_row("SELECT intake_source FROM projects WHERE id=?1", [&id], |r| r.get(0)).optional()?;
-            let Some(s) = s else { bail!("no project {id}") };
-            Ok(s.and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default())
-        })
+        Ok(self.tracker(project)?.intake_source())
     }
 
-    /// Stores `source` (validated by the caller). A changed source drops the
-    /// items of the old one (but the started ones) and its status. True when
-    /// it changed.
+    /// Adapter of the old command: stores `source` into the tracker (one
+    /// tracker, see `TrackerSettings::with_intake`). A changed source drops
+    /// the items of the old one (but the started ones) and its status. True
+    /// when it changed.
     pub fn set_intake_source(&self, project: &str, source: &IntakeSource) -> Result<bool> {
-        let (id, text) = (project.to_string(), (!source.is_none()).then(|| js(source)));
-        let new = source.clone();
-        let changed = self.write(move |tx| {
-            let old: Option<Option<String>> =
-                tx.query_row("SELECT intake_source FROM projects WHERE id=?1", [&id], |r| r.get(0)).optional()?;
-            let Some(old) = old else { bail!("no project {id}") };
-            let old: IntakeSource = old.and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
-            if old == new {
-                return Ok(false);
-            }
-            tx.execute("UPDATE projects SET intake_source=?2 WHERE id=?1", params![id, text])?;
-            tx.execute("DELETE FROM intake_items WHERE project_id=?1 AND state!='started'", [&id])?;
-            tx.execute("DELETE FROM kv WHERE key=?1", [status_key(&id)])?;
-            Ok(true)
-        })?;
-        if changed {
-            self.touch([TOPIC.to_string(), orch_protocol::Topic::Project(project.to_string()).to_string()]);
-        }
-        Ok(changed)
+        let new = self.tracker(project)?.with_intake(source);
+        self.set_tracker(project, &new)
     }
 
     /// Cached items, of one project or all, in their lane order.

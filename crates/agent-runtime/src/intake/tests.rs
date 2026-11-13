@@ -286,8 +286,10 @@ fn repo_docs_follow_the_branch_tip() {
     assert_eq!(f.rt.intake_options(&f.project.id, &json!({"type": "repo_docs"})).unwrap()["matches"], 3);
     let o = f.rt.intake_options(&f.project.id, &json!({"type": "repo_docs", "branch": "nope"})).unwrap();
     assert_eq!(o["error"]["code"], "branch_missing");
+    // The tracker reads the project's base branch: an old source's `branch` is not kept.
     f.rt.intake_source_set(&f.project.id, &json!({"type": "repo_docs", "branch": "nope"})).unwrap();
-    assert_eq!(f.source()["error"]["code"], "branch_missing");
+    assert_eq!(f.rt.db.intake_source(&f.project.id).unwrap().kind(), "repo_docs");
+    assert_eq!(f.source()["error"], Value::Null);
 }
 
 #[test]
@@ -336,14 +338,18 @@ fn the_refresher_staggers_the_start_and_waits_its_interval() {
     for p in [&f.project.id, &p2.id] {
         f.rt.db.set_intake_source(p, &IntakeSource::RepoDocs { glob: "*.md".into(), branch: None }).unwrap();
     }
-    f.rt.db.set_setting(REFRESH_SECS_KEY, &json!(120)).unwrap();
+    for p in [&f.project.id, &p2.id] {
+        let mut t = f.rt.db.tracker(p).unwrap();
+        t.refresh_secs = 300;
+        f.rt.db.set_tracker(p, &t).unwrap();
+    }
     let t0 = orch_protocol::now_ms();
     f.rt.intake_step(t0);
     let due = lock(&f.rt.intake.sched).due.clone();
     let mut ids = [f.project.id.clone(), p2.id.clone()];
     ids.sort();
-    // The first is refreshed at once (due again in 120 s), the second 2 s later.
-    assert!(due[&ids[0]] >= t0 + 120_000 - 1000, "{due:?}");
+    // The first is refreshed at once (due again in 300 s), the second 2 s later.
+    assert!(due[&ids[0]] >= t0 + 300_000 - 1000, "{due:?}");
     assert_eq!(due[&ids[1]], t0 + STAGGER_MS);
     f.rt.intake_step(t0 + STAGGER_MS);
     assert!(lock(&f.rt.intake.sched).due[&ids[1]] > t0 + 100_000);
@@ -746,4 +752,182 @@ fn start_solo_checks_and_records_its_item() {
     assert!(f.rt.store.read(|s| !s.agents.contains_key("fix-again")), "a stale start starts nothing");
     f.rt.kill("fix-one").unwrap();
     assert_eq!(f.source()["count"], 1, "killed before any outcome: back in the lane");
+}
+
+// ------------------------------------------------------------ tracker (B1)
+
+fn gh_settings(ready: Value) -> Value {
+    json!({"tracker": {"kind": "github", "repo": "acme/shop", "project_board": null},
+           "ready": ready, "refresh_secs": 600})
+}
+
+fn ready_labels(l: &[&str]) -> Value {
+    json!({"kind": "github", "labels": l})
+}
+
+fn field(e: anyhow::Error) -> String {
+    let v: Value = serde_json::from_str(&e.to_string()).unwrap();
+    assert_eq!(v["code"], "bad_request");
+    v["field"].as_str().unwrap().to_string()
+}
+
+#[test]
+fn tracker_settings_set_validates_stores_and_refreshes() {
+    let f = fx();
+    let id = &f.project.id;
+    // A new project: Local, nothing to ask.
+    let r = f.rt.tracker_settings(id).unwrap();
+    assert_eq!(r["settings"]["tracker"], json!({"kind": "local", "backlog_glob": null}));
+    assert_eq!(r["migration_notice"], Value::Null);
+    // Field errors, nothing stored.
+    let bad = |s: Value| field(f.rt.tracker_settings_set(id, &s).unwrap_err());
+    assert_eq!(bad(gh_settings(json!({"kind": "linear", "state_types": []}))), "ready");
+    let mut s = gh_settings(ready_labels(&["ready"]));
+    s["tracker"]["repo"] = json!("nope");
+    assert_eq!(bad(s), "repo");
+    let mut s = gh_settings(ready_labels(&["ready"]));
+    s["refresh_secs"] = json!(7);
+    assert_eq!(bad(s), "refresh_secs");
+    assert_eq!(bad(json!({"tracker": {"kind": "linear", "teams": []}, "ready": {"kind": "linear"}})), "teams");
+    assert_eq!(
+        bad(json!({"tracker": {"kind": "local", "backlog_glob": "a/[b"}, "ready": {"kind": "local"}})),
+        "backlog_glob"
+    );
+    assert_eq!(bad(json!({"tracker": {"kind": "bogus"}, "ready": {"kind": "local"}})), "settings");
+    assert_eq!(f.rt.db.tracker(id).unwrap().tracker.kind(), "local");
+    // Valid: stored, the task backend and the Ready lane follow, refreshed at once.
+    f.answer(ISSUES, json!([issue(1, &["ready"], "2026-11-01T00:00:00Z")]));
+    let r = f.rt.tracker_settings_set(id, &gh_settings(ready_labels(&["ready"]))).unwrap();
+    assert_eq!(r["settings"]["tracker"]["repo"], "acme/shop");
+    assert_eq!(
+        f.rt.db.project(id).unwrap().unwrap().backend(),
+        orch_store::TaskBackendConfig::Github { repo: Some("acme/shop".into()) }
+    );
+    assert_eq!(f.refs(), ["#1"]);
+}
+
+#[test]
+fn a_tracker_save_resolves_a_mismatch_and_a_notice_is_dismissed_once() {
+    let f = fx();
+    let id = f.project.id.clone();
+    let n = orch_store::MigrationNotice {
+        kind: "mismatch".into(),
+        from: json!({}),
+        kept: orch_store::Tracker::default(),
+        alternative: None,
+        dismissed: false,
+    };
+    f.rt.db.set_tracker_notice(&id, Some(&n)).unwrap();
+    assert_eq!(f.rt.tracker_settings(&id).unwrap()["migration_notice"]["kind"], "mismatch");
+    let r = f.rt.tracker_settings_set(&id, &json!({"tracker": {"kind": "local"}, "ready": {"kind": "local"}})).unwrap();
+    assert_eq!(r["migration_notice"], Value::Null);
+    f.rt.tracker_notice_dismiss(&id).unwrap();
+    assert!(f.rt.tracker_notice_dismiss("nope").is_err());
+}
+
+#[test]
+fn tracker_preview_is_a_dry_run_over_the_listing() {
+    let f = fx();
+    f.answer(
+        ISSUES,
+        json!([issue(1, &["ready"], "2026-11-01T00:00:00Z"), issue(2, &["ready"], "2026-11-01T00:00:00Z")]),
+    );
+    let p = f.rt.tracker_preview(&f.project.id, &gh_settings(ready_labels(&["ready"]))).unwrap();
+    assert_eq!((p["roots"].as_u64(), p["items"].as_u64(), p["ready"].as_u64()), (Some(2), Some(2), Some(2)));
+    assert_eq!(p["sample"][0]["id"], "gh:acme/shop#1");
+    assert_eq!(p["sample"][0]["ready"], true);
+    assert_eq!(p["error"], Value::Null);
+    assert_eq!(f.rt.db.tracker(&f.project.id).unwrap().tracker.kind(), "local", "nothing stored");
+    // A source error is in `error`.
+    f.fail(ISSUES, "gh auth login required");
+    let p = f.rt.tracker_preview(&f.project.id, &gh_settings(ready_labels(&["ready"]))).unwrap();
+    assert_eq!(p["ready"], 0);
+    assert!(p["error"]["code"].is_string());
+    // Invalid settings are a field error.
+    assert_eq!(
+        field(f.rt.tracker_preview(&f.project.id, &gh_settings(json!({"kind": "local"}))).unwrap_err()),
+        "ready"
+    );
+}
+
+#[test]
+fn tracker_options_add_issue_types_and_boards() {
+    let f = fx();
+    f.answer("repos/acme/shop/labels", json!([{"name": "ready"}, {"name": "orch:ready"}]));
+    f.answer("repos/acme/shop/milestones", json!([{"title": "v2", "open_issues": 3}]));
+    f.answer(
+        "graphql",
+        json!({"data": {"repositoryOwner": {"projectsV2": {"nodes": [
+            {"number": 4, "title": "Roadmap", "closed": false,
+             "field": {"options": [{"name": "Todo"}, {"name": "In progress"}]}}]}},
+            "repository": {"issueTypes": {"nodes": [{"name": "Epic"}, {"name": "Feature"}]}}}}),
+    );
+    let o = f.rt.tracker_options(&f.project.id, &json!({"kind": "github", "repo": "acme/shop"})).unwrap();
+    assert_eq!(o["labels"], json!(["ready"]));
+    assert_eq!(o["milestones"][0]["title"], "v2");
+    assert_eq!(o["issue_types"], json!(["Epic", "Feature"]));
+    assert_eq!(
+        o["boards"][0],
+        json!({"owner": "acme", "number": 4, "title": "Roadmap", "statuses": ["Todo", "In progress"]})
+    );
+    assert!(o.get("projects").is_none());
+    // A bad repo is a field error; a source error comes back in `error`.
+    assert_eq!(
+        field(f.rt.tracker_options(&f.project.id, &json!({"kind": "github", "repo": "x"})).unwrap_err()),
+        "repo"
+    );
+    f.fail("repos/acme/shop/labels", "HTTP 401: Bad credentials");
+    let o = f.rt.tracker_options(&f.project.id, &json!({"kind": "github", "repo": "acme/shop"})).unwrap();
+    assert!(o["error"]["code"].is_string());
+    // Linear: teams, and projects / labels / states of the picked ones.
+    let o = f.rt.tracker_options(&f.project.id, &json!({"kind": "linear", "teams": []})).unwrap();
+    assert_eq!(o["teams"], json!([]));
+    // Local: how many files match.
+    let o = f.rt.tracker_options(&f.project.id, &json!({"kind": "local", "backlog_glob": "*.md"})).unwrap();
+    assert!(o["matches"].is_u64());
+}
+
+#[test]
+fn the_migrated_ready_default_is_checked_once_and_a_failed_check_stays_pending() {
+    let f = fx();
+    let id = f.project.id.clone();
+    let mut t = orch_store::TrackerSettings::default()
+        .with_backend(&orch_store::TaskBackendConfig::Github { repo: Some("acme/shop".into()) });
+    t.ready = orch_store::ReadyFilter::defaults("github");
+    f.rt.db.set_tracker(&id, &t).unwrap();
+    let mark = || f.rt.db.set_setting(&format!("tracker.ready_pending:{id}"), &json!(true)).unwrap();
+    let ready = || f.rt.tracker_settings(&id).unwrap()["settings"]["ready"]["labels"].clone();
+    // The check fails: the default stays and stays pending.
+    mark();
+    f.fail("repos/acme/shop/labels", "HTTP 500");
+    assert_eq!(ready(), json!(["ready"]));
+    assert!(f.rt.db.tracker_ready_pending(&id).unwrap());
+    // The repository answers without the label: emptied, once.
+    f.answer("repos/acme/shop/labels", json!([{"name": "bug"}]));
+    f.answer("repos/acme/shop/milestones", json!([]));
+    f.answer("graphql", json!({"data": {}}));
+    assert_eq!(ready(), json!([]));
+    assert!(!f.rt.db.tracker_ready_pending(&id).unwrap());
+    let n = f.calls.lock().unwrap().len();
+    assert_eq!(ready(), json!([]));
+    assert_eq!(f.calls.lock().unwrap().len(), n, "settled: no network read on the next call");
+    // With the label: kept.
+    f.rt.db.set_tracker(&id, &t).unwrap();
+    mark();
+    f.answer("repos/acme/shop/labels", json!([{"name": "ready"}]));
+    assert_eq!(ready(), json!(["ready"]));
+    assert!(!f.rt.db.tracker_ready_pending(&id).unwrap());
+}
+
+#[test]
+fn the_old_intake_commands_still_answer_through_the_tracker() {
+    let f = fx();
+    f.github_label();
+    let t = f.rt.db.tracker(&f.project.id).unwrap();
+    assert_eq!(t.tracker, orch_store::Tracker::Github { repo: Some("acme/shop".into()), project_board: None });
+    assert_eq!(t.ready, orch_store::ReadyFilter::defaults("github"));
+    let s = f.rt.intake_source(&f.project.id).unwrap();
+    assert_eq!(s["source"]["filter"]["names"], json!(["ready"]));
+    f.rt.intake_source_set(&f.project.id, &Value::Null).unwrap();
+    assert!(f.rt.intake_source(&f.project.id).unwrap()["source"].is_null());
 }

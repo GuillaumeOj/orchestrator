@@ -1424,20 +1424,20 @@ impl Store {
         F: FnOnce(&mut SettingsEdit) -> Result<R> + Send + 'static,
     {
         let topics = [orch_protocol::Topic::Project(id.to_string()), orch_protocol::Topic::Board(id.to_string())];
+        self.note([crate::intake::TOPIC]);
         let key = id.to_string();
         let (out, changed) = self.write(move |tx| {
-            let row: Option<(String, String, bool)> = tx
-                .query_row(
-                    "SELECT settings, task_backend, track_orchestrator_dir FROM projects WHERE id=?1",
-                    [&key],
-                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-                )
+            let row: Option<(String, bool)> = tx
+                .query_row("SELECT settings, track_orchestrator_dir FROM projects WHERE id=?1", [&key], |r| {
+                    Ok((r.get(0)?, r.get(1)?))
+                })
                 .optional()?;
-            let Some((settings, backend, track_orchestrator_dir)) = row else { bail!("no project {key}") };
+            let Some((settings, track_orchestrator_dir)) = row else { bail!("no project {key}") };
+            let tracker = crate::tracker::read_tracker(tx, &key)?.unwrap_or_default();
             let before = SettingsEdit {
                 settings: serde_json::from_str(&settings)
                     .map_err(|e| anyhow::anyhow!("project settings unreadable: {e}; nothing saved"))?,
-                backend: serde_json::from_str(&backend).unwrap_or_default(),
+                backend: tracker.task_backend(),
                 track_orchestrator_dir,
             };
             let mut e = before.clone();
@@ -1451,17 +1451,14 @@ impl Store {
                 bail!("GitHub repository must be owner/name, got {r:?}");
             }
             // A column `edit` left alone keeps its stored text: a Files edit
-            // never rewrites the backend (nor one it could not parse).
-            let backend = if e.backend == before.backend {
-                backend
-            } else {
-                Store::reset_cursor_on_change(tx, &key, &e.backend, None)?;
-                js(&e.backend)
-            };
+            // never rewrites the tracker (nor one it could not parse).
+            if e.backend != before.backend {
+                crate::tracker::apply_tracker(tx, &key, &tracker.with_backend(&e.backend))?;
+            }
             let settings = if e.settings == before.settings { settings } else { js(&e.settings) };
             tx.execute(
-                "UPDATE projects SET settings=?2, task_backend=?3, track_orchestrator_dir=?4 WHERE id=?1",
-                params![key, settings, backend, e.track_orchestrator_dir],
+                "UPDATE projects SET settings=?2, track_orchestrator_dir=?3 WHERE id=?1",
+                params![key, settings, e.track_orchestrator_dir],
             )?;
             Ok((out, true))
         })?;
@@ -1491,13 +1488,17 @@ impl Store {
         backend: &TaskBackendConfig,
         path: Option<&str>,
     ) -> rusqlite::Result<()> {
-        let old: Option<(String, String)> = tx
-            .query_row("SELECT task_backend, path FROM projects WHERE id=?1", [id], |r| Ok((r.get(0)?, r.get(1)?)))
+        let old: Option<(String, Option<String>, String)> = tx
+            .query_row("SELECT task_backend, tracker, path FROM projects WHERE id=?1", [id], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
             .optional()?;
-        let Some((old_backend, old_path)) = old else { return Ok(()) };
-        // Same text = same setting; a differing one may only order its keys differently.
-        let changed = old_backend != js(backend)
-            && serde_json::from_str::<TaskBackendConfig>(&old_backend).unwrap_or_default() != *backend;
+        let Some((old_backend, old_tracker, old_path)) = old else { return Ok(()) };
+        let old_backend = match old_tracker.and_then(|t| serde_json::from_str::<crate::TrackerSettings>(&t).ok()) {
+            Some(t) => t.task_backend(),
+            None => serde_json::from_str(&old_backend).unwrap_or_default(),
+        };
+        let changed = old_backend != *backend;
         if changed || path.is_some_and(|p| p != old_path) {
             tx.execute("DELETE FROM kv WHERE key=?1", [cursor_key(id)])?;
         }
@@ -2006,15 +2007,19 @@ mod tests {
         assert!(s.features(Some("p1")).unwrap().is_empty());
     }
 
-    /// A settings-only edit keeps the backend's stored text, even one this
-    /// version can't read.
+    /// A settings-only edit keeps the stored tracker as it was (its Ready
+    /// filter, write-back… are not part of the form).
     #[test]
-    fn a_settings_edit_keeps_the_stored_backend() {
+    fn a_settings_edit_keeps_the_stored_tracker() {
         let (_d, s) = store();
-        let backend = serde_json::json!({"type": "future", "x": 1});
+        let backend = serde_json::json!({"type": "github", "repo": "me/shop"});
         let pr =
             crate::model::Project { task_backend: backend.clone(), ..project_with_settings(serde_json::json!({})) };
         s.upsert_project(&pr).unwrap();
+        let mut t = s.tracker("p1").unwrap();
+        t.ready = crate::ReadyFilter::defaults("github");
+        t.refresh_secs = 1800;
+        s.set_tracker("p1", &t).unwrap();
         s.update_project_settings("p1", |e| {
             e.settings.default_team = Some("solo".into());
             Ok(())
@@ -2022,6 +2027,7 @@ mod tests {
         .unwrap();
         let p = s.project("p1").unwrap().unwrap();
         assert_eq!(p.task_backend, backend);
+        assert_eq!(s.tracker("p1").unwrap(), t);
         assert_eq!(p.typed_settings().default_team.as_deref(), Some("solo"));
     }
 
