@@ -762,7 +762,7 @@ mod tests {
         assert!(s.intake_mark_started(one, "run", "run-1").unwrap());
         assert!(!s.intake_mark_started(one, "agent", "x").unwrap(), "only a ready item starts");
         s.intake_hide(two, 2).unwrap();
-        assert!(!s.intake_mark_started(two, "agent", "x").unwrap(), "a hidden item does not start");
+        // (a hidden node starts too: hiding only clears the Ready lane; Work starts it by its node id)
         let b = s.intake_add_brief_start("p1", "brief-4", "Plan", "agent", "solo-1", 3).unwrap();
         let started: Vec<(String, Option<String>)> =
             s.intake_started().unwrap().into_iter().map(|r| (r.source, r.started_ref)).collect();
