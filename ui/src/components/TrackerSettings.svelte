@@ -13,6 +13,7 @@
     CYCLES,
     DEFAULT_GLOB,
     fieldCopy,
+    hasParentPart,
     KINDS,
     nameOf,
     noticeInfo,
@@ -27,6 +28,7 @@
     stateRows,
     statesToSave,
     switchKind,
+    toggleType,
     trackerError,
     trackerName,
     writeBackLines,
@@ -52,12 +54,14 @@
   let touched = $state(false);
   let fieldErrors = $state(/** @type {Record<string, string>} */ ({}));
   let saveError = $state(null);
+  let altPending = $state(false); // "Use <alternative> instead" is in the form; the notice is dismissed once it is saved
   let ask = $state(/** @type {any} */ (null)); // D8: { open, done, settings } while a switch to Linear waits for a choice
 
   let opts = $state(/** @type {any} */ (null)); // tracker_options for the form's tracker
   let optsError = $state(/** @type {any} */ (null));
   let autoReady = $state(false); // the Ready labels are still the default: follow the repo's `ready` label
-  let rows = $state([]); // Linear states → team task column
+  let rows = $state(/** @type {any[]} */ ([])); // Linear states → team task column
+  let optsTick = $state(0); // Retry of the options read
   let advancedOpen = $state(false);
 
   let previewing = $state(false);
@@ -90,14 +94,21 @@
   const lines = $derived(form && kind !== 'local' ? writeBackLines(form, known, targetName) : []);
   const projectName = (id) => (opts?.projects ?? []).find((p) => p.id === id)?.name ?? id;
   const summary = $derived(form ? readySummary(form.ready, projectName) : '');
-  const teamOptions = $derived((opts?.teams ?? []).filter((t) => !form?.tracker.teams?.includes(t.key)).map((t) => ({ value: t.key, label: `${t.key} · ${t.name}` })));
-  const linProjects = $derived((opts?.projects ?? []).filter((p) => !form?.tracker.teams?.length || form.tracker.teams.includes(p.team) || form.tracker.teams.some((k) => (opts?.teams ?? []).find((t) => t.key === k)?.id === p.team)));
+  // A team is stored by key or id (`tracker_options` projects carry the team's key).
+  const teamKeys = $derived((form?.tracker.teams ?? []).map((k) => (opts?.teams ?? []).find((t) => t.id === k)?.key ?? k));
+  const teamIds = $derived(teamKeys.map((k) => (opts?.teams ?? []).find((t) => t.key === k)?.id).filter(Boolean));
+  const teamOptions = $derived((opts?.teams ?? []).filter((t) => !teamKeys.includes(t.key)).map((t) => ({ value: t.key, label: `${t.key} · ${t.name}` })));
+  const linProjects = $derived((opts?.projects ?? []).filter((p) => !teamKeys.length || teamKeys.includes(p.team) || teamIds.includes(p.team)));
   const projectOptions = $derived(linProjects.filter((p) => !form?.tracker.projects?.includes(p.id)).map((p) => ({ value: p.id, label: p.name })));
+  const unmapped = $derived(rows.filter((x) => !x.column));
   const notSetUp = $derived(
     optsError && ['gh_missing', 'gh_auth', 'linear_key', 'linear_auth'].includes(optsError.code) ? (optsError.code.startsWith('linear') ? 'Linear' : 'GitHub') : null,
   );
-  const previewErr = $derived(preview?.error ? trackerError(preview.error, kind) : null);
-  const info = $derived(notice && form ? noticeInfo(notice, form, { project: name, known }) : null);
+  const trackerJson = $derived(form ? JSON.stringify(form.tracker) : '');
+  const trkName = $derived(form ? (kind === 'linear' ? form.tracker.teams.join(', ') : trackerName(form.tracker, known)) : null);
+  const previewErr = $derived(preview?.error ? trackerError(preview.error, kind, trkName) : null);
+  const previewWarn = $derived(preview?.warning === 'gh_sub_issues' ? trackerError({ code: 'gh_sub_issues' }, kind, trkName).text : null);
+  const info = $derived(notice && !altPending && form ? noticeInfo(notice, form, { project: name, known }) : null);
 
   // ------------------------------------------------------------ loading
 
@@ -106,6 +117,7 @@
     baseline = JSON.stringify(form);
     notice = r.migration_notice && !r.migration_notice.dismissed ? r.migration_notice : null;
     pick = 'alternative';
+    altPending = false;
     rows = [];
   }
 
@@ -135,26 +147,28 @@
     return n === seq ? out : null;
   }
 
-  // Suggestions follow what is filled so far (debounced): the repo, the teams, the glob.
+  // Suggestions follow what is filled so far (debounced): the repo, the teams, the glob. Keyed on the
+  // tracker alone (a save or revert that leaves it as it was does not read again), and an answer for a
+  // tracker that is no longer the form's is dropped.
   $effect(() => {
-    if (!form) return;
-    const t = $state.snapshot(form.tracker);
+    optsTick;
+    if (!trackerJson) return;
+    const t = JSON.parse(trackerJson);
     if (t.kind === 'github' && t.repo?.trim() && !/^[^/\s]+\/[^/\s]+$/.test(t.repo.trim())) return;
-    if (t.kind === 'local' && (!t.backlog_glob || t.backlog_glob.startsWith('/') || t.backlog_glob.includes('..'))) {
+    if (t.kind === 'local' && (!t.backlog_glob || hasParentPart(t.backlog_glob))) {
       opts = null;
       return;
     }
     const timer = setTimeout(
       async () => {
         const o = await loadOptions(t);
-        if (!o) return;
+        if (!o || JSON.stringify(untrack(() => form?.tracker)) !== trackerJson) return;
         opts = o;
         optsError = o.error ?? null;
         untrack(() => {
-          if (autoReady && form.ready.kind === 'github' && (o.labels ?? []).includes('ready') && !form.ready.labels.length) form.ready.labels = ['ready'];
-          if (form.tracker.kind === 'linear' && o.states) {
-            rows = stateRows(o.states, form.task_states);
-          }
+          const ready = (o.labels ?? []).map(nameOf).find((l) => l.toLowerCase() === 'ready');
+          if (autoReady && form.ready.kind === 'github' && ready && !form.ready.labels.length) form.ready.labels = [ready];
+          if (form.tracker.kind === 'linear' && o.states) rows = stateRows(o.states, form.task_states);
         });
       },
       untrack(() => (opts ? 400 : 0)),
@@ -217,6 +231,12 @@
   }
 
   const any = (v) => v || null;
+  /** Fields with an error line under them; any other field's error shows with the save line. */
+  const SLOTS = ['repo', 'teams', 'projects', 'backlog_glob', 'ready'];
+  const fail = (x, e) => {
+    if (x.field && SLOTS.includes(x.field)) fieldErrors = { [x.field]: fieldCopy(x.field, x.message) };
+    else saveError = x.field ? fieldCopy(x.field, x.message) : (x.message ?? errText(e));
+  };
 
   // ------------------------------------------------------------ actions
 
@@ -230,7 +250,7 @@
       preview = await invoke('tracker_preview', { project, settings });
     } catch (e) {
       const x = parseErr(e, errText);
-      if (x.field) fieldErrors = { [x.field]: fieldCopy(x.field, x.message) };
+      if (x.field && SLOTS.includes(x.field)) fieldErrors = { [x.field]: fieldCopy(x.field, x.message) };
       else preview = { error: { code: x.code ?? 'failed', message: x.message } };
     } finally {
       previewJson = JSON.stringify(settings);
@@ -255,6 +275,11 @@
   /** The saved answer of the core becomes the form (or, with none, the form is what was saved). */
   function landed(r, settings) {
     const was = notice;
+    if (altPending) {
+      altPending = false;
+      invoke('tracker_notice_dismiss', { project }).catch(() => {});
+      notice = null;
+    }
     if (r?.settings) adopt(r);
     else baseline = JSON.stringify(settings);
     if (was && !r?.migration_notice) notice = null;
@@ -274,9 +299,7 @@
       const r = await commit(settings, migrate);
       if (r) landed(r, settings);
     } catch (e) {
-      const x = parseErr(e, errText);
-      if (x.field) fieldErrors = { [x.field]: fieldCopy(x.field, x.message) };
-      else saveError = x.message ?? errText(e);
+      fail(parseErr(e, errText), e);
     } finally {
       busy = false;
     }
@@ -302,6 +325,7 @@
   export function revert() {
     if (!baseline || baseline === 'null') return;
     ask = null;
+    altPending = false;
     form = JSON.parse(baseline);
     rows = opts?.states ? stateRows(opts.states, form.task_states) : [];
     fieldErrors = {};
@@ -319,10 +343,10 @@
   }
 
   /** "Use acme/web instead": the alternative becomes the tracker (still to save). */
-  async function useAlternative() {
+  function useAlternative() {
     form = { ...$state.snapshot(form), tracker: $state.snapshot(notice.alternative) };
     opts = null;
-    await dismiss();
+    altPending = true;
   }
 
   /** Mismatch › Use this tracker: saves the saved settings with the chosen tracker. */
@@ -425,13 +449,13 @@
       <div class="row top">
         <label class="lab" for="trk-glob">Backlog folder</label>
         <div class="col">
-          <input id="trk-glob" class="field mono wide" class:bad={errs.backlog_glob} bind:value={form.tracker.backlog_glob} oninput={edit} placeholder={DEFAULT_GLOB} spellcheck="false" />
+          <input id="trk-glob" class="field mono w360" class:bad={errs.backlog_glob} bind:value={form.tracker.backlog_glob} oninput={edit} placeholder={DEFAULT_GLOB} spellcheck="false" />
+          {@render err('backlog_glob')}
           {#if !form.tracker.backlog_glob?.trim()}
             <p class="muted hint">No backlog files: only tasks you create.</p>
           {:else if !errs.backlog_glob && opts?.matches != null}
             <p class="muted hint" data-matches>{opts.matches === 0 ? 'No file matches' : opts.matches === 1 ? '1 file matches' : `${opts.matches} files match`}</p>
           {/if}
-          {@render err('backlog_glob')}
           <p class="muted hint">Local has no hierarchy: Work shows a flat list.</p>
         </div>
       </div>
@@ -439,21 +463,25 @@
       <div class="row top">
         <label class="lab" for="trk-repo">Repository</label>
         <div class="col">
-          <input id="trk-repo" class="field mono wide" class:bad={errs.repo} value={form.tracker.repo ?? ''} oninput={(e) => ((form.tracker.repo = e.currentTarget.value.trim() ? e.currentTarget.value : null), edit())} placeholder={known || 'owner/name'} spellcheck="false" />
-          <p class="muted hint">Defaults to this project's repository.</p>
+          <input id="trk-repo" class="field mono w320" class:bad={errs.repo} value={form.tracker.repo ?? ''} oninput={(e) => ((form.tracker.repo = e.currentTarget.value.trim() ? e.currentTarget.value : null), edit())} placeholder={known || 'owner/name'} spellcheck="false" />
           {@render err('repo')}
+          <p class="muted hint">Defaults to this project's repository.</p>
         </div>
       </div>
       {#if notSetUp}{@render integrations(notSetUp)}{/if}
       <div class="row top">
         <label class="lab" for="trk-board">Projects v2 board</label>
         <div class="col">
-          <Select id="trk-board" width="hug" value={form.tracker.project_board ? boardKey(form.tracker.project_board) : ''} options={boardOptions} noun="board" onchange={pickBoard} />
+          <div class="w320"><Select id="trk-board" width="fill" value={form.tracker.project_board ? boardKey(form.tracker.project_board) : ''} options={boardOptions} noun="board" onchange={pickBoard} /></div>
           <p class="muted hint">Shows its Status in Work and lets write-back move items on it.</p>
           {#if optsError?.code === 'gh_scope'}
-            <p class="ferr" role="alert" data-gh-scope>GitHub needs the read:project scope to read the board. Run <code>{GH_SCOPE_COMMAND}</code>. <button class="link" onclick={copyCommand}>Copy command</button></p>
+            <div class="scope" data-gh-scope>
+              <p class="ferr" role="alert"><span aria-hidden="true">{'\u{F0026}'}</span> GitHub needs the read:project scope to read the board.</p>
+              <p class="muted hint">Run <code>{GH_SCOPE_COMMAND}</code>, then Preview.</p>
+              <div><button class="btn" onclick={copyCommand}>Copy command</button></div>
+            </div>
           {:else if optsError && !notSetUp}
-            <p class="ferr">{trackerError(optsError, 'github').text}</p>
+            <p class="ferr">{trackerError(optsError, 'github', trkName).text}</p>
           {/if}
         </div>
       </div>
@@ -462,7 +490,7 @@
       <div class="row top">
         <span class="lab" id="trk-teams">Teams</span>
         <div class="col">
-          <div class="tags" class:bad={errs.teams} role="group" aria-labelledby="trk-teams">
+          <div class="tags w360" class:bad={errs.teams} role="group" aria-labelledby="trk-teams">
             {#each form.tracker.teams as t (t)}<span class="chip">{t}<button type="button" class="x" aria-label="Remove {t}" onclick={() => ((form.tracker.teams = form.tracker.teams.filter((x) => x !== t)), edit())}>×</button></span>{/each}
             <Select width="hug" bare value="" options={teamOptions} placeholder="add a team…" noun="team" aria-label="Add a team" onchange={(v) => ((form.tracker.teams = addTo(form.tracker.teams, v)), edit())} />
           </div>
@@ -487,10 +515,17 @@
         <summary>Advanced · Team task states</summary>
         <p class="muted hint">Where team tasks go when they move in the feature.</p>
         {#if !rows.length}
-          <p class="muted hint">{form.tracker.teams.length ? 'Loading states…' : 'Pick a team to map its states.'}</p>
+          {#if optsError && !notSetUp}
+            <p class="ferr" role="alert" data-states-error><span aria-hidden="true">{'\u{F0026}'}</span> {trackerError(optsError, 'linear', trkName).text} <button class="link" onclick={() => optsTick++}>Retry</button></p>
+          {:else}
+            <p class="muted hint">{form.tracker.teams.length ? 'Loading states…' : 'Pick a team to map its states.'}</p>
+          {/if}
         {/if}
+        {#each unmapped as st (st.id)}
+          <p class="box warnbox" data-unmapped>▲ State "{st.name}" isn't mapped. <button class="btn ghost" onclick={() => /** @type {HTMLElement | null | undefined} */ (root?.querySelector(`[data-state="${st.id}"] [role="combobox"]`))?.focus()} use:tooltip={{ label: 'Map it', key: '⏎' }}>Map it</button></p>
+        {/each}
         {#each rows as r, i (r.id)}
-          <div class="mrow"><span>{r.name}</span><span class="muted" aria-hidden="true">→</span><Select width="hug" aria-label="Column for {r.name}" value={r.column} options={BOARD_COLUMNS} onchange={(c) => setStateColumn(i, c)} /></div>
+          <div class="mrow" data-state={r.id}><span>{r.name}</span><span class="muted" aria-hidden="true">→</span><Select width="hug" aria-label="Column for {r.name}" value={r.column ?? ''} options={BOARD_COLUMNS} placeholder="map to…" onchange={(c) => setStateColumn(i, c)} /></div>
         {/each}
       </details>
     {/if}
@@ -502,7 +537,7 @@
       <div class="row top">
         <label class="lab" for="trk-labels">Labels</label>
         <div class="col">
-          <div class="tags wide">
+          <div class="tags w360">
             {#each form.ready.labels as n (n)}<span class="chip">{n}<button type="button" class="x" aria-label="Remove {n}" onclick={() => ((form.ready.labels = form.ready.labels.filter((x) => x !== n)), (autoReady = false), edit())}>×</button></span>{/each}
             <input id="trk-labels" class="bare" list="trk-label-list" bind:value={labelInput} onkeydown={labelKey} onblur={() => addLabel(labelInput)} placeholder="add…" spellcheck="false" />
           </div>
@@ -511,34 +546,34 @@
       </div>
       <div class="row">
         <label class="lab" for="trk-ms">Milestone</label>
-        <Select id="trk-ms" width="hug" value={form.ready.milestone ?? ''} options={optionList(opts?.milestones, 'Any')} noun="milestone" onchange={(v) => ((form.ready.milestone = any(v)), edit())} />
+        <div class="w200"><Select id="trk-ms" width="fill" value={form.ready.milestone ?? ''} options={optionList(opts?.milestones, 'Any')} noun="milestone" onchange={(v) => ((form.ready.milestone = any(v)), edit())} /></div>
       </div>
       {#if form.tracker.project_board}
         <div class="row">
           <label class="lab" for="trk-bs">Board status</label>
-          <Select id="trk-bs" width="hug" value={form.ready.board_status ?? ''} options={optionList(statusNames, 'Any')} noun="status" onchange={(v) => ((form.ready.board_status = any(v)), edit())} />
+          <div class="w200"><Select id="trk-bs" width="fill" value={form.ready.board_status ?? ''} options={optionList(statusNames, 'Any')} noun="status" onchange={(v) => ((form.ready.board_status = any(v)), edit())} /></div>
         </div>
       {/if}
       <div class="row">
         <label class="lab" for="trk-it">Issue type</label>
-        <Select id="trk-it" width="hug" value={form.ready.issue_type ?? ''} options={optionList(opts?.issue_types, 'Any')} noun="type" onchange={(v) => ((form.ready.issue_type = any(v)), edit())} />
+        <div class="w200"><Select id="trk-it" width="fill" value={form.ready.issue_type ?? ''} options={optionList(opts?.issue_types, 'Any')} noun="type" onchange={(v) => ((form.ready.issue_type = any(v)), edit())} /></div>
       </div>
     {:else if form.ready.kind === 'linear'}
       <div class="row">
         <span class="lab" id="trk-st">State types</span>
         <div class="checks" role="group" aria-labelledby="trk-st">
           {#each STATE_TYPES as s (s.id)}
-            <label class="check"><input type="checkbox" checked={form.ready.state_types.includes(s.id)} onchange={(e) => ((form.ready.state_types = STATE_TYPES.map((x) => x.id).filter((id) => (id === s.id ? e.currentTarget.checked : form.ready.state_types.includes(id)))), edit())} /> {s.label}</label>
+            <label class="check"><input type="checkbox" checked={form.ready.state_types.includes(s.id)} onchange={(e) => ((form.ready.state_types = toggleType(form.ready.state_types, s.id, e.currentTarget.checked)), edit())} /> {s.label}</label>
           {/each}
         </div>
       </div>
       <div class="row">
         <label class="lab" for="trk-ll">Label</label>
-        <Select id="trk-ll" width="hug" value={form.ready.label ?? ''} options={optionList(opts?.labels, 'Any')} noun="label" onchange={(v) => ((form.ready.label = any(v)), edit())} />
+        <div class="w200"><Select id="trk-ll" width="fill" value={form.ready.label ?? ''} options={optionList(opts?.labels, 'Any')} noun="label" onchange={(v) => ((form.ready.label = any(v)), edit())} /></div>
       </div>
       <div class="row">
         <label class="lab" for="trk-lp">Project</label>
-        <Select id="trk-lp" width="hug" searchable value={form.ready.project ?? ''} options={[{ value: '', label: 'Any' }, ...linProjects.map((p) => ({ value: p.id, label: p.name }))]} noun="project" onchange={(v) => ((form.ready.project = any(v)), edit())} />
+        <div class="w200"><Select id="trk-lp" width="fill" searchable value={form.ready.project ?? ''} options={[{ value: '', label: 'Any' }, ...linProjects.map((p) => ({ value: p.id, label: p.name }))]} noun="project" onchange={(v) => ((form.ready.project = any(v)), edit())} /></div>
       </div>
       <div class="row">
         <span class="lab" id="trk-cy">Cycle</span>
@@ -547,12 +582,14 @@
         </div>
       </div>
     {/if}
-    {@render err('ready')}
-    <p class="muted hint" data-ready-summary>{summary}</p>
+    <div class="indent">
+      {@render err('ready')}
+      <p class="muted hint" data-ready-summary>{summary}</p>
+    </div>
 
     {#if kind !== 'local'}
       <hr />
-      <label class="switch"><input type="checkbox" role="switch" aria-checked={form.write_back.enabled} bind:checked={form.write_back.enabled} onchange={edit} /> <b>Update {wbName} as work runs</b></label>
+      <label class="switch"><input type="checkbox" role="switch" class="pill" aria-checked={form.write_back.enabled} bind:checked={form.write_back.enabled} onchange={edit} /> <b>Update {wbName} as work runs</b></label>
       {#if form.write_back.enabled}
         <ul class="wb" data-write-back>
           {#each lines as l (l)}<li>{l}</li>{/each}
@@ -567,7 +604,7 @@
           <div class="row top wbopt">
             <span class="lab sub" id="trk-mv">Move to</span>
             <div class="col">
-              <Select width="hug" aria-labelledby="trk-mv" value={form.write_back.board_status ?? defaultStatus ?? ''} options={optionList(statusNames)} noun="status" onchange={(v) => ((form.write_back.board_status = v), edit())} />
+              <div class="w200"><Select width="fill" aria-labelledby="trk-mv" value={form.write_back.board_status ?? defaultStatus ?? ''} options={optionList(statusNames)} noun="status" onchange={(v) => ((form.write_back.board_status = v), edit())} /></div>
               <p class="muted hint">The board's Status option for started items</p>
             </div>
           </div>
@@ -575,7 +612,7 @@
           <div class="row top wbopt">
             <span class="lab sub" id="trk-mv">Move to</span>
             <div class="col">
-              <Select width="hug" aria-labelledby="trk-mv" value={linearTarget?.id ?? ''} options={started.map((s) => ({ value: s.id, label: s.name }))} noun="state" onchange={(v) => ((form.write_back.linear_state = v), edit())} />
+              <div class="w200"><Select width="fill" aria-labelledby="trk-mv" value={linearTarget?.id ?? ''} options={started.map((s) => ({ value: s.id, label: s.name }))} noun="state" onchange={(v) => ((form.write_back.linear_state = v), edit())} /></div>
               <p class="muted hint">A started state of {form.tracker.teams.join(', ') || 'the team'}</p>
             </div>
           </div>
@@ -589,7 +626,7 @@
     <div class="row top">
       <label class="lab" for="trk-refresh">Refresh</label>
       <div class="col">
-        <Select id="trk-refresh" width="hug" value={form.refresh_secs} options={REFRESH} noun="interval" onchange={(v) => ((form.refresh_secs = v), edit())} />
+        <div class="w160"><Select id="trk-refresh" width="fill" value={form.refresh_secs} options={REFRESH} noun="interval" onchange={(v) => ((form.refresh_secs = v), edit())} /></div>
         <p class="muted hint">Work also refreshes when you open it and on r.</p>
       </div>
     </div>
@@ -610,16 +647,25 @@
             {:else if !preview.items}
               <p class="muted">Nothing matches this tracker right now. It may still be right: Ready to start will show items when they appear.</p>
             {:else}
-              <p><b>{preview.items} {preview.items === 1 ? 'item' : 'items'}</b>, {preview.roots} at the top · <b>{preview.ready} ready</b> in {trackerName(form.tracker, known)}</p>
+              <p data-preview-count><b>{preview.items} {preview.items === 1 ? 'item' : 'items'}</b>{#if kind !== 'local'}, {preview.roots} at the top{/if} · <b>{preview.ready} ready</b> in {kind === 'local' ? (form.tracker.backlog_glob ?? '').replace(/\/[^/]*$/, '') || '.' : trackerName(form.tracker, known)}</p>
               {#each (preview.sample ?? []).slice(0, 5) as n (n.id)}
-                <div class="srow">
-                  <span class="mono muted">{n.ref}</span>
-                  <span>{n.title}</span>
-                  <span class="muted">{sampleWhere(n, kind)}</span>
-                </div>
+                {#if kind === 'local'}
+                  <div class="srow local">
+                    <span class="mono muted">{n.ref}</span>
+                    <span>{n.title}</span>
+                  </div>
+                {:else}
+                  <div class="srow">
+                    <span class="mono muted">{n.ref}</span>
+                    <span>{n.title}</span>
+                    <span class="muted">{sampleWhere(n, kind)}</span>
+                  </div>
+                {/if}
               {/each}
+              {#if preview.more > 0}<p class="muted" data-preview-more>+ {preview.more} more</p>{/if}
             {/if}
-            {#if stale}<p class="muted">Changed since this preview</p>{/if}
+            {#if previewWarn}<p class="muted" data-preview-warning>{previewWarn} <button class="link" onclick={runPreview}>Retry</button></p>{/if}
+            {#if stale}<p class="stale-line" data-stale>Changed since this preview · <button class="link" onclick={runPreview}>Preview again</button></p>{/if}
           </div>
         {/if}
       </div>
@@ -631,7 +677,7 @@
         <div class="nbody">
           <p><b>Move {name}'s tasks to Linear?</b> {ask.open} open task{ask.open === 1 ? '' : 's'}.{ask.done ? ` ${ask.done} done tasks are not pushed.` : ''}</p>
           <div class="acts">
-            <button class="btn primary" disabled={busy} onclick={() => answer('push_open')}>Create {ask.open} open tasks as issues in {form.tracker.teams.join(', ')}</button>
+            <button class="btn primary" disabled={busy} onclick={() => answer('push_open')}>Create {ask.open} open tasks as issues in {ask.settings.tracker.teams.join(', ')}</button>
             <button class="btn" disabled={busy} onclick={() => answer('leave')}>Leave them out (they stay in the app, not synced)</button>
             <button class="btn" disabled={busy} onclick={() => (ask = null)}>Cancel</button>
           </div>
@@ -715,8 +761,75 @@
   .wbopt {
     margin-left: var(--space-xl);
   }
-  .wide {
+  .w360,
+  .w320,
+  .w200,
+  .w160 {
+    box-sizing: border-box;
+  }
+  .w360 {
+    width: 360px;
+  }
+  .w320 {
     width: 320px;
+  }
+  .w200 {
+    width: 200px;
+  }
+  .w160 {
+    width: 160px;
+  }
+  .indent {
+    margin-left: calc(180px + var(--space-md));
+  }
+  .scope {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-xs);
+    align-items: flex-start;
+  }
+  .stale-line {
+    margin-top: var(--space-xs);
+    color: var(--color-pacing-amber);
+    font: var(--text-caption);
+  }
+  .stale-line .link {
+    color: var(--color-pacing-amber);
+    text-decoration: underline;
+  }
+  .warnbox {
+    border-color: var(--color-pacing-amber);
+  }
+  .pill {
+    appearance: none;
+    flex: none;
+    position: relative;
+    width: 34px;
+    height: 18px;
+    margin: 0;
+    border-radius: 9px;
+    background: var(--color-border-strong);
+    cursor: pointer;
+  }
+  .pill::after {
+    content: '';
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--color-text-primary);
+  }
+  .pill:checked {
+    background: var(--color-accent-default);
+  }
+  .pill:checked::after {
+    left: 18px;
+  }
+  .pill:focus-visible {
+    outline: var(--border-width-focus) solid var(--color-focus);
+    outline-offset: 2px;
   }
   .seg {
     display: inline-flex;
@@ -850,8 +963,8 @@
     border: var(--border-width-default) solid var(--color-border-subtle);
     border-radius: var(--radius-md);
   }
-  .result.stale {
-    opacity: 0.6;
+  .srow.local {
+    grid-template-columns: 160px 1fr;
   }
   .srow {
     display: grid;
