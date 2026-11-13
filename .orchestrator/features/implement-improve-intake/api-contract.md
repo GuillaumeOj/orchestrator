@@ -101,7 +101,8 @@ WorkFilter = {                                    // F3
   "issue_types": [], "linear_projects": [], "include_team_tasks": false, "show_hidden": false
 }
 SourceStatus = { "status": "ok"|"refreshing"|"error", "error": SourceError | null, "warning": "gh_sub_issues" | null,   // F26
-                 "offline": false, "refreshed_at_ms": 0 }                                                                  // F15
+                 "offline": false, "refreshed_at_ms": 0,
+                 "counts": { "items": 14, "roots": 3, "ready": 4 } }   // F15; counts = cached non-team-task nodes (project row, details status line)
 SourceError  = P4.5 `{ code, message, fix?, retry_at_ms? }` + codes "linear_complexity", "gh_write", "linear_write"     // F27
 ```
 
