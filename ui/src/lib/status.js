@@ -33,6 +33,8 @@ export const LEVEL = {
 // Decision kinds (decision cards): their own palette, not a borrowed agent state.
 const DECISION = {
   permission: { label: 'Permission', icon: '\u{F0BC5}' },
+  // What an agent's shell commands can reach (allow-fine-tune-sandbox-permissions): the wall glyph, not a shield.
+  sandbox: { label: 'Sandbox', icon: '\u{F07FE}' },
   question: { label: 'Question', icon: '\u{F0186}' },
   'gate-spec': { label: 'Spec gate', icon: '\u{F1187}' },
   'gate-pr': { label: 'PR gate', icon: '\u{F14CF}' },

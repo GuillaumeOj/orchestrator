@@ -156,7 +156,7 @@ const EFFECT_VERB = {
   'turned off': 'turned off',
 };
 const ASK_VERB = { applied: 'run now', skipped: 'kept queued', queued: 'kept queued' };
-const KIND_VERB = { permission: 'allowed', gate: 'approved', ask: 'run now' };
+const KIND_VERB = { permission: 'allowed', sandbox: 'allowed', gate: 'approved', ask: 'run now' };
 function verbOf(d) {
   const { state, effect } = d.lifecycle ?? {};
   // A brief: "launched <slug>" (closed by the start), revised, else dismissed (P4.5 api-contract §5).

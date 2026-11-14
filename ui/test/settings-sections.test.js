@@ -45,13 +45,14 @@ beforeEach(() => {
   replies.settings_get = null;
 });
 
-describe('Settings window: 9 sections', () => {
+describe('Settings window: 10 sections', () => {
   it('the nav lists them in order, with no Kbd and no Keyboard section', () => {
     expect(SECTIONS.map((s) => s.label)).toEqual([
       'Claude Code',
       'Integrations',
       'Overwatch',
       'Permissions',
+      'Sandbox',
       'MCP servers',
       'Terminal & editor',
       'Pacing policy',
@@ -60,7 +61,7 @@ describe('Settings window: 9 sections', () => {
     ]);
     app.window = { kind: 'settings', section: 'claude' };
     const { container } = render(SettingsWindow);
-    expect(container.querySelectorAll('[role="tab"]')).toHaveLength(9);
+    expect(container.querySelectorAll('[role="tab"]')).toHaveLength(10);
     expect(container.querySelector('[role="tablist"] .kbd')).toBeNull();
   });
 

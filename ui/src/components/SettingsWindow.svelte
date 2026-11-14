@@ -5,6 +5,7 @@
     { id: 'integrations', label: 'Integrations' },
     { id: 'overwatch', label: 'Overwatch' },
     { id: 'permissions', label: 'Permissions' },
+    { id: 'sandbox', label: 'Sandbox' },
     { id: 'mcp', label: 'MCP servers' },
     { id: 'terminal', label: 'Terminal & editor' },
     { id: 'pacing', label: 'Pacing policy' },
@@ -33,6 +34,7 @@
   import OverwatchSettings from './OverwatchSettings.svelte';
   import PacingSettings from './PacingSettings.svelte';
   import PermissionsSettings from './PermissionsSettings.svelte';
+  import SandboxSettings from './SandboxSettings.svelte';
   import TerminalSettings from './TerminalSettings.svelte';
 
   const spec = $derived(app.window);
@@ -97,6 +99,8 @@
     <OverwatchSettings />
   {:else if section.id === 'permissions'}
     <PermissionsSettings />
+  {:else if section.id === 'sandbox'}
+    <SandboxSettings />
   {:else if section.id === 'mcp'}
     {#key spec?.server}<McpSettings bind:this={mcp} project={null} selected={spec?.server ?? null} initial={firstMcp} />{/key}
   {:else if section.id === 'claude'}

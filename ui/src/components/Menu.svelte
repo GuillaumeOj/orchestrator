@@ -14,7 +14,7 @@
 
   /**
    * @typedef {{ id?: string, label?: string, icon?: string, key?: string, destructive?: boolean, disabled?: boolean,
-   *             reason?: string, checked?: boolean, items?: any[], separator?: boolean, run?: () => void }} MenuItem
+   *             reason?: string, help?: string, checked?: boolean, items?: any[], separator?: boolean, run?: () => void }} MenuItem
    */
   /** @type {{ items?: MenuItem[], onselect?: (item: MenuItem) => void, label?: string, disabled?: boolean,
    *           tabindex?: number, heading?: string, hint?: string, onclose?: () => void,
@@ -265,7 +265,11 @@
       >
         {#if checkable}<span class="ck" aria-hidden="true">{it.checked ? '\u{F012C}' : ''}</span>{/if}
         {#if it.icon}<span class="ic" aria-hidden="true">{it.icon}</span>{/if}
-        <span class="lab">{it.label}</span>
+        {#if it.help}
+          <span class="lab helped"><span>{it.label}</span><span class="mhelp muted">{it.help}</span></span>
+        {:else}
+          <span class="lab">{it.label}</span>
+        {/if}
         {#if it.key}<span class="key"><Kbd keys={it.key} /></span>{/if}
         {#if it.items?.length}<span class="more" aria-hidden="true">{'\u{F0142}'}</span>{/if}
       </div>
@@ -345,6 +349,15 @@
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+  .lab.helped {
+    display: flex;
+    flex-direction: column;
+    overflow: visible;
+  }
+  .mhelp {
+    font: var(--text-caption);
+    white-space: normal;
   }
   .key {
     margin-left: auto;
