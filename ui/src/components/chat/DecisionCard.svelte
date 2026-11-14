@@ -142,14 +142,16 @@
       : null,
   );
 
-
   // The sandbox card (ux-flows §2): the allowance asked for, the scope menu, the decided line and its Undo.
   const sp = $derived(d.payload ?? {});
   const who = $derived(agentOf(d) ?? sp.agent ?? 'the agent');
   const invalid = $derived(sandbox ? (sp.invalid ?? null) : null);
+  // No project (a solo session outside one): everywhere is the only scope, so it is the primary.
+  const projectless = $derived(!sp.project);
+  const primaryLabel = $derived(sp.project ? 'Allow for this project' : 'Allow everywhere');
   const scopeItems = $derived([
-    { id: 'global', label: 'Allow everywhere', help: "Every project's agents." },
-    ...(sp.role ? [{ id: 'role', label: `Allow for ${sp.role} only`, help: `Only ${sp.role} agents of this project.` }] : []),
+    ...(projectless ? [] : [{ id: 'global', label: 'Allow everywhere', help: "Every project's agents." }]),
+    ...(sp.role && !projectless ? [{ id: 'role', label: `Allow for ${sp.role} only`, help: `Only ${sp.role} agents of this project.` }] : []),
   ]);
   const decideError = $derived(app.decideErrors[d.id] ?? '');
   const decidedLine = $derived(sandbox && !live ? decidedText(d, projectName) : null);
@@ -172,9 +174,10 @@
   let caret = $state(/** @type {HTMLElement | undefined} */ (undefined));
   // ⇧a asks for the scope menu.
   $effect(() => {
-    if (menu && caret) {
+    if (menu) {
+      // Consumed even when there is no caret (a stale or invalid card), so it cannot open later.
       untrack(() => onmenu(false));
-      caret.click();
+      caret?.click();
     }
   });
 
@@ -282,10 +285,10 @@
       {:else}
         {#if !invalid}
           <span class="split">
-            <button class="btn primary" use:tooltip={{ label: 'Allow for this project', key: 'a' }} onclick={() => onkey('a')}>Allow for this project</button>
-            <Menu items={scopeItems} label="More ways to allow" onselect={(i) => onscope(String(i.id))}>
+            <button class="btn primary" use:tooltip={{ label: primaryLabel, key: 'a' }} onclick={() => onkey('a')}>{primaryLabel}</button>
+            {#if scopeItems.length}<Menu items={scopeItems} label="More ways to allow" onselect={(i) => onscope(String(i.id))}>
               {#snippet trigger(attrs)}<button class="btn primary caret" bind:this={caret} {...attrs} aria-label="More ways to allow">▾</button>{/snippet}
-            </Menu>
+            </Menu>{/if}
           </span>
         {/if}
         <button class="btn" class:ghost={!invalid} use:tooltip={{ label: 'Reject', key: 'r' }} onclick={() => onkey('r')}>Reject</button>

@@ -117,6 +117,8 @@ export function keyIntent(key, d) {
     case 'r':
     case 'enter':
     case 'o': {
+      // A sandbox value the core found can't be allowed has no Allow: its key does not send one either.
+      if (key === 'a' && d?.kind === 'sandbox' && d.payload?.invalid) return null;
       const act = actionByKey(d, key);
       return act ? intentFor(d, act.id) : null;
     }

@@ -93,7 +93,7 @@ export const app = $state({
   settingsSection: /** @type {string | null} */ (null),
   toasts: [],
   pending: [], // decisions in their undo window: { item, card, action, message, scope, at, toast }
-  sandboxUndo: /** @type {Record<string, { done?: string, error?: string }>} */ ({}), // an Allow's Undo, by decision id
+  sandboxUndo: /** @type {Record<string, { done?: string, error?: string, busy?: boolean }>} */ ({}), // an Allow's Undo, by decision id
   decideErrors: /** @type {Record<string, string>} */ ({}), // a refused sandbox Allow, by decision id
   // What the Inspector shows when no agent pane has focus (D10): set by the
   // sidebar, the palette and Mission control. { kind: 'agent' | 'run' | 'decision', id }
@@ -2504,6 +2504,9 @@ export function decisionPushed(prev, d) {
 export async function undoSandboxAllow(d) {
   const e = d.payload?.outcome?.entry;
   const who = d.subject?.agent ?? d.payload?.agent ?? 'the agent';
+  // A second click while the first is in flight would remove nothing and report an error over the success.
+  if (app.sandboxUndo[d.id]?.busy) return;
+  app.sandboxUndo = { ...app.sandboxUndo, [d.id]: { busy: true } };
   try {
     const r = await invoke('sandbox_remove', { id: e.id, file: e.file });
     const done =

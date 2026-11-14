@@ -139,8 +139,11 @@
       flash([rowKey(block, r?.entry?.id)]);
       await load();
     } catch (e) {
-      form.busy = false;
-      form.error = `Could not add it: ${reason(e)}.`;
+      // Cancel may have closed the form while the core was answering.
+      if (form) {
+        form.busy = false;
+        form.error = `Could not add it: ${reason(e)}.`;
+      }
     }
   }
 

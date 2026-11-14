@@ -48,7 +48,6 @@
       .catch((e) => (loadError = errText(e)));
   }
   $effect(() => {
-    load();
     invoke('policy_defaults')
       .then((v) => (defaults = v))
       .catch((e) => (errors = { ...errors, defaults: `Could not read the defaults: ${errText(e)}` }));
@@ -86,7 +85,6 @@
       rulesError = errText(e);
     }
   }
-  onMount(loadRules);
 
   async function removeRule(r, index) {
     rowErr = { ...rowErr, [key(r)]: '' };
@@ -184,8 +182,10 @@
       flash(`${f.scope}:${r?.rule?.id}`);
       await Promise.all([loadRules(), load()]);
     } catch (e) {
-      form.busy = false;
-      form.error = `Could not add the rule: ${reason(e)}.`;
+      if (form) {
+        form.busy = false;
+        form.error = `Could not add the rule: ${reason(e)}.`;
+      }
     }
   }
 
@@ -329,6 +329,7 @@
             <div class="rule removed" data-removed={x.ghost.id}>
               <span class="muted">Removed {x.ghost.summary} ·</span>
               <button class="link" aria-label="Undo removing {x.ghost.summary}" onclick={() => undoRule(x.ghost)}>Undo</button>
+              {#if rowErr[key(x.ghost)]}<span class="err" role="alert">{rowErr[key(x.ghost)]}</span>{/if}
             </div>
           {:else}
             {@const r = x.r}

@@ -34,15 +34,18 @@
 </script>
 
 <div class="blocks">
-  {#each (decision.context ?? []).map((block, i) => ({ block, i })).filter((x) => x.block.type !== 'sandbox') as { block, i } (`${decision.id}:${i}`)}
-    <section class="blk" data-block={block.type}>
-      {#if block.type === 'options'}
-        <OptionsBlock {block} name={decision.id} bind:choices />
-      {:else if BLOCKS[block.type]}
-        {@const Block = BLOCKS[block.type]}
-        <Block {block} {decision} {onjump} />
-      {/if}
-    </section>
+  {#each decision.context ?? [] as block, i (`${decision.id}:${i}`)}
+    <!-- The sandbox block is the card's own (DecisionCard renders it); no empty box for it. -->
+    {#if block.type !== 'sandbox'}
+      <section class="blk" data-block={block.type}>
+        {#if block.type === 'options'}
+          <OptionsBlock {block} name={decision.id} bind:choices />
+        {:else if BLOCKS[block.type]}
+          {@const Block = BLOCKS[block.type]}
+          <Block {block} {decision} {onjump} />
+        {/if}
+      </section>
+    {/if}
   {/each}
 </div>
 
