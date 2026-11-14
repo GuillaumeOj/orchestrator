@@ -689,9 +689,17 @@ fn a_sandbox_change_rewrites_running_agents_settings() {
     std::fs::create_dir_all(rt.cfg.paths.agent_dir("a1")).unwrap();
     let a = rt.sandbox_add("project", Some(&p.id), "network", Some("api.github.com"), None, None).unwrap();
     assert_eq!(a["running"], 1);
-    let settings: Value =
-        serde_json::from_str(&std::fs::read_to_string(rt.cfg.paths.agent_dir("a1").join("settings.json")).unwrap())
-            .unwrap();
+    // Written after the policy lock is released, on a thread.
+    let path = rt.cfg.paths.agent_dir("a1").join("settings.json");
+    let t = Instant::now();
+    while !path.exists() && t.elapsed() < Duration::from_secs(10) {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let settings: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert!(
+        rt.db.events(0, Some("a1"), Some("project_file_skipped"), 5).unwrap().is_empty(),
+        "a settings rewrite is no spawn: nothing to log"
+    );
     let hosts = settings["sandbox"]["network"]["allowedDomains"].as_array().unwrap();
     assert!(hosts.contains(&json!("api.github.com")) && hosts.contains(&json!("crates.io")), "{hosts:?}");
     // Another project's change leaves it alone.

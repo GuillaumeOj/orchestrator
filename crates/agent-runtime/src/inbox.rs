@@ -811,11 +811,12 @@ impl Runtime {
         Ok(effect)
     }
 
-    /// Reopens a parked item whose decision could not reach its agent.
-    fn unclaim_parked(&self, id: u64) {
+    /// Reopens a claimed item, as `was` (parked, pending), whose decision
+    /// could not reach its agent or be written.
+    pub(crate) fn unclaim(&self, id: u64, was: InboxStatus) {
         let _ = self.store.write(|s| {
             if let Some(i) = s.inbox.iter_mut().find(|i| i.id == id) {
-                i.status = InboxStatus::Parked;
+                i.status = was;
                 (i.decided_at_ms, i.decision, i.decided_by) = (None, None, None);
                 if let Some(p) = i.payload.as_object_mut() {
                     p.remove("reply");
@@ -858,6 +859,9 @@ impl Runtime {
                 return self.dismiss_ended(&item);
             }
             bail!("Decision {id} is already {:?}", item.status);
+        }
+        if item.kind == crate::policy::sandbox_ask::KIND {
+            return self.decide_sandbox(item, decision, scope, message, by);
         }
         // Checked before claiming: an always-allow that can't become a rule is refused whole.
         let rule_spec = if decision == InboxDecision::AlwaysAllow {
@@ -964,7 +968,7 @@ impl Runtime {
                         }
                         // Nobody was told: the agent still waits, so the item does too.
                         Err(e) => {
-                            self.unclaim_parked(id);
+                            self.unclaim(id, InboxStatus::Parked);
                             let err = format!("{e:#}");
                             let _ = self.db.audit(
                                 by,

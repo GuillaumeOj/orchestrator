@@ -28,7 +28,7 @@ fn applies_label() -> &'static str {
     if SETTINGS_RELOAD_LIVE { "live" } else { "next_start" }
 }
 
-fn kind_of(kind: &str) -> Result<SandboxKind> {
+pub(super) fn kind_of(kind: &str) -> Result<SandboxKind> {
     SandboxKind::parse(kind).ok_or_else(|| anyhow!("kind: network | write | local_ports | unix_socket"))
 }
 
@@ -74,7 +74,7 @@ impl Runtime {
     }
 
     /// The current guard, the files read first when they never were.
-    fn guard(&self, project: Option<&str>) -> Guard {
+    pub(super) fn guard(&self, project: Option<&str>) -> Guard {
         self.policy_ensure(project);
         self.policy.guard()
     }

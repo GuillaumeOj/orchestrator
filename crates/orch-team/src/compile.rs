@@ -24,6 +24,7 @@ pub const COMMON_TOOLS: &[&str] = &[
     "ask_user",
     "read_issue",
     "update_issue",
+    "request_sandbox_access",
 ];
 /// Lead only (FR-401: the protocol is enforced by tool availability).
 pub const LEAD_TOOLS: &[&str] = &[
@@ -57,7 +58,7 @@ pub const OVERWATCH_TOOLS: &[&str] = &[
     "post",
 ];
 /// A solo session (P1).
-pub const SOLO_TOOLS: &[&str] = &["commit", "request_pr", "read_issue", "update_issue"];
+pub const SOLO_TOOLS: &[&str] = &["commit", "request_pr", "read_issue", "update_issue", "request_sandbox_access"];
 /// Every orchestrator tool, in the order orch-mcp lists them.
 pub const ALL_TOOLS: &[&str] = &[
     "commit",
@@ -70,6 +71,7 @@ pub const ALL_TOOLS: &[&str] = &[
     "ask_user",
     "read_issue",
     "update_issue",
+    "request_sandbox_access",
     "create_task",
     "update_task",
     "request_spec_approval",

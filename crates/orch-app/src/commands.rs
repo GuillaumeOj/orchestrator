@@ -431,8 +431,14 @@ pub async fn chat_search(core: CoreState<'_>, query: String, limit: Option<usize
 }
 
 #[tauri::command]
-pub async fn inbox_act(core: CoreState<'_>, item: String, action: String, message: Option<String>) -> Res<Value> {
-    blocking(core, move |c| c.inbox_act(&item, &action, message.as_deref())).await
+pub async fn inbox_act(
+    core: CoreState<'_>,
+    item: String,
+    action: String,
+    scope: Option<String>,
+    message: Option<String>,
+) -> Res<Value> {
+    blocking(core, move |c| c.inbox_act(&item, &action, scope.as_deref(), message.as_deref())).await
 }
 
 // ---- P2 teams

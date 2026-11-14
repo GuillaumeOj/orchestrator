@@ -86,8 +86,8 @@ pub fn verb(d: &Decision) -> &'static str {
     let word = d.decision.as_deref().unwrap_or("");
     let gate = d.gate.unwrap_or("");
     match (d.kind, word) {
-        ("permission", "approve" | "always_allow") => "allowed",
-        ("permission", "reject" | "reply") => "denied",
+        ("permission" | "sandbox", "approve" | "always_allow") => "allowed",
+        ("permission" | "sandbox", "reject" | "reply") => "denied",
         ("gate", "approve") => "approved",
         ("gate", "reply") => "sent back",
         ("gate", "reject") if gate == "spec" => "sent back",
