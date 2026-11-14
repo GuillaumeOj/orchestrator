@@ -1,0 +1,77 @@
+{
+  "fill-specializations": [
+    {
+      "value": {
+        "automatic-gradient": "display-p3:0.12331,0.13618,0.20294,1.00000"
+      }
+    },
+    {
+      "appearance": "dark",
+      "value": {
+        "automatic-gradient": "display-p3:0.08564,0.08592,0.11326,1.00000"
+      }
+    }
+  ],
+  "groups": [
+    {
+      "layers": [
+        {
+          "image-name": "ring-5-green.svg",
+          "name": "ring-5-green"
+        },
+        {
+          "image-name": "ring-4-orange.svg",
+          "name": "ring-4-orange"
+        },
+        {
+          "image-name": "ring-3-teal.svg",
+          "name": "ring-3-teal"
+        },
+        {
+          "image-name": "ring-2-magenta.svg",
+          "name": "ring-2-magenta"
+        },
+        {
+          "image-name": "ring-1-blue.svg",
+          "name": "ring-1-blue"
+        }
+      ],
+      "name": "Ring",
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0.5
+      },
+      "translucency": {
+        "enabled": true,
+        "value": 0.3
+      }
+    },
+    {
+      "layers": [
+        {
+          "image-name": "prompt-cursor.svg",
+          "name": "prompt-cursor"
+        },
+        {
+          "image-name": "prompt-chevron.svg",
+          "name": "prompt-chevron"
+        }
+      ],
+      "name": "Prompt",
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0.5
+      },
+      "translucency": {
+        "enabled": true,
+        "value": 0.3
+      }
+    }
+  ],
+  "supported-platforms": {
+    "circles": [
+      "watchOS"
+    ],
+    "squares": "shared"
+  }
+}
