@@ -701,6 +701,12 @@ impl Core {
     /// the state after the call (usually decided or sent; the effect comes
     /// in the `now` event), plus `effect` as in P4.0.
     pub fn inbox_act(&self, item: &str, action: &str, message: Option<&str>) -> Result<Value> {
+        self.inbox_act_in(item, action, None, message)
+    }
+
+    /// [`Core::inbox_act`] with a scope: where a `sandbox` card's Allow
+    /// writes (`project`, the default, | `global` | `role`).
+    pub fn inbox_act_in(&self, item: &str, action: &str, scope: Option<&str>, message: Option<&str>) -> Result<Value> {
         let rt = self.runtime()?;
         let message = message.filter(|m| !m.trim().is_empty());
         // `decide` returns the lifecycle after the call.
@@ -738,6 +744,19 @@ impl Core {
             };
             let r = rt.decide(n, decision, scope, message)?;
             return Ok(done(r));
+        }
+        // An agent asks for sandbox access (api-contract §5): Allow (scoped),
+        // Deny, Deny with message, or Dismiss.
+        if let Some(n) = item.strip_prefix("sandbox-") {
+            let decision = match action {
+                "approve" => InboxDecision::Approve,
+                "reject" => InboxDecision::Reject,
+                "reply" if message.is_some() => InboxDecision::Reply,
+                "reply" => InboxDecision::Reject,
+                "dismiss" => InboxDecision::Dismiss,
+                other => bail!("{other} does not apply to {item}"),
+            };
+            return Ok(done(rt.decide(n.parse()?, decision, scope.filter(|s| !s.is_empty()), message)?));
         }
         // A planned brief (P4.5): Launch · Edit open the prefilled dialog, Dismiss closes it.
         if let Some(n) = item.strip_prefix("brief-") {
@@ -1585,6 +1604,36 @@ pub(crate) mod tests {
         let rt = core.runtime().unwrap();
         rt.now_pump(true);
         rt.now_snapshot()["decisions"].as_array().cloned().unwrap_or_default()
+    }
+
+    #[test]
+    fn a_sandbox_card_is_allowed_with_a_scope() {
+        let d = tmp();
+        let core = test_core(d.path());
+        let rt = core.runtime().unwrap().clone();
+        rt.store.write(|s| s.agents.insert("a1".into(), record("a1", d.path().join("repo")))).unwrap();
+        let (err, text, _) = rt.on_mcp(
+            &orch_protocol::McpMsg {
+                agent_id: "a1".into(),
+                tool: "request_sandbox_access".into(),
+                arguments: json!({"kind": "network", "value": "api.github.com", "why": "release check"}),
+                deadline_ms: 10_000,
+            },
+            None,
+        );
+        assert!(!err, "{text}");
+        let card = decisions(&core).into_iter().find(|d| d["kind"] == "sandbox").expect("a sandbox card");
+        let id = card["id"].as_str().unwrap().to_string();
+        assert!(id.starts_with("sandbox-"), "{id}");
+        assert_eq!(card["title"], "Sandbox · network api.github.com");
+        assert_eq!((card["level"].as_u64(), card["lifecycle"]["state"].as_str()), (Some(1), Some("parked")));
+        assert_eq!(card["payload"]["why"], "release check");
+        assert!(core.inbox_act_in(&id, "always", None, None).is_err());
+        let r = core.inbox_act_in(&id, "approve", Some("global"), None).unwrap();
+        assert_eq!((r["effect"].as_str(), r["result"]["outcome"]["scope"].as_str()), (Some("allowed"), Some("global")));
+        assert_eq!(r["result"]["outcome"]["entry"]["file"], "global");
+        assert!(core.inbox_act(&id, "reject", None).is_err(), "decided once");
+        core.shutdown();
     }
 
     #[test]

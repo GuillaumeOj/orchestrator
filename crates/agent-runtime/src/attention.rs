@@ -467,6 +467,13 @@ pub mod copy {
         let what = if parked { "permission (parked)" } else { "permission" };
         if input.is_empty() { format!("{what}: {tool}") } else { format!("{what}: {tool} {input}") }
     }
+    pub fn sandbox(kind: &str, value: &str) -> String {
+        if value.is_empty() {
+            format!("sandbox access: {kind}")
+        } else {
+            format!("sandbox access: {kind} {}", cut(value, 60))
+        }
+    }
     pub fn question(first_line: &str) -> String {
         format!("question: {}", cut(first_line, 60))
     }
@@ -828,7 +835,7 @@ impl<'a> Ctx<'a> {
     /// Rule 2: needs you. Ranked permission > question > gate > ask > trust > pane prompt, oldest first.
     fn needs_you(&self, a: &AgentRecord) -> Option<Found> {
         let rank = |it: &InboxItem| match it.kind.as_str() {
-            "permission" => Some(0),
+            "permission" | "sandbox" => Some(0),
             "question" => Some(1),
             "gate" => Some(2),
             _ => None,
@@ -855,6 +862,11 @@ impl<'a> Ctx<'a> {
                     let tool = copy::tool(s("tool"), Some(&short));
                     let (tool, input) = tool.split_once(' ').unwrap_or((&tool, ""));
                     (Status::WaitingForYou, copy::permission(tool, input, it.status == InboxStatus::Parked))
+                }
+                "sandbox" => {
+                    let what = s("value");
+                    let k = s("kind").replace('_', " ");
+                    (Status::WaitingForYou, copy::sandbox(&k, what))
                 }
                 "question" => {
                     let qs = it.payload.get("questions").and_then(Value::as_array);

@@ -859,6 +859,9 @@ impl Runtime {
             }
             bail!("Decision {id} is already {:?}", item.status);
         }
+        if item.kind == crate::policy::sandbox_ask::KIND {
+            return self.decide_sandbox(item, decision, scope, message, by);
+        }
         // Checked before claiming: an always-allow that can't become a rule is refused whole.
         let rule_spec = if decision == InboxDecision::AlwaysAllow {
             let always = item.payload.get("always").or_else(|| item.payload.get("always_pattern"));

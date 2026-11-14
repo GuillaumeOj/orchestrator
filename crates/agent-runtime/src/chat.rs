@@ -88,6 +88,8 @@ pub fn verb(d: &Decision) -> &'static str {
     match (d.kind, word) {
         ("permission", "approve" | "always_allow") => "allowed",
         ("permission", "reject" | "reply") => "denied",
+        ("sandbox", "approve") => "allowed",
+        ("sandbox", "reject" | "reply") => "denied",
         ("gate", "approve") => "approved",
         ("gate", "reply") => "sent back",
         ("gate", "reject") if gate == "spec" => "sent back",

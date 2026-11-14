@@ -178,6 +178,9 @@ pub struct Live {
     /// Started with `--resume` (else a new session, the fresh retry of
     /// FR-415 included): the exit rule of FR-415.
     pub resumed: bool,
+    /// The sandbox allowances its settings had at the spawn (a rewrite of
+    /// `settings.json` reaches it only at its next start).
+    pub sandbox: crate::policy::sandbox::Allowances,
 }
 
 pub struct Runtime {
@@ -317,6 +320,9 @@ pub(crate) struct House {
     /// When the user last retried the decision of each episode key (§3.7):
     /// the episode's clock starts again from then.
     pub(crate) retried_keys: BTreeMap<String, u64>,
+    /// Approved sandbox allowances waiting for their agent's restart (at
+    /// its Stop), by agent: what it is told then.
+    pub(crate) sandbox_restart: BTreeMap<String, Vec<String>>,
 }
 
 /// A hook's event detail (FR-1311, the run report): the common fields, plus
@@ -587,7 +593,7 @@ impl Runtime {
         self.gov.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    fn live_get(&self, id: &str) -> Option<Arc<Live>> {
+    pub(crate) fn live_get(&self, id: &str) -> Option<Arc<Live>> {
         self.live.lock().unwrap_or_else(|e| e.into_inner()).get(id).cloned()
     }
 
@@ -992,6 +998,7 @@ impl Runtime {
         self.cfg.version_range.check(v)?;
         preflight::check_helpers(&self.cfg.helpers)?;
         let (ctx, project) = self.compile_ctx(&rec, mode)?;
+        let sandbox = ctx.sandbox.clone();
         // Registry refs and opted-in Keychain env values, for this spawn's
         // files only (FR-601, NFR-3); a ref that can't work refuses the spawn.
         let mut role = self.resolve_mcp(&rec.role, project.as_deref(), true)?;
@@ -1027,6 +1034,7 @@ impl Runtime {
                 task: AtomicU64::new(rec.team.as_ref().and_then(|t| t.task).unwrap_or(0)),
                 pasted_at_ms: AtomicU64::new(0),
                 resumed,
+                sandbox,
             }),
         );
         self.store.write(|s| {
@@ -1622,6 +1630,7 @@ impl Runtime {
         }
         if matches!(m.event, HookEvent::Stop | HookEvent::StopFailure) {
             self.suspend_if_parked(id);
+            self.sandbox_restart_at_stop(id);
         }
         if replay {
             return (None, vec![]);
@@ -3382,6 +3391,7 @@ pub(crate) mod tests {
             task: AtomicU64::new(task),
             pasted_at_ms: AtomicU64::new(0),
             resumed: false,
+            sandbox: Default::default(),
         };
         rt.live.lock().unwrap().insert(id.into(), Arc::new(live));
     }
