@@ -17,6 +17,7 @@
 
   let scopes = $state(/** @type {any[] | null} */ (null));
   let kinds = $state(/** @type {string[]} */ ([]));
+  let kindsFailed = $state(false); // sandbox_kinds did not answer: rows still list, Add waits
   let loadError = $state('');
   let limits = $state(false);
   let more = $state(/** @type {Set<string>} */ (new Set()));
@@ -48,18 +49,25 @@
 
   async function load() {
     try {
-      const [list, k] = await Promise.all([invoke('sandbox_list', {}), invoke('sandbox_kinds').catch(() => [])]);
+      const [list, k] = await Promise.all([invoke('sandbox_list', {}), invoke('sandbox_kinds').catch(() => null)]);
       const keys = new Set(list.flatMap((f) => (f.entries ?? []).map((e) => rowKey(f, e.id))));
       if (seen) flash([...keys].filter((x) => !seen.has(x)));
       seen = keys;
       scopes = list;
-      kinds = Array.isArray(k) ? k : [];
+      kindsFailed = !Array.isArray(k);
+      if (!kindsFailed) kinds = k;
       loadError = '';
     } catch (e) {
       loadError = errText(e);
     }
   }
   onMount(() => onTopics(['sandbox'], load));
+  async function retryKinds() {
+    try {
+      const k = await invoke('sandbox_kinds');
+      if (Array.isArray(k)) (kinds = k), (kindsFailed = false);
+    } catch {}
+  }
 
   function flash(keys) {
     if (!keys.length) return;
@@ -181,7 +189,7 @@
   }
   // A group with only removed rows is still shown for its Undo line.
   const shownGroups = (f) => {
-    const gs = groups(f, kinds);
+    const gs = groups(f, kindsFailed ? KIND_ORDER : kinds);
     for (const x of ghosts[f.file] ?? []) if (!gs.some((g) => g.kind === x.kind)) gs.push({ kind: x.kind, title: KINDS[x.kind]?.group ?? x.kind, rows: [] });
     return gs.sort((a, b) => KIND_ORDER.indexOf(a.kind) - KIND_ORDER.indexOf(b.kind));
   };
@@ -221,7 +229,8 @@
   {:else if !scopes}
     <p class="muted" role="status">Loading…</p>
   {:else}
-    {#if !kinds.length}<p class="muted" data-no-kinds>This version of Claude Code can't widen the sandbox.</p>{/if}
+    {#if kindsFailed}<p class="err" role="alert" data-kinds-error>Couldn't read what can be allowed. <button class="link" onclick={retryKinds}>Retry</button></p>
+    {:else if !kinds.length}<p class="muted" data-no-kinds>This version of Claude Code can't widen the sandbox.</p>{/if}
     {#each blocks as f (f.file)}
       {@const gs = shownGroups(f)}
       {@const broken = !!f.error}
@@ -288,16 +297,17 @@
 
         {#if form && form.file === f.file}
           {@const k = KINDS[form.kind]}
+          {@const offerPorts = kinds.includes('local_ports') && form.kind !== 'local_ports' && !scopes.find((x) => x.file === form.scope)?.entries?.some((e) => e.kind === 'local_ports')}
           <form class="form" onsubmit={(e) => (e.preventDefault(), add())} aria-label="Add an allowance">
             <label class="fld"><span class="lab">What to allow</span>
               <Select value={form.kind} options={kindOptions} aria-label="What to allow" onchange={(v) => ((form.kind = v), (form.value = ''))} />
             </label>
-            {#if EXAMPLES[form.kind] || form.kind === 'local_ports'}
+            {#if EXAMPLES[form.kind] || offerPorts}
               <div class="chips" data-examples>
                 {#each EXAMPLES[form.kind] ?? [] as ex (ex)}
                   <button type="button" class="chip btnchip" onclick={() => ((form.value = ex), (form.touched = true))}>{ex}</button>
                 {/each}
-                {#if form.kind === 'local_ports'}<button type="button" class="chip btnchip" onclick={() => (form.kind = 'local_ports')}>Allow local ports</button>{/if}
+                {#if offerPorts}<button type="button" class="chip btnchip" onclick={() => ((form.kind = 'local_ports'), (form.value = ''))}>Allow local ports</button>{/if}
               </div>
             {/if}
             {#if k.field}
@@ -336,8 +346,8 @@
             </div>
             <p class="muted help">Permissions decide which calls need approval. The sandbox decides what an agent's shell commands can reach. A rule can't widen the sandbox.</p>
           </form>
-        {:else if kinds.length}
-          <div class="acts"><button class="btn" disabled={broken} title={broken ? fixFirst(f) : undefined} onclick={() => openForm(f)}>Add</button></div>
+        {:else if kinds.length || kindsFailed}
+          <div class="acts"><button class="btn" disabled={broken || kindsFailed} title={broken ? fixFirst(f) : undefined} onclick={() => openForm(f)}>Add</button></div>
         {/if}
         {#if applies[f.file]}<p class="muted help" role="status" data-applies>{applies[f.file]}</p>{/if}
       </div>

@@ -158,6 +158,20 @@ describe('states', () => {
     expect(btn(container, 'Add')).toBeUndefined();
   });
 
+  it('a sandbox_kinds failure still lists the rows, says so with Retry, and holds Add until it answers', async () => {
+    replies.sandbox_kinds = new Error('nope');
+    replies.sandbox_list = [globalScope(), projectScope({ entries: [entry('s1', 'network', 'api.github.com')] })];
+    const { container } = await loaded();
+    expect(text(projectBlock(container))).toContain('api.github.com');
+    expect(text(container.querySelector('[data-kinds-error]'))).toBe("Couldn't read what can be allowed. Retry");
+    expect(container.querySelector('[data-no-kinds]')).toBeNull();
+    expect(btn(projectBlock(container), 'Add').disabled).toBe(true);
+    replies.sandbox_kinds = ['network', 'write'];
+    await fireEvent.click(btn(container, 'Retry'));
+    await waitFor(() => expect(container.querySelector('[data-kinds-error]')).toBeNull());
+    expect(btn(projectBlock(container), 'Add').disabled).toBe(false);
+  });
+
   it('only the kinds the core returns are offered', async () => {
     replies.sandbox_kinds = ['network', 'write'];
     replies.sandbox_list = [globalScope({ entries: [entry('s2', 'local_ports', null)] })];
@@ -275,6 +289,21 @@ describe('add form', () => {
     await fireEvent.click(btn(form, '*.githubusercontent.com'));
     expect(form.querySelector('input[placeholder="api.github.com"]').value).toBe('*.githubusercontent.com');
     await waitFor(() => expect(btn(form, 'Add').disabled).toBe(false), { timeout: 2000 });
+  });
+
+  it('the "Allow local ports" chip switches to local ports, with no value field; hidden once the scope has it', async () => {
+    replies.sandbox_check = (a) => ({ ok: true, value: a.value });
+    const { container } = await loaded();
+    const form = await open(container);
+    await fireEvent.click(btn(form, 'Allow local ports'));
+    expect(form.querySelector('input.mono')).toBeNull();
+    expect(text(form)).toContain('Lets commands listen on local ports');
+    await waitFor(() => expect(btn(form, 'Add').disabled).toBe(false), { timeout: 2000 });
+    cleanup();
+    replies.sandbox_list = [globalScope(), projectScope({ entries: [entry('s2', 'local_ports', null)] })];
+    const again = await loaded();
+    const f2 = await open(again.container);
+    expect(btn(f2, 'Allow local ports')).toBeUndefined();
   });
 
   it('a refused add (race): the form stays with the reason', async () => {

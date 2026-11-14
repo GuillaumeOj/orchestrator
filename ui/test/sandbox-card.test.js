@@ -114,6 +114,26 @@ describe('open card', () => {
     expect(onscope).toHaveBeenCalledWith('role');
   });
 
+  it('no project: "Allow everywhere" is the primary, there is no caret, and `a` decides globally', async () => {
+    const d = card({}, { project: null, role: null });
+    const { container } = render(DecisionCard, { d });
+    expect(buttons(container)).toContain('Allow everywhere');
+    expect(buttons(container)).not.toContain('Allow for this project');
+    expect(container.querySelector('button[aria-label="More ways to allow"]')).toBeNull();
+    replies.inbox_act = { ok: true };
+    app.now.decisions[d.id] = d;
+    decide(d, 'approve');
+    expect(app.pending[0].scope).toBe('global');
+  });
+
+  it('a new Allow attempt clears the last refusal', () => {
+    const d = card();
+    app.now.decisions[d.id] = d;
+    app.decideErrors = { [d.id]: 'Could not allow it: x. Nothing was changed.' };
+    decide(d, 'approve');
+    expect(app.decideErrors[d.id]).toBeUndefined();
+  });
+
   it('the primary, Reject and Reply press their keys', async () => {
     const onkey = vi.fn();
     const { container } = render(DecisionCard, { d: card(), onkey });

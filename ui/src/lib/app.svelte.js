@@ -2379,6 +2379,9 @@ export function jumpTargets() {
  *  Its toast says what will be sent; the effect is said when the core pushes it. */
 export function decide(d, action, message = null, scope = null) {
   if (app.pending.some((p) => p.item === d.id)) return;
+  // A new attempt: the last refusal no longer applies. With no project, an Allow can only be global.
+  if (app.decideErrors[d.id]) delete app.decideErrors[d.id];
+  if (d.kind === 'sandbox' && action === 'approve' && !scope && !d.payload?.project) scope = 'global';
   // Always allow writes a rule: it asks once (Cancel · Always allow), then goes at once, with no undo window.
   if (action === 'always') {
     const project = projectName(d.subject?.project) ?? 'the project';

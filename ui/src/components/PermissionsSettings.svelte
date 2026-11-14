@@ -401,7 +401,6 @@
   <h3>Test a call</h3>
   <div class="file" data-test>
     <p class="muted help">Check what would happen, without running anything.</p>
-    {#key test.tool}
       <form class="testrow" onsubmit={(e) => (e.preventDefault(), runTest())}>
         <label class="fld"><span class="lab">Role</span><Select value={test.role} options={testRoles} aria-label="Role" onchange={(v) => (test.role = v)} /></label>
         <label class="fld"><span class="lab">Tool</span><Select value={test.tool} options={TOOL_OPTIONS.filter((o) => o.value !== 'any')} aria-label="Tool" onchange={(v) => ((test.tool = v), (test.value = ''), (testOut = null))} /></label>
@@ -409,7 +408,6 @@
         <label class="fld"><span class="lab">Project</span><Select value={test.project} options={projectChoices} aria-label="Project" onchange={(v) => (test.project = v)} /></label>
         <button class="btn primary" type="submit" disabled={!test.value.trim() || testing}>Test</button>
       </form>
-    {/key}
     {#if testOut?.ok}
       <div class="result" role="status" data-test-result>
         <p><strong>{testOut.head}</strong> · {testOut.rest}</p>
