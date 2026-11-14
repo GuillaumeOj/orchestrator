@@ -5,11 +5,10 @@
   // while the decision is listed; read-only (`line` given) when a collapsed
   // line expands: no actions but the ones that open something.
   import { untrack } from 'svelte';
-  import { app, now30, openUrl, projectName } from '../../lib/app.svelte.js';
+  import { app, now30, openUrl, projectName, undoSandboxAllow } from '../../lib/app.svelte.js';
   import { byWords, lineMarker, verbText } from '../../lib/chat.js';
   import { clock, dayTime, waited } from '../../lib/format.js';
   import { agentOf, blockOf, deliveryPrimary, isProgramCard, keyless, parked, restarted, subjectLine } from '../../lib/inbox.js';
-  import { errText, invoke } from '../../lib/ipc.js';
   import {
     decidingName,
     decidingShare,
@@ -148,11 +147,28 @@
   const sp = $derived(d.payload ?? {});
   const who = $derived(agentOf(d) ?? sp.agent ?? 'the agent');
   const invalid = $derived(sandbox ? (sp.invalid ?? null) : null);
-  const scopeItems = $derived([{ id: 'global', label: 'Allow everywhere' }, ...(sp.role ? [{ id: 'role', label: `Allow for ${sp.role} only` }] : [])]);
+  const scopeItems = $derived([
+    { id: 'global', label: 'Allow everywhere', help: "Every project's agents." },
+    ...(sp.role ? [{ id: 'role', label: `Allow for ${sp.role} only`, help: `Only ${sp.role} agents of this project.` }] : []),
+  ]);
   const decideError = $derived(app.decideErrors[d.id] ?? '');
   const decidedLine = $derived(sandbox && !live ? decidedText(d, projectName) : null);
-  let removed = $state('');
-  let undoError = $state('');
+  const undo = $derived(app.sandboxUndo[d.id] ?? {});
+  // The agent's reason, quoted, clamped to 3 lines.
+  let whyOpen = $state(false);
+  let whyOver = $state(false);
+  let whyEl = $state(/** @type {HTMLElement | undefined} */ (undefined));
+  $effect(() => {
+    sp.why;
+    if (!whyEl) return;
+    const measure = () => {
+      if (!whyOpen) whyOver = whyEl.scrollHeight > whyEl.clientHeight + 1;
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(whyEl);
+    return () => ro.disconnect();
+  });
   let caret = $state(/** @type {HTMLElement | undefined} */ (undefined));
   // ⇧a asks for the scope menu.
   $effect(() => {
@@ -161,17 +177,6 @@
       caret.click();
     }
   });
-  /** Undo of an Allow: removes the entry it wrote (only when it created it). */
-  async function undoAllow() {
-    const e = sp.outcome?.entry;
-    undoError = '';
-    try {
-      const r = await invoke('sandbox_remove', { id: e.id, file: e.file });
-      removed = r?.applies === 'next_start' ? `Allowance removed · ${who} keeps it until it next starts` : 'Allowance removed';
-    } catch (err) {
-      undoError = `Could not remove it: ${reason(err)}.`;
-    }
-  }
 
   let text = $state('');
   $effect(() => {
@@ -215,6 +220,13 @@
   {#if d.summary && !d.context?.length}<p class="summary">{d.summary}</p>{/if}
   {#if brief}
     <BriefBody {d} ow={overwatchOf(app.now)} {live} />
+  {:else if sandbox}
+    {#if sp.why}
+      <blockquote class="why-quote" data-why>
+        <p class:clamp={!whyOpen} bind:this={whyEl}>{sp.why}</p>
+        {#if whyOver || whyOpen}<button class="link" aria-expanded={whyOpen} onclick={() => (whyOpen = !whyOpen)}>{whyOpen ? 'Show less' : 'Show more'}</button>{/if}
+      </blockquote>
+    {/if}
   {:else}
     <ContextBlocks decision={d} bind:choices onjump={(id) => onref({ kind: 'chat', id })} />
   {/if}
@@ -227,16 +239,15 @@
   {#if advice}<p class="muted note">{advice}</p>{/if}
   {#if sandbox && live && waitsOnUser}
     {#if state !== 'stale'}<p class="muted note" data-sandbox-help>Widens what {who}'s shell commands can reach. Permissions rules can't do this.</p>{/if}
-    {#if sp.kind === 'network' && isGithub(sp.value)}<p class="muted note" data-github>{GITHUB_LINE}</p>{/if}
     {#if invalid}<p class="invalid" role="alert" data-invalid>Can't be allowed: {invalid}</p>{/if}
     {#if decideError}<p class="err" role="alert">{decideError}</p>{/if}
     {#if state === 'stale'}<p class="muted note">{who} is no longer running. Nothing to retry.</p>{/if}
   {/if}
   {#if decidedLine}
     <p class="decided" data-sandbox-decided>
-      {removed || decidedLine}{#if !removed && sp.outcome?.created}{' · '}<button class="link" aria-label="Undo allowing {sp.value ?? 'local ports'}" onclick={undoAllow}>Undo</button>{/if}
+      {undo.done || decidedLine}{#if !undo.done && sp.outcome?.created}{' · '}<button class="link" aria-label="Undo allowing {sp.value ?? 'local ports'}" onclick={() => undoSandboxAllow(d)}>Undo</button>{/if}
     </p>
-    {#if undoError}<p class="err" role="alert">{undoError}</p>{/if}
+    {#if undo.error}<p class="err" role="alert">{undo.error}</p>{/if}
   {/if}
   {#if replying}
     <div class="reply">
@@ -281,7 +292,8 @@
         <button class="btn" class:ghost={!invalid} use:tooltip={{ label: 'Reply', key: 'y' }} onclick={() => onkey('y')}>Reply</button>
       {/if}
     </div>
-    {#if state !== 'stale'}<p class="muted note" data-sandbox-after>{invalid ? 'The agent is told no. Reply to suggest something narrower.' : `${who} restarts and retries.`}</p>{/if}
+    {#if state !== 'stale'}<p class="muted note" data-sandbox-after>{invalid ? 'The agent is told no. Reply to suggest something narrower.' : `${who} restarts and retries.`}</p>
+    {#if sp.kind === 'network' && isGithub(sp.value)}<p class="muted note" data-github>{GITHUB_LINE}</p>{/if}{/if}
   {:else if acting}
     <div class="actions">
       {#each keyed as x (x.id)}
@@ -446,8 +458,34 @@
     margin: 0;
     padding: var(--space-xs) var(--space-sm);
     color: var(--color-status-error);
+    background: color-mix(in srgb, var(--color-status-error) 10%, transparent);
     border: var(--border-width-default) solid var(--color-status-error);
     border-radius: var(--radius-sm);
+  }
+  .why-quote {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-xs);
+    margin: 0;
+    padding: var(--space-sm) var(--space-md);
+    background: var(--color-surface-pane);
+    border: var(--border-width-default) solid var(--color-border-subtle);
+    border-left: 2px solid var(--color-border-strong);
+    border-radius: var(--radius-sm);
+  }
+  .why-quote p {
+    margin: 0;
+    white-space: pre-wrap;
+  }
+  .why-quote p.clamp {
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .why-quote .link {
+    align-self: flex-start;
   }
   .err {
     border: 0;

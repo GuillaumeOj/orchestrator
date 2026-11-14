@@ -93,6 +93,7 @@ export const app = $state({
   settingsSection: /** @type {string | null} */ (null),
   toasts: [],
   pending: [], // decisions in their undo window: { item, card, action, message, scope, at, toast }
+  sandboxUndo: /** @type {Record<string, { done?: string, error?: string }>} */ ({}), // an Allow's Undo, by decision id
   decideErrors: /** @type {Record<string, string>} */ ({}), // a refused sandbox Allow, by decision id
   // What the Inspector shows when no agent pane has focus (D10): set by the
   // sidebar, the palette and Mission control. { kind: 'agent' | 'run' | 'decision', id }
@@ -2497,6 +2498,20 @@ export function decisionPushed(prev, d) {
   else if (d.lifecycle.effect === 'pr_opened' && d.lifecycle.effect_detail)
     toast(text, { action: { label: 'Open PR', run: () => openUrl(d.lifecycle.effect_detail) } });
   else toast(text);
+}
+
+/** Undo of a sandbox Allow: removes the entry it wrote; the card and its line read `app.sandboxUndo`. */
+export async function undoSandboxAllow(d) {
+  const e = d.payload?.outcome?.entry;
+  const who = d.subject?.agent ?? d.payload?.agent ?? 'the agent';
+  try {
+    const r = await invoke('sandbox_remove', { id: e.id, file: e.file });
+    const done =
+      r?.applies === 'next_start' ? `Allowance removed · ${who} keeps it until it next starts` : 'Allowance removed';
+    app.sandboxUndo = { ...app.sandboxUndo, [d.id]: { done } };
+  } catch (err) {
+    app.sandboxUndo = { ...app.sandboxUndo, [d.id]: { error: `Could not remove it: ${reasonOf(err)}.` } };
+  }
 }
 
 /** A decision left the open list (its final upsert came first, T-35): ours

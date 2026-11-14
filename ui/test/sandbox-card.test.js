@@ -63,6 +63,7 @@ beforeEach(() => {
   app.pending = [];
   app.toasts = [];
   app.decideErrors = {};
+  app.sandboxUndo = {};
 });
 afterEach(cleanup);
 
@@ -97,7 +98,7 @@ describe('open card', () => {
     expect(text(container)).toContain('shop-api · solo');
     await fireEvent.click(container.querySelector('button[aria-label="More ways to allow"]'));
     const items = [...document.querySelectorAll('[role="menuitem"]')].map(text);
-    expect(items).toEqual(['Allow everywhere']);
+    expect(items).toEqual(["Allow everywhereEvery project's agents."]);
   });
 
   it('the caret menu offers everywhere and the role, and passes the scope', async () => {
@@ -105,7 +106,10 @@ describe('open card', () => {
     const { container } = render(DecisionCard, { d: card(), onscope });
     await fireEvent.click(container.querySelector('button[aria-label="More ways to allow"]'));
     const items = [...document.querySelectorAll('[role="menuitem"]')];
-    expect(items.map(text)).toEqual(['Allow everywhere', 'Allow for back only']);
+    expect(items.map(text)).toEqual([
+      "Allow everywhereEvery project's agents.",
+      'Allow for back onlyOnly back agents of this project.',
+    ]);
     await fireEvent.click(items[1]);
     expect(onscope).toHaveBeenCalledWith('role');
   });
@@ -217,6 +221,29 @@ describe('decided', () => {
       expect(container.querySelector('[role="alert"]').textContent).toBe('Could not remove it: no entry s4.'),
     );
     expect(buttons(container)).toContain('Undo');
+  });
+
+  it('the collapsed line carries the decided text and Undo; no Undo for an existing allowance', async () => {
+    replies.sandbox_remove = { removed: {}, applies: 'next_start', running: 0 };
+    const mk = (d) => ({ id: 'sandbox-7', key: 'k', d, entry: {}, line });
+    const { container } = render(ChatLine, { item: mk(settled('project')) });
+    expect(text(container.querySelector('[data-sandbox-line]'))).toBe('Allowed for shop-api by you');
+    await fireEvent.click(container.querySelector('[data-sandbox-undo]'));
+    await waitFor(() =>
+      expect(text(container.querySelector('[data-sandbox-line]'))).toBe(
+        'Allowance removed · back-1 keeps it until it next starts',
+      ),
+    );
+    expect(container.querySelector('[data-sandbox-undo]')).toBeNull();
+    cleanup();
+    const again = render(ChatLine, { item: mk({ ...settled('project', false), id: 'sandbox-8' }) });
+    expect(text(again.container.querySelector('[data-sandbox-line]'))).toBe('Already allowed for shop-api');
+    expect(again.container.querySelector('[data-sandbox-undo]')).toBeNull();
+  });
+
+  it('the reason is quoted on the card', () => {
+    const { container } = render(DecisionCard, { d: card() });
+    expect(text(container.querySelector('[data-why]'))).toBe('The release check needs the GitHub API.');
   });
 
   it('the chat line says allowed / denied with the card inside', () => {

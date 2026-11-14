@@ -327,7 +327,7 @@
         {#each list as x, i (x.ghost ? `g:${x.ghost.id}` : x.r.id)}
           {#if x.ghost}
             <div class="rule removed" data-removed={x.ghost.id}>
-              <span class="muted">Removed {x.ghost.summary}</span>
+              <span class="muted">Removed {x.ghost.summary} ·</span>
               <button class="link" aria-label="Undo removing {x.ghost.summary}" onclick={() => undoRule(x.ghost)}>Undo</button>
             </div>
           {:else}
@@ -609,9 +609,13 @@
     border-radius: var(--radius-md);
   }
   .fld {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-xxs);
+    display: grid;
+    grid-template-columns: 180px minmax(0, 1fr);
+    align-items: center;
+    gap: var(--space-sm);
+  }
+  .form .help {
+    padding-left: calc(180px + var(--space-sm));
   }
   .acts,
   .check {

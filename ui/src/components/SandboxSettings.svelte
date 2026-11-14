@@ -252,7 +252,7 @@
             {#each withGhosts(f, g) as x (x.ghost ? `g:${x.ghost.id}` : x.r.builtin ? `b:${x.r.source}:${x.r.value}` : x.r.id)}
               {#if x.ghost}
                 <div class="item removed" data-removed={x.ghost.id}>
-                  <span class="muted">Removed {entryText(x.ghost)}</span>
+                  <span class="muted">Removed {entryText(x.ghost)} ·</span>
                   <button class="link" aria-label="Undo removing {entryText(x.ghost)}" onclick={() => undo(f, x.ghost)}>Undo</button>
                   {#if rowErr[rowKey(f, x.ghost.id)]}<span class="err" role="alert">{rowErr[rowKey(f, x.ghost.id)]}</span>{/if}
                 </div>
@@ -299,7 +299,10 @@
             {/if}
             {#if k.field}
               <label class="fld"><span class="lab">{k.field}</span>
-                <input class="field mono" bind:value={form.value} placeholder={k.placeholder} aria-invalid={check.state === 'bad' || (form.touched && !value) ? 'true' : undefined} oninput={() => (form.touched = true)} />
+                <span class="inp">
+                  <input class="field mono" bind:value={form.value} placeholder={k.placeholder} aria-invalid={check.state === 'bad' || (form.touched && !value) ? 'true' : undefined} oninput={() => (form.touched = true)} />
+                  {#if check.state === 'ok' && check.value === value}<span class="ok" role="status" aria-label="Valid">✓</span>{/if}
+                </span>
               </label>
               <p class="muted help">{k.help}</p>
             {:else}
@@ -309,7 +312,7 @@
             {#if check.state === 'checking'}<p class="muted help" role="status">Checking…</p>
             {:else if check.state === 'bad'}<p class="err help" role="alert">{check.reason}</p>
             {:else if check.state === 'ok' && k.field && check.value !== value}<p class="muted help" role="status">Will be saved as <code>{check.value}</code></p>
-            {:else if check.state === 'ok'}<p class="ok help" role="status" aria-label="Valid">✓</p>{/if}
+            {/if}
             <label class="fld"><span class="lab">Applies to</span>
               <Select value={form.scope} options={scopeOptions} aria-label="Applies to" onchange={(v) => ((form.scope = v), (form.role = ''))} />
             </label>
@@ -493,9 +496,29 @@
     border-radius: var(--radius-md);
   }
   .fld {
+    display: grid;
+    grid-template-columns: 180px minmax(0, 1fr);
+    align-items: center;
+    gap: var(--space-sm);
+  }
+  .form .help {
+    padding-left: calc(180px + var(--space-sm));
+  }
+  .inp {
+    position: relative;
     display: flex;
-    flex-direction: column;
-    gap: var(--space-xxs);
+  }
+  .inp .field {
+    flex: 1;
+    min-width: 0;
+  }
+  .inp .ok {
+    position: absolute;
+    right: var(--space-sm);
+    top: 50%;
+    transform: translateY(-50%);
+    margin: 0;
+    padding: 0;
   }
   .acts {
     display: flex;
