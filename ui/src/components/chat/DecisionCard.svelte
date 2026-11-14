@@ -21,7 +21,7 @@
     SOURCES_SHOWN,
   } from '../../lib/overwatch.js';
   import { programTag } from '../../lib/program.js';
-  import { cardSubject, decidedText, GITHUB_LINE, isGithub, reason, cardTitle as sandboxTitle } from '../../lib/sandbox.js';
+  import { cardSubject, decidedText, GITHUB_LINE, isGithub, cardTitle as sandboxTitle } from '../../lib/sandbox.js';
   import { decisionKind, LIFECYCLE } from '../../lib/status.js';
   import { tooltip } from '../../lib/tooltip.js';
   import ContextBlocks from '../ContextBlocks.svelte';

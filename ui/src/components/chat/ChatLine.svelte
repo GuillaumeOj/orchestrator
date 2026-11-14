@@ -107,6 +107,7 @@
       <span class="tail muted" data-sandbox-line>{allowUndo.done ?? allowed}</span>
       {#if !allowUndo.done && item.d.payload?.outcome?.created}<button class="chip link" data-sandbox-undo aria-label="Undo allowing {item.d.payload.value ?? 'local ports'}" onclick={() => undoSandboxAllow(item.d)}>Undo</button>{/if}
     {/if}
+    {#if allowUndo.error}<span class="err" role="alert">{allowUndo.error}</span>{/if}
     {#if chip}<button class="chip link" data-undo-run onclick={press} aria-label={line.undo.label} use:tooltip={{ label: chip.replace(/ u$/, ''), key: 'u' }}>{chip.replace(/ u$/, '')}</button>{/if}
     <span class="at muted">{undone || clock(line.at_ms, now)}</span>
   </div>
