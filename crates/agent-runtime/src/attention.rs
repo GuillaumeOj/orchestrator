@@ -467,12 +467,9 @@ pub mod copy {
         let what = if parked { "permission (parked)" } else { "permission" };
         if input.is_empty() { format!("{what}: {tool}") } else { format!("{what}: {tool} {input}") }
     }
-    pub fn sandbox(kind: &str, value: &str) -> String {
-        if value.is_empty() {
-            format!("sandbox access: {kind}")
-        } else {
-            format!("sandbox access: {kind} {}", cut(value, 60))
-        }
+    /// `what`: [`crate::policy::sandbox_ask::label`].
+    pub fn sandbox(what: &str) -> String {
+        format!("sandbox access: {}", cut(what, 72))
     }
     pub fn question(first_line: &str) -> String {
         format!("question: {}", cut(first_line, 60))
@@ -864,9 +861,10 @@ impl<'a> Ctx<'a> {
                     (Status::WaitingForYou, copy::permission(tool, input, it.status == InboxStatus::Parked))
                 }
                 "sandbox" => {
-                    let what = s("value");
-                    let k = s("kind").replace('_', " ");
-                    (Status::WaitingForYou, copy::sandbox(&k, what))
+                    let value = it.payload.get("value").and_then(Value::as_str);
+                    let what = crate::policy::sandbox::SandboxKind::parse(s("kind"))
+                        .map_or_else(|| s("kind").to_string(), |k| crate::policy::sandbox_ask::label(k, value));
+                    (Status::WaitingForYou, copy::sandbox(&what))
                 }
                 "question" => {
                     let qs = it.payload.get("questions").and_then(Value::as_array);
@@ -1206,7 +1204,7 @@ impl<'a> Ctx<'a> {
         let facts = crate::blocker::Facts {
             state: a.tracker.state,
             crashed: !live && crate::startup::crashed(a),
-            parked: self.items(&a.id).iter().any(|it| it.kind == "permission" && it.status == InboxStatus::Parked),
+            parked: self.items(&a.id).iter().any(|it| it.status == InboxStatus::Parked),
             hold: self.entries.get(a.id.as_str()).map(|(_, e)| crate::blocker::hold_of(&e.reason)),
             unacked: self.i.unacked.contains(&a.id),
             typing: self.i.typing.contains(&a.id),

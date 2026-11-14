@@ -64,11 +64,7 @@ impl Runtime {
         let hold = self.with_governor(|g| {
             g.queue().iter().find(|e| e.agent.0 == rec.id).map(|e| crate::blocker::hold_of(&e.reason))
         });
-        let parked = self.store.read(|s| {
-            s.inbox.iter().any(|i| {
-                i.kind == "permission" && i.status == InboxStatus::Parked && i.agent_id.as_deref() == Some(&rec.id)
-            })
-        });
+        let parked = self.is_parked(&rec.id);
         crate::blocker::of(&crate::blocker::Facts {
             state: rec.tracker.state,
             crashed: !live && crate::startup::crashed(rec),

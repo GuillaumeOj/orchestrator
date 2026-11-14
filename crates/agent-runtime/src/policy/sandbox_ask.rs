@@ -16,8 +16,9 @@ use orch_store::{InboxItem, InboxStatus};
 
 /// The Inbox kind of a request.
 pub const KIND: &str = "sandbox";
-/// `why` is cut past this (the tool's schema says so too).
-pub const WHY_MAX: usize = 500;
+/// `why` is refused past this (the tool's schema says so too): it becomes
+/// the entry's note, which holds as much.
+pub const WHY_MAX: usize = crate::project_files::MAX_NOTE;
 
 pub(crate) const ASKED: &str = "ORCH: asked the user; stop your turn and wait";
 pub(crate) const ALREADY_ASKED: &str = "already asked; stop and wait";
@@ -47,19 +48,22 @@ fn host_covered(allowed: &[String], host: &str) -> bool {
     })
 }
 
-/// `allow` (plus the `base` hosts) already grants `kind` `value`
-/// (`path`: the value's canonical path for write and socket).
+/// `allow` (plus the `role`'s own hosts and write folders) already grants
+/// `kind` `value` (`path`: the value's canonical path for write and socket).
 fn covered(
     allow: &Allowances,
-    base: &[String],
+    role: &crate::role::Role,
     kind: SandboxKind,
     value: Option<&str>,
     path: Option<&std::path::Path>,
 ) -> bool {
     match kind {
-        SandboxKind::Network => host_covered(&allow.network_with(base), value.unwrap_or("")),
+        SandboxKind::Network => host_covered(&allow.network_with(&role.network_allow), value.unwrap_or("")),
         SandboxKind::LocalPorts => allow.local_binding,
-        SandboxKind::Write => path.is_some_and(|p| allow.write.iter().any(|w| p.starts_with(w))),
+        SandboxKind::Write => path.is_some_and(|p| {
+            allow.write.iter().any(|w| p.starts_with(w))
+                || role.extra_write.iter().any(|w| p.starts_with(sandbox::real_lenient(w)))
+        }),
         SandboxKind::UnixSocket => path.is_some_and(|p| allow.unix_sockets.iter().any(|s| s == p)),
     }
 }
@@ -102,11 +106,10 @@ impl Runtime {
         let what = label(kind, value.as_deref());
         // Already in its effective sandbox: maybe not in the settings it runs on yet.
         let effective = self.allowances(rec, project.as_deref());
-        if covered(&effective, &rec.role.network_allow, kind, value.as_deref(), path.as_deref()) {
+        if covered(&effective, &rec.role, kind, value.as_deref(), path.as_deref()) {
             let running = self.live_get(&rec.id).map(|l| l.sandbox.clone());
             let stale = !SETTINGS_RELOAD_LIVE
-                && running
-                    .is_some_and(|r| !covered(&r, &rec.role.network_allow, kind, value.as_deref(), path.as_deref()));
+                && running.is_some_and(|r| !covered(&r, &rec.role, kind, value.as_deref(), path.as_deref()));
             if stale {
                 self.sandbox_restart_due(&rec.id, what);
                 return Ok((format!("{ALREADY_ALLOWED}{RESTART_TO_APPLY}"), json!({"allowed": true, "restart": true})));
@@ -256,15 +259,13 @@ impl Runtime {
                 let added = match added {
                     Ok(a) => a,
                     Err(e) => {
-                        self.reopen(id, was);
+                        self.unclaim(id, was);
                         return Err(e);
                     }
                 };
-                let outcome = json!({"entry": added["entry"].clone().as_object().map(|o| {
-                    let mut o = o.clone();
-                    o.insert("file".into(), added["file"].clone());
-                    Value::Object(o)
-                }), "created": added["created"], "scope": sc});
+                let mut entry = added["entry"].clone();
+                entry["file"] = added["file"].clone();
+                let outcome = json!({"entry": entry, "created": added["created"], "scope": sc});
                 let _ = self.store.write(|s| {
                     if let Some(i) = s.inbox.iter_mut().find(|i| i.id == id) {
                         i.payload["outcome"] = outcome.clone();
@@ -293,12 +294,21 @@ impl Runtime {
                     if let Some(m) = message.filter(|m| !m.trim().is_empty()) {
                         text.push_str(&format!(" The user said: {m}"));
                     }
-                    result["turn"] = json!(self.deliver_user(a, &text)?);
+                    // Nobody was told: the agent still waits, so the item does too.
+                    match self.deliver_user(a, &text) {
+                        Ok(turn) => result["turn"] = json!(turn),
+                        Err(e) => {
+                            self.unclaim(id, was);
+                            return Err(e);
+                        }
+                    }
                 }
                 "denied"
             }
         };
-        self.db.audit(
+        // After the effect (it carries the outcome): a failed log line must
+        // not leave the item decided with no lifecycle.
+        let logged = self.db.audit(
             by,
             agent,
             KIND,
@@ -306,7 +316,10 @@ impl Runtime {
             &word,
             json!({"item": id, "body": item.body, "message": message, "scope": scope, "kind": kind.as_str(),
                    "value": value, "outcome": result.get("outcome")}),
-        )?;
+        );
+        if let Err(e) = logged {
+            eprintln!("warn: sandbox decision {id} not logged: {e:#}");
+        }
         let stage = match effect {
             "dismissed" => Stage::Effect("dismissed", None),
             _ if agent.is_some() => Stage::Sent,
@@ -316,21 +329,7 @@ impl Runtime {
         result["effect"] = json!(effect);
         result["lifecycle"] = self.lifecycle(id);
         self.outcome(&item, by, effect);
-        if effect == "allowed" {
-            self.touch(super::sandbox_rt::SANDBOX_TOPIC);
-        }
         Ok(result)
-    }
-
-    /// Reopens a claimed item whose Approve could not be written.
-    fn reopen(&self, id: u64, was: InboxStatus) {
-        let _ = self.store.write(|s| {
-            if let Some(i) = s.inbox.iter_mut().find(|i| i.id == id) {
-                i.status = was;
-                (i.decided_at_ms, i.decision, i.decided_by) = (None, None, None);
-                i.payload.as_object_mut().map(|o| o.remove("reply"));
-            }
-        });
     }
 }
 
