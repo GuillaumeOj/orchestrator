@@ -255,7 +255,7 @@ fn glob_verdict(ctx: &HardCtx, cwd: &Path, raw: &str) -> Option<HardVerdict> {
 }
 
 /// The canonical path of the longest existing ancestor, with the rest appended.
-fn real_through_links(p: &Path) -> PathBuf {
+pub(crate) fn real_through_links(p: &Path) -> PathBuf {
     let mut rest: Vec<std::ffi::OsString> = vec![];
     let mut cur = p.to_path_buf();
     loop {

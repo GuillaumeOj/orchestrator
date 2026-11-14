@@ -47,11 +47,11 @@ pub const UNSANDBOXED_SYSTEM: &[&str] = &["/Applications", "/opt/homebrew", "/us
 
 /// Path components that hold code run outside the sandbox wherever they
 /// are: git hooks and config (`.git`), Claude Code settings (`.claude`).
-const UNSANDBOXED_NAMES: &[&str] = &[".git", ".claude"];
+pub(crate) const UNSANDBOXED_NAMES: &[&str] = &[".git", ".claude"];
 
 /// Claude Code's rule patterns are gitignore-style: a path with these would
 /// be read as a pattern, and the escaping is not documented.
-const GLOB_CHARS: &[char] = &['*', '?', '[', ']', '{', '}'];
+pub(crate) const GLOB_CHARS: &[char] = &['*', '?', '[', ']', '{', '}'];
 
 /// What a project file may not touch.
 #[derive(Clone, Debug)]
@@ -73,7 +73,7 @@ pub struct Bounds {
 }
 
 /// `rel` joined to `home`, plus the real path behind each that is a symlink.
-fn guarded<'a>(home: &Path, rel: impl Iterator<Item = &'a str>) -> Vec<PathBuf> {
+pub(crate) fn guarded<'a>(home: &Path, rel: impl Iterator<Item = &'a str>) -> Vec<PathBuf> {
     let mut out = Vec::new();
     for c in rel.map(|p| home.join(p)) {
         let r = real(&c);
@@ -108,7 +108,7 @@ impl Bounds {
 }
 
 /// `p` with every component lowercased, for case-insensitive comparison.
-fn fold(p: &Path) -> PathBuf {
+pub(crate) fn fold(p: &Path) -> PathBuf {
     p.components().map(|c| c.as_os_str().to_string_lossy().to_lowercase()).collect()
 }
 
