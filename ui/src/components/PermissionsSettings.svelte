@@ -22,7 +22,7 @@
     testResult,
     WARNINGS_SHOWN,
   } from '../lib/policy.js';
-  import { reason } from '../lib/sandbox.js';
+  import { fixFirst, reason } from '../lib/sandbox.js';
   import Select from './Select.svelte';
 
   const EFFECTS = [
@@ -74,7 +74,6 @@
   onMount(() => () => timers.forEach(clearTimeout));
   const key = (r) => `${r.file}:${r.id}`;
   const rulesOf = (f) => (rules ?? []).filter((r) => r.file === f.file);
-  const fixFirst = (f) => `Fix the file first: line ${f.error.line}.`;
   const scopeOf = (file) => (file === 'global' ? { scope: 'global', scope_id: null } : { scope: 'project', scope_id: file.replace(/^project:/, '') });
 
   async function loadRules() {

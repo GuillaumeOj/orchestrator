@@ -1,3 +1,5 @@
+import { errText } from './ipc.js';
+
 // Sandbox allowances (allow-fine-tune-sandbox-permissions, ux-flows §1–§3): labels, the
 // add form's fields, the applies line. Pure; the core validates every value.
 
@@ -114,4 +116,4 @@ export function decidedText(d, projectName) {
 }
 
 /** An error's sentence without its final period, to put one after it ("Could not add it: {reason}."). */
-export const reason = (e) => String(typeof e === 'string' ? e : (e?.message ?? e)).replace(/\.$/, '');
+export const reason = (e) => errText(e).replace(/\.$/, '');
