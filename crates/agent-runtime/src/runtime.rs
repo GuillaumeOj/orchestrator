@@ -1630,7 +1630,7 @@ impl Runtime {
         }
         if matches!(m.event, HookEvent::Stop | HookEvent::StopFailure) {
             self.suspend_if_parked(id);
-            self.sandbox_restart_at_stop(id);
+            self.sandbox_restart_now(id);
         }
         if replay {
             return (None, vec![]);

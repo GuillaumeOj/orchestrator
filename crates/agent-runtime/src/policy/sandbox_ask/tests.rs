@@ -54,10 +54,8 @@ fn labels_and_the_approved_message() {
         approved_message(&["network a.example".into(), "local ports".into()]),
         "ORCH: approved: network a.example, local ports are now allowed by the sandbox. Retry."
     );
-    let allowed = vec!["*.github.com".to_string(), "crates.io".to_string()];
-    assert!(host_covered(&allowed, "api.github.com"));
-    assert!(host_covered(&allowed, "crates.io"));
-    assert!(!host_covered(&allowed, "github.com") && !host_covered(&allowed, "evilgithub.com"));
+    assert_eq!(label_of(&json!({"kind": "network", "value": "a.example"})), "network a.example");
+    assert_eq!(label_of(&json!({"kind": "local_ports", "value": null})), "local ports");
 }
 
 #[test]

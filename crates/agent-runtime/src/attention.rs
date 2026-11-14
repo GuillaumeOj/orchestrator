@@ -860,12 +860,7 @@ impl<'a> Ctx<'a> {
                     let (tool, input) = tool.split_once(' ').unwrap_or((&tool, ""));
                     (Status::WaitingForYou, copy::permission(tool, input, it.status == InboxStatus::Parked))
                 }
-                "sandbox" => {
-                    let value = it.payload.get("value").and_then(Value::as_str);
-                    let what = crate::policy::sandbox::SandboxKind::parse(s("kind"))
-                        .map_or_else(|| s("kind").to_string(), |k| crate::policy::sandbox_ask::label(k, value));
-                    (Status::WaitingForYou, copy::sandbox(&what))
-                }
+                "sandbox" => (Status::WaitingForYou, copy::sandbox(&crate::policy::sandbox_ask::label_of(&it.payload))),
                 "question" => {
                     let qs = it.payload.get("questions").and_then(Value::as_array);
                     let reason = match qs {

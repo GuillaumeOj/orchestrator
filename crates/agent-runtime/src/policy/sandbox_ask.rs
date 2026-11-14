@@ -7,11 +7,12 @@ use orch_protocol::InboxDecision;
 use serde_json::{Value, json};
 
 use super::sandbox::{self, Allowances, SandboxKind};
-use super::sandbox_rt::SETTINGS_RELOAD_LIVE;
+use super::sandbox_rt::{SETTINGS_RELOAD_LIVE, kind_of};
 use crate::inbox::{PRIORITY_BLOCKING, Stage};
 use crate::runtime::Runtime;
 use crate::state::AgentState;
 use crate::store::AgentRecord;
+use crate::team::str_arg;
 use orch_store::{InboxItem, InboxStatus};
 
 /// The Inbox kind of a request.
@@ -40,12 +41,11 @@ pub fn approved_message(labels: &[String]) -> String {
     format!("ORCH: approved: {} {verb} now allowed by the sandbox. Retry.", labels.join(", "))
 }
 
-/// `host` is `allowed` or under one of its `*.` wildcards.
-fn host_covered(allowed: &[String], host: &str) -> bool {
-    allowed.iter().any(|a| {
-        a == host
-            || a.strip_prefix("*.").is_some_and(|suffix| host.strip_suffix(suffix).is_some_and(|h| h.ends_with('.')))
-    })
+/// "network api.github.com" from a `sandbox` item's payload (the raw kind
+/// when it is not one).
+pub fn label_of(p: &Value) -> String {
+    let kind = p.get("kind").and_then(Value::as_str).unwrap_or("");
+    SandboxKind::parse(kind).map_or_else(|| kind.to_string(), |k| label(k, p.get("value").and_then(Value::as_str)))
 }
 
 /// `allow` (plus the `role`'s own hosts and write folders) already grants
@@ -58,7 +58,9 @@ fn covered(
     path: Option<&std::path::Path>,
 ) -> bool {
     match kind {
-        SandboxKind::Network => host_covered(&allow.network_with(&role.network_allow), value.unwrap_or("")),
+        SandboxKind::Network => {
+            super::hard::host_allowed(&allow.network_with(&role.network_allow), value.unwrap_or(""))
+        }
         SandboxKind::LocalPorts => allow.local_binding,
         SandboxKind::Write => path.is_some_and(|p| {
             allow.write.iter().any(|w| p.starts_with(w))
@@ -66,10 +68,6 @@ fn covered(
         }),
         SandboxKind::UnixSocket => path.is_some_and(|p| allow.unix_sockets.iter().any(|s| s == p)),
     }
-}
-
-fn str_arg<'a>(args: &'a Value, k: &str) -> Option<&'a str> {
-    args.get(k).and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty())
 }
 
 fn same_request(i: &InboxItem, agent: &str, kind: SandboxKind, value: Option<&str>) -> bool {
@@ -84,9 +82,7 @@ impl Runtime {
     /// `request_sandbox_access {kind, value?, why}` (api-contract §5): the
     /// text for the agent, or the reason it can never be allowed (an error).
     pub(crate) fn request_sandbox_access(&self, rec: &AgentRecord, args: &Value) -> Result<(String, Value)> {
-        let kind = str_arg(args, "kind")
-            .and_then(SandboxKind::parse)
-            .ok_or_else(|| anyhow!("kind: network | write | local_ports | unix_socket"))?;
+        let kind = kind_of(str_arg(args, "kind").unwrap_or(""))?;
         if !SandboxKind::SUPPORTED.contains(&kind) {
             bail!("{} is not supported by the installed Claude Code", kind.as_str());
         }
@@ -95,8 +91,7 @@ impl Runtime {
             bail!("why: at most {WHY_MAX} characters");
         }
         let project = self.agent_project(rec);
-        self.policy_ensure(project.as_deref());
-        let guard = self.policy.guard();
+        let guard = self.guard(project.as_deref());
         let value =
             sandbox::validate(kind, str_arg(args, "value"), &guard, project.as_deref()).map_err(|r| anyhow!(r))?;
         let path = match value.as_deref() {
@@ -162,16 +157,10 @@ impl Runtime {
         }
     }
 
-    /// The agent's turn ended (Stop): restarts it on its approved allowances.
-    pub(crate) fn sandbox_restart_at_stop(&self, agent: &str) {
-        if self.house().sandbox_restart.contains_key(agent) {
-            self.sandbox_restart_now(agent);
-        }
-    }
-
     /// Restarts `agent` with `--resume` on recompiled settings (a stopped
-    /// one starts on them anyway) and tells it what is now allowed.
-    fn sandbox_restart_now(&self, agent: &str) {
+    /// one starts on them anyway) and tells it what is now allowed; a no-op
+    /// when no approval waits (every Stop calls it).
+    pub(crate) fn sandbox_restart_now(&self, agent: &str) {
         let Some(labels) = self.house().sandbox_restart.remove(agent) else { return };
         // The stop intent is set first: the pump pastes nothing meanwhile,
         // and the turn goes to the respawned process.
@@ -197,37 +186,26 @@ impl Runtime {
             bail!("only the user decides sandbox access");
         }
         let p = &item.payload;
-        let kind = p.get("kind").and_then(Value::as_str).and_then(SandboxKind::parse);
-        let kind = kind.ok_or_else(|| anyhow!("item {id} has no sandbox kind"))?;
-        let value = p.get("value").and_then(Value::as_str).map(str::to_string);
-        let project = p.get("project").and_then(Value::as_str).map(str::to_string);
-        let role = p.get("role").and_then(Value::as_str).map(str::to_string);
-        let why = p.get("why").and_then(Value::as_str).map(str::to_string);
-        let what = label(kind, value.as_deref());
+        let get = |k: &str| p.get(k).and_then(Value::as_str);
+        let kind = get("kind").and_then(SandboxKind::parse).ok_or_else(|| anyhow!("item {id} has no sandbox kind"))?;
+        let (value, project, role, why) = (get("value"), get("project"), get("role"), get("why"));
+        let what = label(kind, value);
         // Checked before claiming: an Approve that can't be written is refused whole.
         let add = match decision {
             InboxDecision::Approve => {
                 let sc = scope.unwrap_or("project");
-                let (file_scope, add_role) = match sc {
-                    "project" => ("project", None),
-                    "global" => ("global", None),
-                    "role" => ("project", role.clone()),
-                    _ => bail!("scope: project | global | role"),
-                };
+                if !matches!(sc, "project" | "global" | "role") {
+                    bail!("scope: project | global | role");
+                }
+                let file_scope = if sc == "global" { "global" } else { "project" };
                 if file_scope == "project" && project.is_none() {
                     bail!("the agent has no project: allow it globally");
                 }
-                self.policy_ensure(project.as_deref());
-                let checked = sandbox::validate(kind, value.as_deref(), &self.policy.guard(), project.as_deref());
-                if let Err(reason) = checked {
-                    let _ = self.store.write(|s| {
-                        if let Some(i) = s.inbox.iter_mut().find(|i| i.id == id) {
-                            i.payload["invalid"] = json!(reason);
-                        }
-                    });
+                if let Err(reason) = sandbox::validate(kind, value, &self.guard(project), project) {
+                    self.set_payload(id, &[("invalid", json!(reason))]);
                     bail!("{reason}");
                 }
-                Some((sc, file_scope, add_role))
+                Some((sc, file_scope, role.filter(|_| sc == "role")))
             }
             InboxDecision::AlwaysAllow => bail!("approve it with a scope instead"),
             _ => None,
@@ -248,30 +226,13 @@ impl Runtime {
         let agent = item.agent_id.as_deref();
         let effect = match add {
             Some((sc, file_scope, add_role)) => {
-                let added = self.sandbox_add(
-                    file_scope,
-                    project.as_deref(),
-                    kind.as_str(),
-                    value.as_deref(),
-                    add_role.as_deref(),
-                    why.as_deref(),
-                );
-                let added = match added {
-                    Ok(a) => a,
-                    Err(e) => {
-                        self.unclaim(id, was);
-                        return Err(e);
-                    }
-                };
+                let added = self
+                    .sandbox_add(file_scope, project, kind.as_str(), value, add_role, why)
+                    .inspect_err(|_| self.unclaim(id, was))?;
                 let mut entry = added["entry"].clone();
                 entry["file"] = added["file"].clone();
                 let outcome = json!({"entry": entry, "created": added["created"], "scope": sc});
-                let _ = self.store.write(|s| {
-                    if let Some(i) = s.inbox.iter_mut().find(|i| i.id == id) {
-                        i.payload["outcome"] = outcome.clone();
-                        i.payload.as_object_mut().map(|o| o.remove("invalid"));
-                    }
-                });
+                self.set_payload(id, &[("outcome", outcome.clone()), ("invalid", Value::Null)]);
                 result["outcome"] = outcome;
                 result["sandbox"] = added;
                 if let Some(a) = agent {
@@ -295,13 +256,7 @@ impl Runtime {
                         text.push_str(&format!(" The user said: {m}"));
                     }
                     // Nobody was told: the agent still waits, so the item does too.
-                    match self.deliver_user(a, &text) {
-                        Ok(turn) => result["turn"] = json!(turn),
-                        Err(e) => {
-                            self.unclaim(id, was);
-                            return Err(e);
-                        }
-                    }
+                    result["turn"] = json!(self.deliver_user(a, &text).inspect_err(|_| self.unclaim(id, was))?);
                 }
                 "denied"
             }
@@ -312,7 +267,7 @@ impl Runtime {
             by,
             agent,
             KIND,
-            value.as_deref().or(Some(kind.as_str())),
+            value.or(Some(kind.as_str())),
             &word,
             json!({"item": id, "body": item.body, "message": message, "scope": scope, "kind": kind.as_str(),
                    "value": value, "outcome": result.get("outcome")}),

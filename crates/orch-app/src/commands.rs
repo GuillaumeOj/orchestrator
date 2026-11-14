@@ -438,7 +438,7 @@ pub async fn inbox_act(
     scope: Option<String>,
     message: Option<String>,
 ) -> Res<Value> {
-    blocking(core, move |c| c.inbox_act_in(&item, &action, scope.as_deref(), message.as_deref())).await
+    blocking(core, move |c| c.inbox_act(&item, &action, scope.as_deref(), message.as_deref())).await
 }
 
 // ---- P2 teams

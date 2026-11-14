@@ -700,13 +700,9 @@ impl Core {
     /// The user's action on a decision (api-contract §4): `{ok, lifecycle}`,
     /// the state after the call (usually decided or sent; the effect comes
     /// in the `now` event), plus `effect` as in P4.0.
-    pub fn inbox_act(&self, item: &str, action: &str, message: Option<&str>) -> Result<Value> {
-        self.inbox_act_in(item, action, None, message)
-    }
-
-    /// [`Core::inbox_act`] with a scope: where a `sandbox` card's Allow
-    /// writes (`project`, the default, | `global` | `role`).
-    pub fn inbox_act_in(&self, item: &str, action: &str, scope: Option<&str>, message: Option<&str>) -> Result<Value> {
+    /// `scope`: where a `sandbox` card's Allow writes (`project`, the
+    /// default, | `global` | `role`); other cards ignore it.
+    pub fn inbox_act(&self, item: &str, action: &str, scope: Option<&str>, message: Option<&str>) -> Result<Value> {
         let rt = self.runtime()?;
         let message = message.filter(|m| !m.trim().is_empty());
         // `decide` returns the lifecycle after the call.
@@ -1528,9 +1524,12 @@ pub(crate) mod tests {
         let al = items.iter().find(|i| i["payload"]["alert"] == "mcp_needs_auth").unwrap().clone();
         assert_eq!((al["level"].as_u64(), al["payload"]["server"].as_str()), (Some(2), Some("penpot")));
         let id = al["id"].as_str().unwrap();
-        assert_eq!(core.inbox_act(id, "reconnect", None).unwrap()["open"], "url");
-        assert_eq!(core.inbox_act(id, "open_settings", None).unwrap(), json!({"open": "settings", "server": "penpot"}));
-        let r = core.inbox_act(id, "dismiss", None).unwrap();
+        assert_eq!(core.inbox_act(id, "reconnect", None, None).unwrap()["open"], "url");
+        assert_eq!(
+            core.inbox_act(id, "open_settings", None, None).unwrap(),
+            json!({"open": "settings", "server": "penpot"})
+        );
+        let r = core.inbox_act(id, "dismiss", None, None).unwrap();
         assert_eq!((r["effect"].as_str(), r["lifecycle"]["state"].as_str()), (Some("dismissed"), Some("dismissed")));
         // A project override (http) gets its own reconnect target.
         let over: orch_team::mcp::McpServer = serde_json::from_value(
@@ -1628,11 +1627,11 @@ pub(crate) mod tests {
         assert_eq!(card["title"], "Sandbox · network api.github.com");
         assert_eq!((card["level"].as_u64(), card["lifecycle"]["state"].as_str()), (Some(1), Some("parked")));
         assert_eq!(card["payload"]["why"], "release check");
-        assert!(core.inbox_act_in(&id, "always", None, None).is_err());
-        let r = core.inbox_act_in(&id, "approve", Some("global"), None).unwrap();
+        assert!(core.inbox_act(&id, "always", None, None).is_err());
+        let r = core.inbox_act(&id, "approve", Some("global"), None).unwrap();
         assert_eq!((r["effect"].as_str(), r["result"]["outcome"]["scope"].as_str()), (Some("allowed"), Some("global")));
         assert_eq!(r["result"]["outcome"]["entry"]["file"], "global");
-        assert!(core.inbox_act(&id, "reject", None).is_err(), "decided once");
+        assert!(core.inbox_act(&id, "reject", None, None).is_err(), "decided once");
         core.shutdown();
     }
 
@@ -1733,10 +1732,10 @@ pub(crate) mod tests {
         assert_eq!((gate["level"].as_u64(), gate["gate"].as_str()), (Some(1), Some("spec")));
         // The spec gate names its feature, so the docs' images can be read.
         assert_eq!(core.gate_detail(gate["id"].as_str().unwrap()).unwrap()["feature_id"], json!(fid));
-        let r = core.inbox_act(gate["id"].as_str().unwrap(), "approve", None).unwrap();
+        let r = core.inbox_act(gate["id"].as_str().unwrap(), "approve", None, None).unwrap();
         assert_eq!(r["lifecycle"]["state"], "sent", "the lead is told");
         assert_eq!(core.state()["features"][0]["run"]["status"], "planning");
-        assert!(core.inbox_act(gate["id"].as_str().unwrap(), "approve", None).is_err(), "decided once");
+        assert!(core.inbox_act(gate["id"].as_str().unwrap(), "approve", None, None).is_err(), "decided once");
         // A feature archived under its team stays listed, flagged, while one
         // of its agents is not deleted; it goes once none is left.
         let mut fr = rt.db.feature(&fid).unwrap().unwrap();
@@ -1833,12 +1832,12 @@ pub(crate) mod tests {
         assert!(core.state().get("inbox").is_none(), "decisions come from the now push");
         assert_eq!(core.state()["agents"][0]["state"], "waiting_for_you");
         let id = item["id"].as_str().unwrap().to_string();
-        assert_eq!(core.inbox_act(&id, "in_pane", None).unwrap()["effect"], "in_pane");
-        assert_eq!(core.inbox_act(&id, "approve", None).unwrap()["effect"], "allowed");
+        assert_eq!(core.inbox_act(&id, "in_pane", None, None).unwrap()["effect"], "in_pane");
+        assert_eq!(core.inbox_act(&id, "approve", None, None).unwrap()["effect"], "allowed");
         assert_eq!(behavior(hook.join().unwrap())["behavior"], "allow");
         // Answered: not counted again as waiting on the user while the next hook is on its way.
         assert_eq!(badge(), 0);
-        assert!(core.inbox_act(&id, "approve", None).is_err());
+        assert!(core.inbox_act(&id, "approve", None, None).is_err());
 
         // Nobody answers within the hold (here 2.5 s of deadline − 2 s): denied and parked.
         let d = behavior(ask("pnpm add y", 2_500));
@@ -1852,8 +1851,8 @@ pub(crate) mod tests {
             (Some("parked"), Some("pnpm add y"))
         );
         assert!(!has_action(&parked, "in_pane"), "parked: no pane answer");
-        assert!(core.inbox_act(parked["id"].as_str().unwrap(), "in_pane", None).is_err());
-        let r = core.inbox_act(parked["id"].as_str().unwrap(), "approve", None).unwrap();
+        assert!(core.inbox_act(parked["id"].as_str().unwrap(), "in_pane", None, None).is_err());
+        let r = core.inbox_act(parked["id"].as_str().unwrap(), "approve", None, None).unwrap();
         assert_eq!(r["effect"], "resumed");
         // The retry runs without a second prompt.
         assert_eq!(behavior(ask("pnpm add y", 30_000))["behavior"], "allow");

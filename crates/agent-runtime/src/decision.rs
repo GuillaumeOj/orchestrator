@@ -397,13 +397,13 @@ fn program_card(kind: &str, p: &Value) -> (String, String, Vec<Value>, Vec<Actio
 /// Allow writes to the project's file by default (`inbox_act` scope:
 /// `project` | `global` | `role`).
 fn sandbox_card(p: &Value, who: &str, parked: bool) -> (String, String, Vec<Value>, Vec<Action>) {
-    let kind = crate::policy::sandbox::SandboxKind::parse(s(p, "kind"));
-    let value = p.get("value").and_then(Value::as_str);
-    let what = kind.map_or_else(|| s(p, "kind").to_string(), |k| crate::policy::sandbox_ask::label(k, value));
+    let what = crate::policy::sandbox_ask::label_of(p);
     let summary = if parked { format!("{who} stopped; it resumes on your answer") } else { cut(s(p, "why"), 120) };
-    let mut ctx = vec![markdown(s(p, "why"), None)];
-    ctx.push(json!({"type": "sandbox", "kind": p.get("kind"), "value": p.get("value"), "project": p.get("project"),
-                    "role": p.get("role"), "invalid": p.get("invalid")}));
+    let ctx = vec![
+        markdown(s(p, "why"), None),
+        json!({"type": "sandbox", "kind": p.get("kind"), "value": p.get("value"), "project": p.get("project"),
+               "role": p.get("role"), "invalid": p.get("invalid")}),
+    ];
     let actions = vec![
         act("approve", "Allow", Some("a")),
         act("reject", "Deny", Some("r")),
