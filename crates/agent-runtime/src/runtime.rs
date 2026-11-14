@@ -191,6 +191,10 @@ pub struct Runtime {
     gov: Mutex<Governor>,
     /// One live-cap change at a time ([`Runtime::set_live_caps`]).
     pub(crate) live_cap_change: Mutex<()>,
+    /// Snapshots of running agents' settings taken so far
+    /// ([`Runtime::rewrite_live_settings`]), and the newest written for each agent.
+    settings_gen: AtomicU64,
+    settings_written: Mutex<BTreeMap<String, u64>>,
     /// FR-203: the base live cap now (the Governor's `LiveCaps` and the
     /// process cap derive from it); [`Runtime::set_live_caps`] changes it.
     base_cap: std::sync::atomic::AtomicU32,
@@ -547,6 +551,8 @@ impl Runtime {
             db,
             gov: Mutex::new(gov),
             live_cap_change: Mutex::new(()),
+            settings_gen: AtomicU64::new(0),
+            settings_written: Mutex::new(BTreeMap::new()),
             base_cap: std::sync::atomic::AtomicU32::new(base_cap),
             usage: Mutex::new(UsageCollector::new()),
             live: Mutex::new(BTreeMap::new()),
@@ -848,6 +854,8 @@ impl Runtime {
             self.parked_at_restart(&report.parked);
             // Injected before the restart and never acknowledged: delivered again.
             self.requeue_injected_unseen(None, "restart");
+            // Approved sandbox allowances whose restart the last run never did.
+            self.sandbox_restarts_after_restart();
             for id in report.to_resume() {
                 if let Err(e) = self.spawn(&id, None) {
                     self.event(&id, "resume_failed", json!(e.to_string()));
@@ -929,13 +937,18 @@ impl Runtime {
 
     /// FR-112: the project's files for this spawn, re-checked; one that now
     /// fails the checks is skipped and logged, never refusing the spawn.
-    fn spawn_project_files(&self, id: &str, project: Option<&str>, home: &Path) -> Vec<SpawnFile> {
+    fn spawn_project_files(&self, id: &str, project: Option<&str>, home: &Path, quiet: bool) -> Vec<SpawnFile> {
+        let log = |reason: &str, project: &str| {
+            if !quiet {
+                self.event(id, "project_file_skipped", json!({"project": project, "reason": reason}));
+            }
+        };
         let Some(id_p) = project else { return vec![] };
         let p = match self.db.project(id_p) {
             Ok(Some(p)) => p,
             Ok(None) => return vec![],
             Err(e) => {
-                self.event(id, "project_file_skipped", json!({"project": id_p, "reason": format!("{e:#}")}));
+                log(&format!("{e:#}"), id_p);
                 return vec![];
             }
         };
@@ -948,13 +961,13 @@ impl Runtime {
         let bounds = match self.project_file_bounds(&p, home) {
             Ok(b) => b,
             Err(e) => {
-                self.event(id, "project_file_skipped", json!({"project": p.id, "reason": format!("{e:#}")}));
+                log(&format!("{e:#}"), &p.id);
                 return vec![];
             }
         };
         let (out, skipped) = project_files::at_spawn(&files, &bounds);
         for why in skipped {
-            self.event(id, "project_file_skipped", json!({"project": p.id, "reason": why}));
+            log(&why, &p.id);
         }
         out
     }
@@ -997,7 +1010,7 @@ impl Runtime {
         let v = preflight::claude_version(&self.cfg.claude)?;
         self.cfg.version_range.check(v)?;
         preflight::check_helpers(&self.cfg.helpers)?;
-        let (ctx, project) = self.compile_ctx(&rec, mode)?;
+        let (ctx, project) = self.compile_ctx(&rec, mode, false)?;
         let sandbox = ctx.sandbox.clone();
         // Registry refs and opted-in Keychain env values, for this spawn's
         // files only (FR-601, NFR-3); a ref that can't work refuses the spawn.
@@ -1052,7 +1065,9 @@ impl Runtime {
 
     /// Everything [`compile`] needs about `rec`'s surroundings (a spawn, a
     /// settings rewrite), and its project.
-    fn compile_ctx(&self, rec: &AgentRecord, mode: SessionMode) -> Result<(CompileCtx, Option<String>)> {
+    /// `quiet`: no `project_file_skipped` events (a rewrite of the settings
+    /// of a running agent, not a spawn).
+    fn compile_ctx(&self, rec: &AgentRecord, mode: SessionMode, quiet: bool) -> Result<(CompileCtx, Option<String>)> {
         let wt = real(&rec.worktree);
         if !wt.is_dir() {
             bail!("worktree {} is missing", wt.display());
@@ -1068,7 +1083,7 @@ impl Runtime {
         let git_common_dir = if overwatch.is_some() { wt.clone() } else { worktree::common_dir(&wt)? };
         let main = real(&rec.repo);
         let project = self.agent_project(rec);
-        let project_files = self.spawn_project_files(id, project.as_deref(), &env.home);
+        let project_files = self.spawn_project_files(id, project.as_deref(), &env.home, quiet);
         let ctx = CompileCtx {
             agent_id: id.into(),
             name: id.into(),
@@ -1098,18 +1113,44 @@ impl Runtime {
     /// Rewrites the `settings.json` of running agents (a sandbox allowance
     /// changed): the agent dir's other files and the process stay as they are.
     /// `project`: only that project's agents (`None`: every agent).
+    ///
+    /// The callers hold the policy write lock: only the allowances are read
+    /// here (the snapshot); the compile and the writes run on a thread after
+    /// the lock is gone, in the order the snapshots were taken.
     pub(crate) fn rewrite_live_settings(&self, project: Option<&str>) {
-        for rec in self.live_in_scope(project) {
-            let done = self.compile_ctx(&rec, SessionMode::Resume(rec.session_id.clone())).and_then(|(ctx, _)| {
-                let c = compile(&rec.role, &ctx);
-                let pretty = serde_json::to_string_pretty(&c.settings)?;
-                crate::compile::write_atomic(&c.settings_path, pretty.as_bytes())?;
-                Ok(())
-            });
-            if let Err(e) = done {
-                eprintln!("warn: settings of {} not rewritten: {e:#}", rec.id);
+        let seq = self.settings_gen.fetch_add(1, Ordering::SeqCst) + 1;
+        let snapshot: Vec<_> = self
+            .live_in_scope(project)
+            .into_iter()
+            .map(|rec| {
+                let allowances = self.allowances(&rec, self.agent_project(&rec).as_deref());
+                (rec, allowances)
+            })
+            .collect();
+        let Some(me) = self.me.upgrade().filter(|_| !snapshot.is_empty()) else { return };
+        std::thread::spawn(move || {
+            // Held through the writes: a newer snapshot's file is never overwritten by an older one.
+            let mut written = me.settings_written.lock().unwrap_or_else(|e| e.into_inner());
+            for (rec, allowances) in snapshot {
+                if written.get(&rec.id).is_some_and(|w| *w >= seq) {
+                    continue;
+                }
+                let done =
+                    me.compile_ctx(&rec, SessionMode::Resume(rec.session_id.clone()), true).and_then(|(mut ctx, _)| {
+                        ctx.sandbox = allowances;
+                        let c = compile(&rec.role, &ctx);
+                        let pretty = serde_json::to_string_pretty(&c.settings)?;
+                        crate::compile::write_atomic(&c.settings_path, pretty.as_bytes())?;
+                        Ok(())
+                    });
+                match done {
+                    Ok(()) => {
+                        written.insert(rec.id.clone(), seq);
+                    }
+                    Err(e) => eprintln!("warn: settings of {} not rewritten: {e:#}", rec.id),
+                }
             }
-        }
+        });
     }
 
     /// `id` is the Overwatch's record (made by its own start, never a

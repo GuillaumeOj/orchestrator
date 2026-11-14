@@ -186,7 +186,10 @@ pub fn form_call(tool: &str, value: &str, home: &std::path::Path) -> Result<(Str
         }
         "webfetch" => {
             let h = form_host(v)?;
-            ("WebFetch".into(), serde_json::json!({"url": format!("https://{}/", h.trim_start_matches("*."))}))
+            if h.starts_with("*.") {
+                return Err("Test a real host, like api.docs.rs: a wildcard isn't a call.".into());
+            }
+            ("WebFetch".into(), serde_json::json!({"url": format!("https://{h}/")}))
         }
         "mcp" => {
             let n = form_mcp(v)?;
@@ -336,6 +339,8 @@ mod tests {
         // policy_test's calls.
         assert_eq!(form_call("bash", "git push", home).unwrap(), ("Bash".into(), json!({"command": "git push"})));
         assert_eq!(form_call("webfetch", "docs.rs", home).unwrap().1, json!({"url": "https://docs.rs/"}));
+        let e = form_call("webfetch", "*.docs.rs", home).unwrap_err();
+        assert_eq!(e, "Test a real host, like api.docs.rs: a wildcard isn't a call.");
         assert_eq!(form_call("read", "~/a", home).unwrap().1, json!({"file_path": "/Users/u/a"}));
         assert_eq!(form_call("mcp", "orch__commit", home).unwrap().0, "mcp__orch__commit");
         assert!(form_call("mcp", "orch", home).is_err() && form_call("any", "", home).is_err());

@@ -142,14 +142,22 @@ impl Runtime {
 
     /// An approved allowance of `agent` waits for a restart: at its Stop,
     /// or now when it is not in a turn. Several coalesce into one restart.
+    /// (The decided item keeps `restart_pending` until then, so a restart of
+    /// the core does not lose it: [`Runtime::sandbox_restarts_after_restart`].)
     pub(crate) fn sandbox_restart_due(&self, agent: &str, what: String) {
-        {
-            let mut h = self.house();
-            let due = h.sandbox_restart.entry(agent.to_string()).or_default();
-            if !due.contains(&what) {
-                due.push(what);
-            }
+        self.sandbox_restart_queue(agent, what);
+        self.sandbox_restart_if_idle(agent);
+    }
+
+    fn sandbox_restart_queue(&self, agent: &str, what: String) {
+        let mut h = self.house();
+        let due = h.sandbox_restart.entry(agent.to_string()).or_default();
+        if !due.contains(&what) {
+            due.push(what);
         }
+    }
+
+    fn sandbox_restart_if_idle(&self, agent: &str) {
         let busy = self.live_get(agent).is_some()
             && self.store.read(|s| s.agents.get(agent).is_some_and(|a| a.tracker.state != AgentState::Idle));
         if !busy {
@@ -162,12 +170,57 @@ impl Runtime {
     /// when no approval waits (every Stop calls it).
     pub(crate) fn sandbox_restart_now(&self, agent: &str) {
         let Some(labels) = self.house().sandbox_restart.remove(agent) else { return };
+        self.sandbox_restart_done(agent);
         // The stop intent is set first: the pump pastes nothing meanwhile,
         // and the turn goes to the respawned process.
         let restarted = !SETTINGS_RELOAD_LIVE && self.suspend_in_background(agent, "sandbox");
         self.event(agent, "sandbox_restart", json!({"allowances": labels, "restarted": restarted}));
         if let Err(e) = self.deliver_user(agent, &approved_message(&labels)) {
             eprintln!("warn: {agent} not told its sandbox allowances: {e:#}");
+        }
+    }
+
+    /// The approved allowances of `agent` are being applied: their items
+    /// no longer wait for a restart.
+    fn sandbox_restart_done(&self, agent: &str) {
+        let pending = |i: &InboxItem| {
+            i.kind == KIND
+                && i.agent_id.as_deref() == Some(agent)
+                && i.payload.get("restart_pending") == Some(&json!(true))
+        };
+        if self.store.read(|s| s.inbox.iter().any(pending)) {
+            let _ = self.store.write(|s| {
+                for i in s.inbox.iter_mut().filter(|i| pending(i)) {
+                    i.payload["restart_pending"] = json!(false);
+                }
+            });
+        }
+    }
+
+    /// The core started: approvals whose restart the last run did not get to
+    /// (`restart_pending` on a decided item) are applied now, one restart
+    /// and one message per agent still there; for an agent that is gone the
+    /// flag is cleared.
+    pub(crate) fn sandbox_restarts_after_restart(&self) {
+        let waiting: Vec<(String, String)> = self.store.read(|s| {
+            s.inbox
+                .iter()
+                .filter(|i| i.kind == KIND && i.payload.get("restart_pending") == Some(&json!(true)))
+                .filter_map(|i| Some((i.agent_id.clone()?, i.payload.get("approved")?.as_str()?.to_string())))
+                .collect()
+        });
+        let agents: std::collections::BTreeSet<&String> = waiting.iter().map(|(a, _)| a).collect();
+        for agent in agents {
+            let there =
+                self.store.read(|s| s.agents.get(agent).is_some_and(|a| a.tracker.state != AgentState::Archived));
+            if !there {
+                self.sandbox_restart_done(agent);
+                continue;
+            }
+            for (_, what) in waiting.iter().filter(|(a, _)| a == agent) {
+                self.sandbox_restart_queue(agent, what.clone());
+            }
+            self.sandbox_restart_if_idle(agent);
         }
     }
 
@@ -232,7 +285,11 @@ impl Runtime {
                 let mut entry = added["entry"].clone();
                 entry["file"] = added["file"].clone();
                 let outcome = json!({"entry": entry, "created": added["created"], "scope": sc});
-                self.set_payload(id, &[("outcome", outcome.clone()), ("invalid", Value::Null)]);
+                let mut keep = vec![("outcome", outcome.clone()), ("invalid", Value::Null)];
+                if agent.is_some() {
+                    keep.extend([("restart_pending", json!(true)), ("approved", json!(what))]);
+                }
+                self.set_payload(id, &keep);
                 result["outcome"] = outcome;
                 result["sandbox"] = added;
                 if let Some(a) = agent {

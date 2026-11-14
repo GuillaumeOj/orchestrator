@@ -208,3 +208,45 @@ fn a_running_agent_restarts_at_its_stop_once_for_every_approval() {
     assert_eq!(ev[0].detail["restarted"], true);
     assert!(project_text(&rt, &p).contains("local_ports = true"));
 }
+
+#[test]
+fn an_approval_survives_a_core_restart_before_the_agents_stop() {
+    let (d, _r, rt, _p) = setup();
+    insert_test_live(&rt, "a1", None, 0, d.path());
+    std::fs::create_dir_all(rt.cfg.paths.agent_dir("a1")).unwrap();
+    rt.store.write(|s| s.agents.get_mut("a1").unwrap().tracker.state = AgentState::Working).unwrap();
+    let a = ask(&rt, json!({"kind": "network", "value": "a.example", "why": "x"})).2["item"].as_u64().unwrap();
+    let b = ask(&rt, json!({"kind": "local_ports", "why": "x"})).2["item"].as_u64().unwrap();
+    rt.decide(a, InboxDecision::Approve, None, None).unwrap();
+    rt.decide(b, InboxDecision::Approve, None, None).unwrap();
+    // Kept on the decided items, not only in memory.
+    for (id, what) in [(a, "network a.example"), (b, "local ports")] {
+        let p = item(&rt, id).payload;
+        assert_eq!((p["restart_pending"].clone(), p["approved"].as_str()), (json!(true), Some(what)));
+    }
+    // The core restarted: the in-memory list is gone, the items are not.
+    rt.house().sandbox_restart.clear();
+    rt.sandbox_restarts_after_restart();
+    assert_eq!(rt.house().sandbox_restart["a1"], ["network a.example", "local ports"]);
+    assert!(turns(&rt).is_empty(), "still in its turn: it waits for its Stop");
+    rt.on_hook(&hook("Stop", json!({})), None);
+    assert_eq!(turns(&rt), ["ORCH: approved: network a.example, local ports are now allowed by the sandbox. Retry."]);
+    assert_eq!(item(&rt, a).payload["restart_pending"], false);
+    assert_eq!(item(&rt, b).payload["restart_pending"], false);
+    // Done: another start does nothing.
+    rt.sandbox_restarts_after_restart();
+    assert!(rt.house().sandbox_restart.is_empty());
+
+    // An agent that is gone: the flag is cleared, nobody is told.
+    let c = ask(&rt, json!({"kind": "network", "value": "c.example", "why": "x"})).2["item"].as_u64().unwrap();
+    // (The restart above stopped its process: a new one, in a turn again.)
+    insert_test_live(&rt, "a1", None, 0, d.path());
+    rt.store.write(|s| s.agents.get_mut("a1").unwrap().tracker.state = AgentState::Working).unwrap();
+    rt.decide(c, InboxDecision::Approve, None, None).unwrap();
+    assert_eq!(item(&rt, c).payload["restart_pending"], true);
+    rt.house().sandbox_restart.clear();
+    rt.store.write(|s| s.agents.get_mut("a1").unwrap().tracker.state = AgentState::Archived).unwrap();
+    let before = turns(&rt).len();
+    rt.sandbox_restarts_after_restart();
+    assert_eq!((turns(&rt).len(), item(&rt, c).payload["restart_pending"].clone()), (before, json!(false)));
+}

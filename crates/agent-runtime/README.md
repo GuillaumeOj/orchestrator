@@ -254,6 +254,9 @@ ignored · `SessionEnd` ignored (the process exit and the core's intent decide).
     <value>[, …] is (are) now allowed by the sandbox. Retry." resumes it with `--resume` on recompiled
     settings. Approvals before its Stop coalesce into one restart and one message (event
     `sandbox_restart`). With `SETTINGS_RELOAD_LIVE` the message is sent without the restart.
+    The approved item keeps `payload.restart_pending: true` (and `approved`, its label) until the
+    restart happens, so a restart of the core does not lose it: `recover` restarts or tells each
+    agent still there (one message per agent), then clears the flag.
 - **Who decided** (FR-709): every answer is one audit row whose actor is `user`, `pane`, `rule:<id>`,
   `expired` or `core`, the item keeps `decided_by`, and an `inbox_outcome` event `{item, kind, tool,
   decided_by, effect, created_at_ms, at_ms}` is recorded (and given to `set_outcome_sink`).
@@ -708,6 +711,11 @@ new place, the known worktrees are repaired (targeted) and re-locked.
   autonomous still counts as unmodified.
 
 ## Known gaps
+
+- **Sandbox approval racing a spawn**: an approval landing between a spawn's settings compile and
+  its insertion among the live agents is treated as "not running": the agent is told to retry
+  without a restart and its new process lacks the allowance until its next restart. The window is a
+  few milliseconds.
 
 - **Commits from a sandboxed worktree fail** (worked around: the core commits, see above) (measured 2026-10-21, Claude Code 2.1.302): sandboxed
   Bash cannot create `<repo>/.git/worktrees/<name>/index.lock`, whatever `allowWrite` says (plain
