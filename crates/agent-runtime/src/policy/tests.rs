@@ -567,3 +567,163 @@ fn a_commented_rule_is_valid_toml_once_uncommented() {
     assert_eq!(doc.rules.len(), 1);
     assert_eq!(doc.rules[0].pattern, rule.pattern);
 }
+
+#[test]
+fn sandbox_commands_add_list_check_and_remove() {
+    let (_d, rt) = test_runtime(true);
+    let (_r, p) = project(&rt);
+    let _ = rt.touched();
+    assert_eq!(rt.sandbox_kinds(), ["network", "write", "local_ports", "unix_socket"]);
+    // Check: no write, the normalised value or the reason.
+    let c = rt.sandbox_check("network", Some("API.github.com"), "project", Some(&p.id)).unwrap();
+    assert_eq!(c, json!({"ok": true, "value": "api.github.com"}));
+    let c = rt.sandbox_check("write", Some("~/.ssh"), "global", None).unwrap();
+    assert_eq!(c["ok"], false);
+    assert!(c["reason"].as_str().unwrap().contains("credentials"), "{c}");
+    let c = rt.sandbox_check("write", Some(&p.path.join("src").display().to_string()), "project", Some(&p.id));
+    assert!(c.unwrap()["reason"].as_str().unwrap().contains("main checkout"));
+    assert!(rt.sandbox_check("bogus", None, "global", None).is_err());
+    assert!(!rt.global_policy_path().exists(), "check writes nothing");
+
+    // Add: in the project's file, logged, the topic touched.
+    let a = rt
+        .sandbox_add("project", Some(&p.id), "network", Some("api.github.com"), Some("back"), Some("release"))
+        .unwrap();
+    assert_eq!((a["entry"]["id"].as_str(), a["entry"]["kind"].as_str()), (Some("s1"), Some("network")));
+    assert_eq!(
+        (a["file"].as_str(), a["applies"].as_str()),
+        (Some(format!("project:{}", p.id).as_str()), Some("next_start"))
+    );
+    assert_eq!((a["running"].as_u64(), a["created"].as_bool()), (Some(0), Some(true)));
+    assert_eq!(a["entry"]["source"], "file");
+    assert!(rt.touched().contains(&"sandbox".to_string()));
+    let text = std::fs::read_to_string(rt.project_policy_path(&p)).unwrap();
+    assert!(text.contains("network = \"api.github.com\"") && text.contains("note = \"release\""), "{text}");
+    let log = rt.db.audit_log(None, 5).unwrap();
+    assert!(log.iter().any(|e| e.action == "sandbox_add" && e.actor == "user"));
+    // A duplicate returns the existing entry; a forbidden value is refused with the reason.
+    let dup = rt.sandbox_add("project", Some(&p.id), "network", Some("api.github.com"), Some("back"), None).unwrap();
+    assert_eq!((dup["entry"]["id"].as_str(), dup["created"].as_bool()), (Some("s1"), Some(false)));
+    let e = rt.sandbox_add("global", None, "network", Some("*"), None, None).unwrap_err();
+    assert!(e.to_string().contains("never allowed"), "{e}");
+    let g = rt.sandbox_add("global", None, "local_ports", None, None, None).unwrap();
+    assert_eq!((g["entry"]["id"].as_str(), g["entry"]["value"].clone()), (Some("s2"), Value::Null));
+
+    // A hand-written forbidden entry: skipped with a warning on the file.
+    let gp = rt.global_policy_path();
+    let mut t = std::fs::read_to_string(&gp).unwrap();
+    t.push_str("\n[[sandbox]]\nwrite = \"~/.ssh\"\n");
+    std::fs::write(&gp, t).unwrap();
+    rt.policy_reload(&Scope::Global);
+    let list = rt.sandbox_list(None);
+    assert_eq!(list.len(), 2);
+    let (gl, pl) = (&list[0], &list[1]);
+    assert_eq!((gl["scope"].as_str(), gl["file"].as_str()), (Some("global"), Some("global")));
+    assert_eq!(gl["entries"].as_array().unwrap().len(), 1, "the forbidden one is skipped");
+    assert_eq!(gl["warnings"][0]["id"], "s2x");
+    assert!(gl["warnings"][0]["message"].as_str().unwrap().contains("credentials"));
+    assert!(gl["defaults"].as_array().unwrap().iter().any(|d| d["value"] == "crates.io" && d["source"] == "core"));
+    assert_eq!((pl["project"].as_str(), pl["defaults"].clone()), (Some(p.id.as_str()), json!([])));
+    assert_eq!(pl["entries"][0]["role"], "back");
+    assert_eq!(rt.policy_files()[0]["warnings"][0]["id"], "s2x");
+
+    // Remove: by id and file, logged; unknown is an error.
+    let r = rt.sandbox_remove("s1", &format!("project:{}", p.id)).unwrap();
+    assert_eq!(r["removed"]["value"], "api.github.com");
+    assert!(rt.sandbox_list(Some(&p.id))[1]["entries"].as_array().unwrap().is_empty());
+    assert!(rt.sandbox_remove("s1", &format!("project:{}", p.id)).is_err());
+    assert!(rt.db.audit_log(None, 5).unwrap().iter().any(|e| e.action == "sandbox_remove"));
+    // A positional id removes a hand-written entry too.
+    rt.sandbox_remove("s2x", "global").unwrap();
+    assert!(rt.policy_files()[0]["warnings"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn an_agents_sandbox_is_its_role_then_global_then_its_projects() {
+    let (_d, rt) = test_runtime(true);
+    let (_r, p) = project(&rt);
+    rt.store
+        .write(|s| {
+            let a = s.agents.get_mut("a1").unwrap();
+            a.role.name = "back".into();
+            a.role.network_allow = vec!["crates.io".into(), "role.example".into()];
+        })
+        .unwrap();
+    rt.sandbox_add("global", None, "network", Some("global.example"), None, None).unwrap();
+    rt.sandbox_add("project", Some(&p.id), "network", Some("api.github.com"), None, None).unwrap();
+    rt.sandbox_add("project", Some(&p.id), "network", Some("front.example"), Some("front"), None).unwrap();
+    rt.sandbox_add("project", Some(&p.id), "local_ports", None, Some("back"), None).unwrap();
+    rt.sandbox_add("project", Some(&p.id), "unix_socket", Some("/tmp/t.sock"), None, None).unwrap();
+    let rec = rt.store.read(|s| s.agents.get("a1").cloned()).unwrap();
+    // The hard list's hosts: the role's kept first, then global, then the project's; no other role's.
+    assert_eq!(rt.network_allow(&rec, Some(&p.id)), ["crates.io", "role.example", "global.example", "api.github.com"]);
+    let fetch = |url: &str| rt.hard_check(&rec, "WebFetch", &json!({"url": url}), None);
+    assert_eq!(fetch("https://api.github.com/repos"), None, "allowed: not user-only any more");
+    assert_eq!(fetch("https://role.example/"), None);
+    assert_eq!(fetch("https://front.example/").map(|h| h.kind), Some(HardKind::UserOnly));
+    let curl = rt.hard_check(&rec, "Bash", &json!({"command": "curl -s https://api.github.com/x"}), None);
+    assert_eq!(curl, None);
+    let al = rt.allowances(&rec, Some(&p.id));
+    assert!(al.local_binding);
+    assert_eq!(al.unix_sockets, [super::sandbox::real_lenient(Path::new("/tmp/t.sock"))]);
+    // An agent of another project doesn't get the project's.
+    let mut other = rec.clone();
+    other.repo = PathBuf::from("/nonexistent/other-repo");
+    assert_eq!(
+        rt.hard_check(&other, "WebFetch", &json!({"url": "https://api.github.com/"}), None).map(|h| h.kind),
+        Some(HardKind::UserOnly)
+    );
+    assert_eq!(rt.network_allow(&other, None), ["crates.io", "role.example", "global.example"]);
+    // The Overwatch gets none.
+    let mut ow = rec.clone();
+    (ow.id, ow.overwatch) = (crate::overwatch::ID.into(), true);
+    assert_eq!(rt.allowances(&ow, Some(&p.id)), super::sandbox::Allowances::default());
+}
+
+#[test]
+fn a_sandbox_change_rewrites_running_agents_settings() {
+    let (d, rt) = test_runtime(true);
+    let (_r, p) = project(&rt);
+    rt.store.write(|s| s.agents.get_mut("a1").unwrap().worktree = p.path.clone()).unwrap();
+    crate::runtime::tests::insert_test_live(&rt, "a1", None, 0, d.path());
+    std::fs::create_dir_all(rt.cfg.paths.agent_dir("a1")).unwrap();
+    let a = rt.sandbox_add("project", Some(&p.id), "network", Some("api.github.com"), None, None).unwrap();
+    assert_eq!(a["running"], 1);
+    let settings: Value =
+        serde_json::from_str(&std::fs::read_to_string(rt.cfg.paths.agent_dir("a1").join("settings.json")).unwrap())
+            .unwrap();
+    let hosts = settings["sandbox"]["network"]["allowedDomains"].as_array().unwrap();
+    assert!(hosts.contains(&json!("api.github.com")) && hosts.contains(&json!("crates.io")), "{hosts:?}");
+    // Another project's change leaves it alone.
+    std::fs::remove_file(rt.cfg.paths.agent_dir("a1").join("settings.json")).unwrap();
+    assert_eq!(rt.sandbox_add("global", None, "local_ports", None, Some("nobody"), None).unwrap()["running"], 0);
+}
+
+#[test]
+fn rule_forms_preview_add_globally_with_a_note_and_test() {
+    let (_d, rt) = test_runtime(true);
+    let (_r, p) = project(&rt);
+    let pv = rt.rule_preview("bash", "cargo test").unwrap();
+    assert_eq!(pv, json!({"pattern": "Bash(cargo test:*)", "summary": "Bash commands starting with `cargo test`"}));
+    assert!(rt.rule_preview("bash", "").is_err());
+    let r = rt.add_rule_form("global", "", "Bash(cargo test:*)", Effect::Allow, Some("back"), Some("tests")).unwrap();
+    assert_eq!((r["file"].as_str(), r["rule"]["note"].as_str()), (Some("global"), Some("tests")));
+    assert_eq!(r["rule"]["role"], "back");
+    let r = rt.add_rule_form("project", &p.id, "Bash(make)", Effect::Deny, None, None).unwrap();
+    assert_eq!(r["file"], format!("project:{}", p.id));
+    assert!(rt.add_rule_form("project", "nope", "Bash", Effect::Deny, None, None).is_err());
+    assert!(rt.add_rule_form("galaxy", "", "Bash", Effect::Deny, None, None).is_err());
+    let rules = rt.policy_rules(None);
+    assert_eq!(rules[0]["summary"], "Bash commands starting with `cargo test`");
+    assert_eq!(rules[1]["summary"], "The Bash command `make`");
+    // Test a call: the role decides which rules match.
+    let t = rt.policy_test_form(None, Some("back"), false, "bash", "cargo test -p x").unwrap();
+    assert_eq!(
+        (t["evaluation"]["effect"].as_str(), t["evaluation"]["source"]["id"].as_str()),
+        (Some("allow"), Some(r#"r1"#))
+    );
+    let t = rt.policy_test_form(None, None, false, "bash", "cargo test").unwrap();
+    assert_eq!(t["evaluation"]["source"]["kind"], "default", "no role: role rules don't match");
+    let t = rt.policy_test_form(Some(&p.id), None, true, "bash", "make").unwrap();
+    assert_eq!((t["role"].as_str(), t["evaluation"]["effect"].as_str()), (Some("solo"), Some("deny")));
+}

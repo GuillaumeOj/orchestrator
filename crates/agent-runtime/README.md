@@ -40,11 +40,45 @@ No UI, no Tauri: [`orchd`](../orchd/README.md) drives it from the command line.
 - **statusLine**: `<app>/bin/orch-status`, `refreshInterval: 5`. The user's own `statusLine.command`
   (read from `~/.claude/settings.json`) is passed in `ORCH_USER_STATUSLINE` and chained by orch-status.
 - **Sandbox**: `enabled`, `failIfUnavailable`, `autoAllowBashIfSandboxed`, `allowUnsandboxedCommands: false`,
-  `network.allowedDomains` from the role (package registries by default). `filesystem.denyRead`:
+  `network.allowedDomains` from the role (package registries by default) then the sandbox allowances
+  (below). `filesystem.denyRead`:
   credential stores (`~/.ssh`, `~/.config/gh`, `~/.netrc`, `~/.git-credentials`, `~/.aws`, gcloud, azure,
   kube, docker config, gnupg, `.npmrc`, `.pypirc`, cargo credentials, pass, Keychains; never
   `~/.gitconfig`), the main checkout **entry by entry except its `.git`**, the other worktrees, and the
   core's `state/`. `allowRead`/`allowWrite`: the git common dir.
+- **Sandbox allowances** (`[[sandbox]]` in the policy files, `policy::sandbox`, `CompileCtx::sandbox`):
+  the user widens what Bash reaches, globally or per project, optionally for one role id.
+  - **Effective sandbox** of an agent: the role's `network_allow` (defaults, plus a team node's), then the
+    global file's entries, then its project's, keeping those whose `role` is absent or equals the
+    agent's role. `network` → `allowedDomains` (deduplicated, in that order); `write` → `allowWrite`;
+    `local_ports` → `network.allowLocalBinding: true`; `unix_socket` → `network.allowUnixSockets`.
+    The last two keys are absent when unused. The hard list's `network_allow` is the same host list.
+  - The Overwatch gets none.
+  - Allowances only add: every deny stays, and `excludedCommands` / `allowUnsandboxedCommands` stay off.
+  - Paths: `~` expanded, canonicalised (the nearest existing ancestor for a folder not created yet)
+    and **re-validated at each spawn**; one that now fails is skipped with a warning.
+  - **Never allowed** (`sandbox::validate`, shared by add, check, file load and spawn; the reason is a
+    sentence the UI shows verbatim):
+    - `*` or an empty host; a scheme, path or port in a host; `*.<tld>`;
+    - a path that is `/`, home or one of its ancestors, or names with pattern characters;
+    - a credential store; the app's data (its socket too);
+    - any `.git` / `.claude` component, the `project_files::UNSANDBOXED*` paths;
+    - inside or around a project's main checkout or worktree root (the agent's own worktree: "already
+      writable");
+    - system folders (`/System`, `/usr`, `/etc`, `/Library`, `/var`, … except `/var/folders`, `/tmp`);
+    - container engine sockets (docker, podman, colima, orbstack, lima) and key agent sockets
+      (`$SSH_AUTH_SOCK`, `*ssh*`, `gpg-agent`, launchd listeners).
+  - A hand-written entry that fails is **skipped** and listed in the file's `warnings`.
+  - **CLI support** (checked in Claude Code **2.1.325**'s binary, the installed CLI): the settings schema
+    has `sandbox.network.allowLocalBinding`, `allowUnixSockets` (and `allowAllUnixSockets`, never
+    used). Its text says `allowUnixSockets` is read "from managed, --settings and user settings only",
+    so `sandbox_kinds` offers all four kinds (`SandboxKind::SUPPORTED`).
+  - **When a change applies**: the CLI says a changed `allowLocalBinding` in user settings applies
+    without a restart. A live reload of the `--settings` file itself was **not verified**, so
+    `SETTINGS_RELOAD_LIVE = false` and commands report `applies: "next_start"`.
+  - On every change (an add, a remove, a hand edit seen by the watcher), the running agents in scope
+    still get their `settings.json` rewritten (`rewrite_live_settings`), and the now topic `sandbox` is
+    touched.
 - **Project files** (FR-112, `CompileCtx::project_files`): `Runtime::spawn` reads the agent's project's
   `external_files` and re-checks each (`project_files::at_spawn`: re-canonicalized; one that now fails the
   validation is skipped with a `project_file_skipped` event; a missing one is kept for the prompt only).
@@ -157,7 +191,23 @@ ignored · `SessionEnd` ignored (the process exit and the core's intent decide).
   debounce); a parse error keeps the last good version and raises one `alert` (`policy_parse`, file
   and line). Always allow, `rule add` / `rule revoke` write the files with `toml_edit` (comments and
   order kept). The store's `permission_rules` were exported once (migration 15, `id = "r<row>"`) and
-  are no longer read.
+  are no longer read. `[[sandbox]]` tables (one of `network`, `write`, `local_ports = true`,
+  `unix_socket`; optional `id` (`s<n>`, positional when absent), `role`, `note`) live in the same files
+  (see Compile). A new file's header documents both table kinds with commented examples.
+- **Settings commands** (ctl = Tauri):
+  - `policy_rules` rows carry a plain-language `summary` (`permissions::rule_summary`).
+  - `add_rule {scope: global | project | role | agent, scope_id, pattern, effect, role?, note?}`.
+  - `rule_preview {tool: bash | read | edit | webfetch | mcp | any, value}` → `{pattern, summary}`.
+  - `policy_test {project?, role?, solo?, tool, value}`: the core builds the call.
+  - `sandbox_list {project?}`: per file, entries plus read-only `defaults` (global: the core's
+    registries; project: its team roles' extra hosts as `role:<id>`).
+  - `sandbox_kinds`.
+  - `sandbox_check {kind, value?, scope, project?}` → `{ok, value}` | `{ok: false, reason}`.
+  - `sandbox_add {scope, project?, kind, value?, role?, note?}` → `{entry, file, path, applies,
+    running, created}`. A duplicate returns the existing entry with `created: false`.
+  - `sandbox_remove {id, file}`.
+  - Adds and removes are audited (`sandbox_add` / `sandbox_remove`, actor `user`).
+  - `WebFetch(domain:x)` patterns match the URL's host (`*.x`: its subdomains).
 - **PermissionRequest**: the hard deny list answers first, then a one-shot allow (below; for a
   user-only call only one the user's decision made), then the policy (global and project rules
   merged, the most restrictive wins: `deny` > `user` > `overwatch` > `allow`; no rule: the default

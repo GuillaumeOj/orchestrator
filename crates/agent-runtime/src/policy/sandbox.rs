@@ -84,7 +84,7 @@ impl SandboxEntry {
 }
 
 /// A registered project, as the guard sees it.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct GuardProject {
     pub id: String,
     pub checkout: PathBuf,
@@ -92,7 +92,7 @@ pub struct GuardProject {
 }
 
 /// What no allowance may touch (spec §3.1). Paths are canonical.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Guard {
     pub home: PathBuf,
     pub app_root: PathBuf,
@@ -224,8 +224,7 @@ fn check_common(shown: &str, canon: &Path, g: &Guard) -> Result<(), String> {
     if inside(&g.app_root) || contains(&g.app_root) {
         return Err(format!("{shown} is the orchestrator's own data: never allowed."));
     }
-    if canon.components().any(|x| UNSANDBOXED_NAMES.iter().any(|n| x.as_os_str() == *n)) || overlaps(&g.unsandboxed)
-    {
+    if canon.components().any(|x| UNSANDBOXED_NAMES.iter().any(|n| x.as_os_str() == *n)) || overlaps(&g.unsandboxed) {
         return Err(format!("{shown} holds settings or code that runs outside the sandbox: never allowed."));
     }
     Ok(())
@@ -241,7 +240,9 @@ fn check_write(shown: &str, canon: &Path, g: &Guard, project: Option<&str>) -> R
     for p in &g.projects {
         if inside(&p.worktree_root) {
             return Err(if project == Some(p.id.as_str()) {
-                format!("{shown} is already writable: it's the agent's worktree (another agent's worktree is never allowed).")
+                format!(
+                    "{shown} is already writable: it's the agent's worktree (another agent's worktree is never allowed)."
+                )
             } else {
                 format!("{shown} is inside another project's agent worktrees: never allowed.")
             });
@@ -288,15 +289,24 @@ fn check_socket(shown: &str, canon: &Path, g: &Guard) -> Result<(), String> {
 /// Validates an allowance (spec §3.1 "Never allowed"). `Ok`: the value as
 /// stored (hosts lowercased, paths trimmed with `~` kept; `None` for
 /// `local_ports`); `Err`: the reason, a sentence for the user.
-pub fn validate(kind: SandboxKind, raw: Option<&str>, g: &Guard, project: Option<&str>) -> Result<Option<String>, String> {
+pub fn validate(
+    kind: SandboxKind,
+    raw: Option<&str>,
+    g: &Guard,
+    project: Option<&str>,
+) -> Result<Option<String>, String> {
     let raw = raw.map(str::trim).filter(|s| !s.is_empty());
     match kind {
         SandboxKind::LocalPorts => Ok(None),
         SandboxKind::Network => check_host(raw.unwrap_or("")).map(Some),
         SandboxKind::Write | SandboxKind::UnixSocket => {
             let raw = raw.ok_or_else(|| {
-                if kind == SandboxKind::Write { "Enter a folder, like ~/.cache/ms-playwright." } else { "Enter a socket path." }
-                    .to_string()
+                if kind == SandboxKind::Write {
+                    "Enter a folder, like ~/.cache/ms-playwright."
+                } else {
+                    "Enter a socket path."
+                }
+                .to_string()
             })?;
             resolve(kind, raw, g, project)?;
             Ok(Some(raw.to_string()))
@@ -418,7 +428,7 @@ mod tests {
         no(Write, "relative/dir", "absolute");
         no(Write, "/", "too broad");
         no(Write, "~", "too broad");
-        no(Write, &format!("{dp}"), "too broad");
+        no(Write, &dp, "too broad");
         no(Write, "~/.ssh", "credentials");
         no(Write, "~/.ssh/keys", "credentials");
         no(Write, "~/.claude", "outside the sandbox");

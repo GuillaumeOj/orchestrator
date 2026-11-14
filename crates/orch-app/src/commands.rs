@@ -322,6 +322,108 @@ pub async fn policy_open(
     .await
 }
 
+/// The policy files' rules, global first, each with its plain-language `summary`.
+#[tauri::command]
+pub async fn policy_rules(core: CoreState<'_>, project: Option<String>) -> Res<Value> {
+    blocking(core, move |c| Ok(serde_json::json!(c.runtime()?.policy_rules(project.as_deref())))).await
+}
+
+/// Adds a rule: `scope` `global` | `project` (Settings, with `role` and
+/// `note`) or a card's `role` | `agent`. `{rule, file, path}`.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn add_rule(
+    core: CoreState<'_>,
+    scope: String,
+    scope_id: Option<String>,
+    pattern: String,
+    effect: String,
+    role: Option<String>,
+    note: Option<String>,
+) -> Res<Value> {
+    blocking(core, move |c| {
+        let ef = agent_runtime::policy::Effect::parse(&effect)
+            .ok_or_else(|| anyhow::anyhow!("effect: allow | deny | overwatch | user"))?;
+        let sid = scope_id.unwrap_or_default();
+        c.runtime()?.add_rule_form(&scope, &sid, &pattern, ef, role.as_deref(), note.as_deref())
+    })
+    .await
+}
+
+/// Removes a rule (`file`: `global` | `project:<id>`). `{revoked}`.
+#[tauri::command]
+pub async fn revoke_rule(core: CoreState<'_>, id: String, file: Option<String>) -> Res<Value> {
+    blocking(core, move |c| Ok(serde_json::json!({"revoked": c.runtime()?.revoke_rule(&id, file.as_deref())?}))).await
+}
+
+/// `{pattern, summary}` for the rule form's `tool` and `value`.
+#[tauri::command]
+pub async fn rule_preview(core: CoreState<'_>, tool: String, value: Option<String>) -> Res<Value> {
+    blocking(core, move |c| c.runtime()?.rule_preview(&tool, value.as_deref().unwrap_or(""))).await
+}
+
+/// Test a call: its effect and what decides it (the core builds the input).
+#[tauri::command]
+pub async fn policy_test(
+    core: CoreState<'_>,
+    project: Option<String>,
+    role: Option<String>,
+    solo: Option<bool>,
+    tool: String,
+    value: String,
+) -> Res<Value> {
+    blocking(core, move |c| {
+        c.runtime()?.policy_test_form(project.as_deref(), role.as_deref(), solo.unwrap_or(false), &tool, &value)
+    })
+    .await
+}
+
+/// Settings › Sandbox: the allowances per file (api-contract §3).
+#[tauri::command]
+pub async fn sandbox_list(core: CoreState<'_>, project: Option<String>) -> Res<Value> {
+    blocking(core, move |c| Ok(serde_json::json!(c.runtime()?.sandbox_list(project.as_deref())))).await
+}
+
+/// The allowance kinds the installed CLI supports.
+#[tauri::command]
+pub async fn sandbox_kinds(core: CoreState<'_>) -> Res<Value> {
+    blocking(core, move |c| Ok(serde_json::json!(c.runtime()?.sandbox_kinds()))).await
+}
+
+/// Inline validation: `{ok, value}` | `{ok: false, reason}`.
+#[tauri::command]
+pub async fn sandbox_check(
+    core: CoreState<'_>,
+    kind: String,
+    value: Option<String>,
+    scope: String,
+    project: Option<String>,
+) -> Res<Value> {
+    blocking(core, move |c| c.runtime()?.sandbox_check(&kind, value.as_deref(), &scope, project.as_deref())).await
+}
+
+/// `{entry, file, path, applies, running, created}`.
+#[tauri::command]
+pub async fn sandbox_add(
+    core: CoreState<'_>,
+    scope: String,
+    project: Option<String>,
+    kind: String,
+    value: Option<String>,
+    role: Option<String>,
+    note: Option<String>,
+) -> Res<Value> {
+    blocking(core, move |c| {
+        c.runtime()?.sandbox_add(&scope, project.as_deref(), &kind, value.as_deref(), role.as_deref(), note.as_deref())
+    })
+    .await
+}
+
+/// `{removed, file, applies, running}`.
+#[tauri::command]
+pub async fn sandbox_remove(core: CoreState<'_>, id: String, file: String) -> Res<Value> {
+    blocking(core, move |c| c.runtime()?.sandbox_remove(&id, &file)).await
+}
+
 /// P4.3: chat entries matching `query` (case-insensitive), newest first.
 #[tauri::command]
 pub async fn chat_search(core: CoreState<'_>, query: String, limit: Option<usize>) -> Res<Value> {

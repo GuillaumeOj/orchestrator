@@ -9,6 +9,7 @@ use orch_protocol::HookEvent;
 use serde_json::{Value, json};
 
 use crate::env::{EnvInputs, agent_env, gitconfig};
+use crate::policy::sandbox::Allowances;
 use crate::project_files::SpawnFile;
 use crate::role::Role;
 use crate::shell::sh_quote;
@@ -125,6 +126,9 @@ pub struct CompileCtx {
     pub git_identity: (String, String),
     /// FR-112: the project's files, re-checked at spawn.
     pub project_files: Vec<SpawnFile>,
+    /// The `[[sandbox]]` allowances that apply (spec §3.1), validated;
+    /// empty for the Overwatch.
+    pub sandbox: Allowances,
     /// The Overwatch (P4.4): the folders it may read (registered projects'
     /// checkouts and worktrees, its day folder, its `messages/`), and
     /// nothing it may write or run. `None` for every other agent.
@@ -211,6 +215,7 @@ fn agent_rules(role: &Role, ctx: &CompileCtx, tools: &[String]) -> Rules {
     // these writes from sandboxed Bash (README, "Known gaps").
     let mut allow_write = vec![ctx.git_common_dir.display().to_string()];
     allow_write.extend(role.extra_write.iter().map(|p| p.display().to_string()));
+    allow_write.extend(ctx.sandbox.write.iter().map(|p| p.display().to_string()));
     // FR-112: a read entry under a write folder must stay unwritable from Bash too.
     let mut deny_write: Vec<String> = vec![];
 
@@ -320,7 +325,7 @@ pub fn compile(role: &Role, ctx: &CompileCtx) -> Compiled {
             "failIfUnavailable": true,
             "autoAllowBashIfSandboxed": true,
             "allowUnsandboxedCommands": false,
-            "network": { "allowedDomains": role.network_allow },
+            "network": { "allowedDomains": ctx.sandbox.network_with(&role.network_allow) },
             "filesystem": {
                 "denyRead": deny_read,
                 "allowRead": allow_read,
@@ -336,6 +341,13 @@ pub fn compile(role: &Role, ctx: &CompileCtx) -> Compiled {
     // baseline CLI (README), so agents without read entries never carry it.
     if !deny_write.is_empty() {
         settings["sandbox"]["filesystem"]["denyWrite"] = json!(deny_write);
+    }
+    // Allowances (spec §3.1): keys absent when unused (Claude Code 2.1.325's schema has both).
+    if ctx.sandbox.local_binding {
+        settings["sandbox"]["network"]["allowLocalBinding"] = json!(true);
+    }
+    if !ctx.sandbox.unix_sockets.is_empty() {
+        settings["sandbox"]["network"]["allowUnixSockets"] = json!(ctx.sandbox.unix_sockets);
     }
     // The orchestrator's own server always comes with the agent (it wins over
     // a role entry of the same name). It inherits the agent's environment;
@@ -462,6 +474,7 @@ pub(crate) mod tests {
             env,
             git_identity: ("N".into(), "e@x".into()),
             project_files: vec![],
+            sandbox: Allowances::default(),
             overwatch: None,
         }
     }
@@ -484,6 +497,37 @@ pub(crate) mod tests {
         assert_eq!(s["statusLine"]["command"], "'/Users/u/Library/Application Support/Orchestrator/bin/orch-status'");
         // The MCP server is exec'd with its args, not through a shell.
         assert_eq!(out.mcp["mcpServers"][ORCH_MCP_SERVER]["command"], bin.join("orch-mcp").display().to_string());
+    }
+
+    #[test]
+    fn sandbox_allowances_compile_per_kind_and_only_when_used() {
+        let role = Role { network_allow: vec!["crates.io".into(), "role.example".into()], ..Role::solo() };
+        // None: no new key, the role's hosts as before.
+        let c = compile(&role, &ctx(SessionMode::New("u".into())));
+        let net = &c.settings["sandbox"]["network"];
+        assert_eq!(net["allowedDomains"], json!(["crates.io", "role.example"]));
+        assert!(net.get("allowLocalBinding").is_none() && net.get("allowUnixSockets").is_none());
+        assert!(c.settings["sandbox"].get("excludedCommands").is_none());
+        // Each kind into its key; the role's hosts first, duplicates once.
+        let mut cx = ctx(SessionMode::New("u".into()));
+        cx.sandbox = Allowances {
+            network: vec!["api.github.com".into(), "crates.io".into()],
+            write: vec!["/Users/u/.cache/pw".into()],
+            local_binding: true,
+            unix_sockets: vec!["/private/tmp/t.sock".into()],
+        };
+        let c = compile(&role, &cx);
+        let sb = &c.settings["sandbox"];
+        assert_eq!(sb["network"]["allowedDomains"], json!(["crates.io", "role.example", "api.github.com"]));
+        assert_eq!(sb["network"]["allowLocalBinding"], true);
+        assert_eq!(sb["network"]["allowUnixSockets"], json!(["/private/tmp/t.sock"]));
+        let w = sb["filesystem"]["allowWrite"].as_array().unwrap();
+        assert!(
+            w.contains(&json!("/Users/u/.cache/pw")) && w.contains(&json!(cx.git_common_dir.display().to_string()))
+        );
+        // Allowances only add: the core's denies and switches stay.
+        assert_eq!(sb["allowUnsandboxedCommands"], false);
+        assert!(sb["filesystem"]["denyRead"].as_array().unwrap().contains(&json!("~/.ssh")));
     }
 
     #[test]

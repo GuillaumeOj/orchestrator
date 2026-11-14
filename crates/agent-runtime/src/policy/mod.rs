@@ -13,6 +13,8 @@
 pub mod file;
 pub mod hard;
 mod rt;
+pub mod sandbox;
+mod sandbox_rt;
 mod watch;
 
 use std::collections::BTreeMap;
@@ -24,6 +26,7 @@ use serde_json::{Value, json};
 use crate::permissions::{self, Subject};
 use file::{ParseError, PolicyDoc};
 use hard::{HardKind, HardVerdict};
+use sandbox::{Guard, SandboxEntry};
 
 pub(crate) use rt::Gate;
 pub use rt::POLICY_ALERT;
@@ -229,8 +232,9 @@ impl FileState {
     }
 
     /// Reads the file again. A parse error keeps the last good rules.
-    /// Returns whether the error changed (for the alert).
-    fn reload(&mut self) -> bool {
+    /// Allowances `guard` never allows are flagged and listed in the
+    /// warnings. Returns whether the error changed (for the alert).
+    fn reload(&mut self, guard: &Guard) -> bool {
         let before = self.error.clone();
         // Its directory may have appeared since.
         self.real = real_file(&self.path);
@@ -240,6 +244,13 @@ impl FileState {
                 match file::parse(&text) {
                     Ok(mut doc) => {
                         doc.warnings.extend(neutralised(&doc.rules));
+                        let project = self.scope.project();
+                        for e in &mut doc.sandbox {
+                            if let Err(why) = sandbox::validate(e.kind, e.value.as_deref(), guard, project) {
+                                doc.warnings.push((e.id.clone(), format!("{why} Skipped.")));
+                                e.invalid = Some(why);
+                            }
+                        }
                         self.doc = doc;
                         self.error = None;
                     }
@@ -262,6 +273,7 @@ impl FileState {
             "path": self.path.display().to_string(),
             "exists": self.exists,
             "rules": self.doc.rules.len(),
+            "sandbox": self.doc.sandbox.iter().filter(|e| e.invalid.is_none()).count(),
             "warnings": self.doc.warnings.iter().map(|(id, m)| json!({"id": id, "message": m})).collect::<Vec<_>>(),
         });
         if let Some(p) = self.scope.project() {
@@ -398,6 +410,8 @@ pub struct Policy {
     /// Held across a file's read-modify-write (and the next id it picks):
     /// two concurrent writes neither lose a rule nor share an id.
     writes: std::sync::Mutex<()>,
+    /// What allowances may never touch, set at each sync (the projects change).
+    guard: std::sync::Mutex<Guard>,
 }
 
 impl Policy {
@@ -408,6 +422,18 @@ impl Policy {
     /// One file write at a time (see `writes`).
     pub(crate) fn write_lock(&self) -> std::sync::MutexGuard<'_, ()> {
         self.writes.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub(crate) fn guard(&self) -> Guard {
+        self.guard.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// A new guard; whether it changed (every file is then validated again).
+    pub(crate) fn set_guard(&self, g: Guard) -> bool {
+        let mut cur = self.guard.lock().unwrap_or_else(|e| e.into_inner());
+        let changed = *cur != g;
+        *cur = g;
+        changed
     }
 
     /// Every loaded file, global first.
@@ -437,6 +463,7 @@ impl Policy {
     /// Sets the files to know (path per scope): new or moved ones are read,
     /// gone ones dropped. Returns the scopes read and whether their error changed.
     fn set_paths(&self, want: BTreeMap<Scope, PathBuf>) -> Vec<(Scope, bool)> {
+        let guard = self.guard();
         let mut files = self.lock();
         files.retain(|sc, _| want.contains_key(sc));
         let mut read = vec![];
@@ -445,7 +472,7 @@ impl Policy {
                 continue;
             }
             let mut f = FileState::new(sc.clone(), path);
-            let changed = f.reload();
+            let changed = f.reload(&guard);
             files.insert(sc.clone(), f);
             read.push((sc, changed));
         }
@@ -454,7 +481,8 @@ impl Policy {
 
     /// Reads one file again; whether its error changed.
     fn reload(&self, scope: &Scope) -> Option<bool> {
-        self.lock().get_mut(scope).map(FileState::reload)
+        let guard = self.guard();
+        self.lock().get_mut(scope).map(|f| f.reload(&guard))
     }
 
     /// The scope whose file is `path`.
@@ -487,6 +515,29 @@ impl Policy {
             .values()
             .filter(|f| scope.is_none_or(|s| *s == f.scope))
             .find_map(|f| f.doc.rules.iter().find(|r| r.id == id).map(|r| (f.scope.clone(), r.clone())))
+    }
+
+    /// The allowances of the global file then `project`'s (invalid ones
+    /// included: [`SandboxEntry::applies`] skips them).
+    pub fn sandbox_entries(&self, project: Option<&str>) -> Vec<SandboxEntry> {
+        let files = self.lock();
+        let mut out: Vec<SandboxEntry> = files.get(&Scope::Global).map(|f| f.doc.sandbox.clone()).unwrap_or_default();
+        if let Some(p) = project {
+            out.extend(files.get(&Scope::Project(p.into())).map(|f| f.doc.sandbox.clone()).unwrap_or_default());
+        }
+        out
+    }
+
+    /// The next free `s<n>` id across every file.
+    pub fn next_sandbox_id(&self) -> String {
+        let n = self
+            .lock()
+            .values()
+            .flat_map(|f| f.doc.sandbox.iter())
+            .filter_map(|e| e.id.strip_prefix('s').and_then(|n| n.parse::<u64>().ok()))
+            .max()
+            .unwrap_or(0);
+        format!("s{}", n + 1)
     }
 
     /// The next free `r<n>` id across every file.

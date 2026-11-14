@@ -70,9 +70,22 @@ impl Runtime {
         for p in self.db.projects(false).unwrap_or_default() {
             want.insert(Scope::Project(p.id.clone()), self.project_policy_path(&p));
         }
-        for (scope, changed) in self.policy.set_paths(want) {
-            if changed {
-                self.policy_alert(&scope);
+        // Projects moved, came or went: which allowances are valid may have too.
+        let revalidate = self.policy.set_guard(self.sandbox_guard());
+        let read: Vec<Scope> = self
+            .policy
+            .set_paths(want)
+            .into_iter()
+            .map(|(scope, changed)| {
+                if changed {
+                    self.policy_alert(&scope);
+                }
+                scope
+            })
+            .collect();
+        if revalidate {
+            for f in self.policy.files().into_iter().filter(|f| !read.contains(&f.scope)) {
+                self.policy_reload(&f.scope);
             }
         }
         self.policy_watch();
@@ -80,7 +93,7 @@ impl Runtime {
 
     /// Syncs when `project`'s file is not known yet (a project registered
     /// by a path that did not sync): the per-call check, with no I/O.
-    fn policy_ensure(&self, project: Option<&str>) {
+    pub(crate) fn policy_ensure(&self, project: Option<&str>) {
         let known = |sc: &Scope| self.policy.knows(sc);
         if !known(&Scope::Global) || project.is_some_and(|p| !known(&Scope::Project(p.into()))) {
             self.policy_sync();
@@ -89,8 +102,12 @@ impl Runtime {
 
     /// Reads `scope`'s file again (a watcher event, our own write).
     pub(crate) fn policy_reload(&self, scope: &Scope) {
+        let before = self.policy.file(scope).map(|f| f.doc.sandbox);
         if self.policy.reload(scope) == Some(true) {
             self.policy_alert(scope);
+        }
+        if self.policy.file(scope).map(|f| f.doc.sandbox) != before {
+            self.sandbox_changed(scope);
         }
         // A rule the user wrote by hand for an open proposal closes it (F7).
         self.rules_check_edited();
@@ -169,7 +186,8 @@ impl Runtime {
             ctx.cwd = PathBuf::from(c);
         }
         ctx.extra_write = rec.role.extra_write.clone();
-        ctx.network_allow = rec.role.network_allow.clone();
+        // The effective sandbox's hosts (api-contract §2): role, then allowances.
+        ctx.network_allow = self.network_allow(rec, project.map(|p| p.id.as_str()));
         ctx
     }
 
@@ -243,10 +261,45 @@ impl Runtime {
         }
         self.policy_sync();
         let (target, role, agent) = self.rule_target(scope, scope_id, project)?;
-        self.add_rule_to(&target, role, agent, pattern, effect, from)
+        self.add_rule_to(&target, role, agent, pattern, effect, from, None)
+    }
+
+    /// `add_rule {scope, scope_id, pattern, effect, role?, note?}`: the
+    /// Settings form's `global` / `project` scopes (with `role`, `note`), or
+    /// a card's `project` / `role` / `agent` FR-708 scope.
+    pub fn add_rule_form(
+        &self,
+        scope: &str,
+        scope_id: &str,
+        pattern: &str,
+        effect: Effect,
+        role: Option<&str>,
+        note: Option<&str>,
+    ) -> Result<Value> {
+        let pattern = pattern.trim();
+        if pattern.is_empty() {
+            bail!("a rule needs a pattern");
+        }
+        let note = note.map(crate::project_files::normalize_note).transpose().map_err(|e| anyhow!(e))?.flatten();
+        let role = role.map(str::trim).filter(|r| !r.is_empty()).map(str::to_string);
+        self.policy_sync();
+        let (target, role, agent) = match scope {
+            "global" => (Scope::Global, role, None),
+            "project" => {
+                self.db.project(scope_id)?.ok_or_else(|| anyhow!("no project {scope_id}"))?;
+                (Scope::Project(scope_id.into()), role, None)
+            }
+            s => {
+                let sc = RuleScope::parse(s).ok_or_else(|| anyhow!("scope: global | project | role | agent"))?;
+                let (t, r, a) = self.rule_target(sc, scope_id, None)?;
+                (t, r.or(role), a)
+            }
+        };
+        self.add_rule_to(&target, role, agent, pattern, effect, None, note)
     }
 
     /// [`Runtime::add_rule`] into a given file (a learned rule's target).
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn add_rule_to(
         &self,
         target: &Scope,
@@ -255,6 +308,7 @@ impl Runtime {
         pattern: &str,
         effect: Effect,
         from: Option<String>,
+        note: Option<String>,
     ) -> Result<Value> {
         let path = self.policy_path(target)?;
         let w = self.policy.write_lock();
@@ -266,7 +320,7 @@ impl Runtime {
             agent,
             from,
             added_ms: Some(orch_protocol::now_ms()),
-            note: None,
+            note,
         };
         file::append_rule(&path, &rule)?;
         self.policy_reload(target);
@@ -322,6 +376,7 @@ impl Runtime {
                 let (label, path) = (f.scope.label(), f.path.display().to_string());
                 f.doc.rules.into_iter().map(move |r| {
                     let mut v = json!(r);
+                    v["summary"] = json!(crate::permissions::rule_summary(&r.pattern));
                     v["file"] = json!(label);
                     v["path"] = json!(path);
                     v
@@ -388,6 +443,29 @@ impl Runtime {
         };
         let ev = self.policy.evaluate(&s, tool, input, hard.as_ref(), true);
         Ok(json!({"tool": tool, "input": input, "role": role, "evaluation": ev, "hard": hard}))
+    }
+
+    /// `rule_preview {tool, value}`: `{pattern, summary}` for the Settings form.
+    pub fn rule_preview(&self, tool: &str, value: &str) -> Result<Value> {
+        let pattern =
+            crate::permissions::form_pattern(tool, value, &crate::paths::home_dir()).map_err(|e| anyhow!(e))?;
+        Ok(json!({"summary": crate::permissions::rule_summary(&pattern), "pattern": pattern}))
+    }
+
+    /// `policy_test`'s form `{project?, role?, solo?, tool, value}`: the core
+    /// builds the call. No role: a team agent of no specific role.
+    pub fn policy_test_form(
+        &self,
+        project: Option<&str>,
+        role: Option<&str>,
+        solo: bool,
+        tool: &str,
+        value: &str,
+    ) -> Result<Value> {
+        let (tool, input) =
+            crate::permissions::form_call(tool, value, &crate::paths::home_dir()).map_err(|e| anyhow!(e))?;
+        let role = if solo { "solo" } else { role.map(str::trim).unwrap_or("") };
+        self.policy_test(project, role, &tool, &input)
     }
 
     /// Migration 15 (D8): every non-revoked store rule not yet exported is

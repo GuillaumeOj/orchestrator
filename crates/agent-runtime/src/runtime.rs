@@ -991,43 +991,7 @@ impl Runtime {
         let v = preflight::claude_version(&self.cfg.claude)?;
         self.cfg.version_range.check(v)?;
         preflight::check_helpers(&self.cfg.helpers)?;
-        let wt = real(&rec.worktree);
-        if !wt.is_dir() {
-            bail!("worktree {} is missing", wt.display());
-        }
-        let agent_dir = self.cfg.paths.agent_dir(id);
-        let mut env = EnvInputs::from_process(self.login_path.clone());
-        env.socket = self.cfg.paths.socket();
-        env.user_statusline = self.user_statusline.clone();
-        env.otel_endpoint = self.cfg.otel_endpoint.clone().or_else(|| self.otlp_endpoint());
-        // The Overwatch's folder is no repository: it reads, never writes.
-        let overwatch = rec.is_overwatch().then(|| self.overwatch_reads(&wt));
-        let git_common_dir = if overwatch.is_some() { wt.clone() } else { worktree::common_dir(&wt)? };
-        let main = real(&rec.repo);
-        let project = self.agent_project(&rec);
-        let project_files = self.spawn_project_files(id, project.as_deref(), &env.home);
-        let ctx = CompileCtx {
-            agent_id: id.into(),
-            name: id.into(),
-            agent_dir: agent_dir.clone(),
-            app_root: self.cfg.paths.root.clone(),
-            main_read_denies: if overwatch.is_some() {
-                vec![]
-            } else {
-                crate::compile::main_read_denies(&main, &git_common_dir)
-            },
-            git_common_dir,
-            other_worktrees: if overwatch.is_some() { vec![] } else { worktree::others(&rec.repo, &wt) },
-            main_checkout: main,
-            worktree: wt,
-            helpers: self.cfg.helpers.clone(),
-            claude: self.cfg.claude.clone(),
-            session: mode,
-            env,
-            git_identity: self.git_identity.clone(),
-            project_files,
-            overwatch,
-        };
+        let (ctx, project) = self.compile_ctx(&rec, mode)?;
         // Registry refs and opted-in Keychain env values, for this spawn's
         // files only (FR-601, NFR-3); a ref that can't work refuses the spawn.
         let mut role = self.resolve_mcp(&rec.role, project.as_deref(), true)?;
@@ -1076,6 +1040,75 @@ impl Runtime {
         let agent = AgentId(id.into());
         self.governor_act(|g, now| ((), g.spawned(&agent, now)));
         Ok(())
+    }
+
+    /// Everything [`compile`] needs about `rec`'s surroundings (a spawn, a
+    /// settings rewrite), and its project.
+    fn compile_ctx(&self, rec: &AgentRecord, mode: SessionMode) -> Result<(CompileCtx, Option<String>)> {
+        let wt = real(&rec.worktree);
+        if !wt.is_dir() {
+            bail!("worktree {} is missing", wt.display());
+        }
+        let id = rec.id.as_str();
+        let agent_dir = self.cfg.paths.agent_dir(id);
+        let mut env = EnvInputs::from_process(self.login_path.clone());
+        env.socket = self.cfg.paths.socket();
+        env.user_statusline = self.user_statusline.clone();
+        env.otel_endpoint = self.cfg.otel_endpoint.clone().or_else(|| self.otlp_endpoint());
+        // The Overwatch's folder is no repository: it reads, never writes.
+        let overwatch = rec.is_overwatch().then(|| self.overwatch_reads(&wt));
+        let git_common_dir = if overwatch.is_some() { wt.clone() } else { worktree::common_dir(&wt)? };
+        let main = real(&rec.repo);
+        let project = self.agent_project(rec);
+        let project_files = self.spawn_project_files(id, project.as_deref(), &env.home);
+        let ctx = CompileCtx {
+            agent_id: id.into(),
+            name: id.into(),
+            agent_dir: agent_dir.clone(),
+            app_root: self.cfg.paths.root.clone(),
+            main_read_denies: if overwatch.is_some() {
+                vec![]
+            } else {
+                crate::compile::main_read_denies(&main, &git_common_dir)
+            },
+            git_common_dir,
+            other_worktrees: if overwatch.is_some() { vec![] } else { worktree::others(&rec.repo, &wt) },
+            main_checkout: main,
+            worktree: wt,
+            helpers: self.cfg.helpers.clone(),
+            claude: self.cfg.claude.clone(),
+            session: mode,
+            env,
+            git_identity: self.git_identity.clone(),
+            sandbox: if overwatch.is_some() { Default::default() } else { self.allowances(rec, project.as_deref()) },
+            project_files,
+            overwatch,
+        };
+        Ok((ctx, project))
+    }
+
+    /// Rewrites the `settings.json` of running agents (a sandbox allowance
+    /// changed): the agent dir's other files and the process stay as they are.
+    /// `project`: only that project's agents (`None`: every agent).
+    pub(crate) fn rewrite_live_settings(&self, project: Option<&str>) -> usize {
+        let mut n = 0;
+        for id in self.live_ids() {
+            let Some(rec) = self.store.read(|s| s.agents.get(&id).cloned()) else { continue };
+            if rec.is_overwatch() || project.is_some_and(|p| self.agent_project(&rec).as_deref() != Some(p)) {
+                continue;
+            }
+            let done = self.compile_ctx(&rec, SessionMode::Resume(rec.session_id.clone())).and_then(|(ctx, _)| {
+                let c = compile(&rec.role, &ctx);
+                let pretty = serde_json::to_string_pretty(&c.settings)?;
+                crate::compile::write_atomic(&c.settings_path, pretty.as_bytes())?;
+                Ok(())
+            });
+            match done {
+                Ok(()) => n += 1,
+                Err(e) => eprintln!("warn: settings of {id} not rewritten: {e:#}"),
+            }
+        }
+        n
     }
 
     /// `id` is the Overwatch's record (made by its own start, never a
