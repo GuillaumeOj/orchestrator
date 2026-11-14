@@ -102,11 +102,11 @@ impl Runtime {
 
     /// Reads `scope`'s file again (a watcher event, our own write).
     pub(crate) fn policy_reload(&self, scope: &Scope) {
-        let before = self.policy.file(scope).map(|f| f.doc.sandbox);
+        let before = self.policy.sandbox_of(scope);
         if self.policy.reload(scope) == Some(true) {
             self.policy_alert(scope);
         }
-        if self.policy.file(scope).map(|f| f.doc.sandbox) != before {
+        if self.policy.sandbox_of(scope) != before {
             self.sandbox_changed(scope);
         }
         // A rule the user wrote by hand for an open proposal closes it (F7).
@@ -429,12 +429,16 @@ impl Runtime {
 
     /// `orchd policy --test`: the effect for `tool` / `input` as `role` (a
     /// solo session when `solo`), and what decides it. The hard lists use the
-    /// project's checkout as the worktree and no network allow-list.
+    /// project's checkout as the worktree and, as hosts, the core's defaults
+    /// then the network allowances of `role` (api-contract §2).
     pub fn policy_test(&self, project: Option<&str>, role: &str, tool: &str, input: &Value) -> Result<Value> {
         self.policy_sync();
         let proj = project.map(|p| self.db.project(p)?.ok_or_else(|| anyhow!("no project {p}"))).transpose()?;
         let wt = proj.as_ref().map(|p| p.path.clone()).unwrap_or_else(|| PathBuf::from("/"));
-        let hard = hard::check(&self.hard_ctx_base(wt, proj.as_ref()), tool, input);
+        let mut hctx = self.hard_ctx_base(wt, proj.as_ref());
+        let defaults: Vec<String> = crate::role::DEFAULT_NETWORK_ALLOW.iter().map(|h| h.to_string()).collect();
+        hctx.network_allow = self.network_allow_for(role, proj.as_ref().map(|p| p.id.as_str()), &defaults);
+        let hard = hard::check(&hctx, tool, input);
         let s = Subject {
             agent_id: String::new(),
             role: role.into(),

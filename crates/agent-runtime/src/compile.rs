@@ -202,6 +202,20 @@ pub fn main_read_denies(main: &Path, git_common_dir: &Path) -> Vec<PathBuf> {
 /// `(denyRead, allowRead, allowWrite, denyWrite, permissions.deny, permissions.allow)`.
 type Rules = (Vec<String>, Vec<String>, Vec<String>, Vec<String>, Vec<String>, Vec<String>);
 
+/// The `denyWrite` paths that keep code run outside the sandbox (agent
+/// settings, git hooks and config) unwritable under the write folder `p`.
+fn unsandboxed_below(p: &str) -> Vec<String> {
+    let mut out = vec![];
+    for sub in [".claude", ".git/hooks"] {
+        // The directory and what is inside it: the CLI's glob handling of a
+        // bare directory is untested.
+        out.push(format!("{p}/**/{sub}"));
+        out.push(format!("{p}/**/{sub}/**"));
+    }
+    out.push(format!("{p}/**/.git/config"));
+    out
+}
+
 /// A worktree agent's sandbox and permission rules (ADR-009).
 fn agent_rules(role: &Role, ctx: &CompileCtx, tools: &[String]) -> Rules {
     let home = &ctx.env.home;
@@ -215,9 +229,15 @@ fn agent_rules(role: &Role, ctx: &CompileCtx, tools: &[String]) -> Rules {
     // these writes from sandboxed Bash (README, "Known gaps").
     let mut allow_write = vec![ctx.git_common_dir.display().to_string()];
     allow_write.extend(role.extra_write.iter().map(|p| p.display().to_string()));
-    allow_write.extend(ctx.sandbox.write.iter().map(|p| p.display().to_string()));
     // FR-112: a read entry under a write folder must stay unwritable from Bash too.
     let mut deny_write: Vec<String> = vec![];
+    // Allowances (spec §3.1): a folder they open may hold repositories or
+    // Claude Code settings deeper down; those stay unwritable.
+    for p in &ctx.sandbox.write {
+        let p = p.display().to_string();
+        deny_write.extend(unsandboxed_below(&p));
+        allow_write.push(p);
+    }
 
     let mut deny = vec!["Bash(git push:*)".to_string()];
     for (p, is_dir) in CREDENTIAL_STORES {
@@ -251,14 +271,10 @@ fn agent_rules(role: &Role, ctx: &CompileCtx, tools: &[String]) -> Rules {
                     // Code that runs outside the sandbox's control (agent settings, git hooks).
                     for sub in [".claude", ".git/hooks"] {
                         deny.push(format!("Edit({r}/**/{sub}/**)"));
-                        // The directory and what is inside it: the CLI's glob
-                        // handling of a bare directory is untested.
-                        deny_write.push(format!("{p}/**/{sub}"));
-                        deny_write.push(format!("{p}/**/{sub}/**"));
                     }
                     // The repository config runs code too (`core.fsmonitor`, `core.sshCommand`, aliases).
                     deny.push(format!("Edit({r}/**/.git/config)"));
-                    deny_write.push(format!("{p}/**/.git/config"));
+                    deny_write.extend(unsandboxed_below(&p));
                 }
                 allow_write.push(p);
             }
@@ -525,6 +541,13 @@ pub(crate) mod tests {
         assert!(
             w.contains(&json!("/Users/u/.cache/pw")) && w.contains(&json!(cx.git_common_dir.display().to_string()))
         );
+        // Repositories and agent settings under an allowed folder stay unwritable.
+        let dw = sb["filesystem"]["denyWrite"].as_array().unwrap();
+        for p in
+            ["/Users/u/.cache/pw/**/.git/hooks", "/Users/u/.cache/pw/**/.git/config", "/Users/u/.cache/pw/**/.claude"]
+        {
+            assert!(dw.contains(&json!(p)), "{p}: {dw:?}");
+        }
         // Allowances only add: the core's denies and switches stay.
         assert_eq!(sb["allowUnsandboxedCommands"], false);
         assert!(sb["filesystem"]["denyRead"].as_array().unwrap().contains(&json!("~/.ssh")));

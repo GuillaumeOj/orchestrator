@@ -153,18 +153,9 @@ pub fn real_lenient(p: &Path) -> PathBuf {
     }
 }
 
-/// `~`, `~/…` expanded; `..` refused; the result absolute.
+/// `~`, `~/…` expanded ([`project_files::expand`]); `..` refused; the result absolute.
 fn expand(raw: &str, home: &Path) -> Result<PathBuf, String> {
-    let p = if raw == "~" {
-        home.to_path_buf()
-    } else if let Some(rest) = raw.strip_prefix("~/") {
-        home.join(rest)
-    } else {
-        PathBuf::from(raw)
-    };
-    if !p.is_absolute() {
-        return Err(format!("{raw} is not an absolute path: start it with / or ~/."));
-    }
+    let p = crate::project_files::expand(raw, home)?;
     if p.components().any(|c| c == std::path::Component::ParentDir) {
         return Err(format!("{raw} contains ..: write the folder's full path."));
     }
@@ -279,8 +270,17 @@ fn check_socket(shown: &str, canon: &Path, g: &Guard) -> Result<(), String> {
             "{shown} is a container engine's socket: it runs commands outside the sandbox, never allowed."
         ));
     }
+    // Terminal multiplexers and remote-controlled terminals open windows
+    // that run whatever they are sent, outside the sandbox.
+    let parent = canon.parent().map(|p| p.to_string_lossy().to_lowercase()).unwrap_or_default();
+    if parent.contains("/tmux-") || s.contains("/.screen/") || s.contains("/screens/") || name.contains("kitty") {
+        return Err(format!(
+            "{shown} is a terminal's control socket: it runs commands outside the sandbox, never allowed."
+        ));
+    }
     let ssh = g.ssh_agent.as_ref().is_some_and(|a| fold(a) == fold(canon));
-    if ssh || name.contains("ssh") || name.contains("gpg-agent") || s.contains("/com.apple.launchd.") {
+    let key_agent = name.contains("ssh") || name.contains("gpg-agent") || s.contains("1password");
+    if ssh || key_agent || s.contains("/com.apple.launchd.") {
         return Err(format!("{shown} is a key agent's socket: it signs in with your keys, never allowed."));
     }
     Ok(())
@@ -449,6 +449,9 @@ mod tests {
         no(UnixSocket, &format!("{dp}/agent.sock"), "key agent");
         no(UnixSocket, "/private/tmp/com.apple.launchd.abc/Listeners", "key agent");
         no(UnixSocket, &format!("{dp}/app/orchd.sock"), "orchestrator's own data");
+        no(UnixSocket, "/private/tmp/tmux-501/default", "terminal's control socket");
+        no(UnixSocket, "/tmp/kitty-remote", "terminal's control socket");
+        no(UnixSocket, "~/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock", "key agent");
         // In the global file, a worktree root is no agent's own.
         assert!(validate(Write, Some(&format!("{dp}/wt/p1")), &g, None).unwrap_err().contains("another project's"));
     }

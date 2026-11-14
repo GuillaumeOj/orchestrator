@@ -207,10 +207,9 @@ pub fn rule_summary(pattern: &str) -> String {
         Some((t, rest)) if rest.ends_with(')') => (t, Some(&rest[..rest.len() - 1])),
         _ => (p, None),
     };
-    let path = |s: &str| {
-        let s = s.trim_start_matches('/');
-        format!("/{s}")
-    };
+    // `//abs` is absolute; `~/…`, `/…` (the settings file's folder) and
+    // relative paths are shown as written.
+    let path = |s: &str| s.strip_prefix('/').filter(|abs| abs.starts_with('/')).unwrap_or(s).to_string();
     let file_verb = |t: &str| match t {
         "Read" => Some("Reading"),
         "Edit" | "MultiEdit" => Some("Editing"),
@@ -330,6 +329,8 @@ mod tests {
         assert_eq!(rule_summary("Bash(cargo test)"), "The Bash command `cargo test`");
         assert_eq!(rule_summary("Bash"), "Any Bash command");
         assert_eq!(rule_summary("Edit(//a/b)"), "Editing `/a/b`");
+        assert_eq!(rule_summary("Read(~/notes/**)"), "Reading files in `~/notes`");
+        assert_eq!(rule_summary("Edit(src/**)"), "Editing files in `src`");
         assert_eq!(rule_summary("mcp__orch__commit"), "The `commit` tool of the `orch` MCP server");
         assert_eq!(rule_summary("mcp__*"), "Any MCP tool");
         assert_eq!(rule_summary("Glob"), "Any `Glob` call");

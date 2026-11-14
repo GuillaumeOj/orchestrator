@@ -246,9 +246,13 @@ impl FileState {
                         doc.warnings.extend(neutralised(&doc.rules));
                         let project = self.scope.project();
                         for e in &mut doc.sandbox {
-                            if let Err(why) = sandbox::validate(e.kind, e.value.as_deref(), guard, project) {
-                                doc.warnings.push((e.id.clone(), format!("{why} Skipped.")));
-                                e.invalid = Some(why);
+                            match sandbox::validate(e.kind, e.value.as_deref(), guard, project) {
+                                // Compiled as validated: a hand-written ` API.GitHub.com.` is `api.github.com`.
+                                Ok(v) => e.value = v,
+                                Err(why) => {
+                                    doc.warnings.push((e.id.clone(), format!("{why} Skipped.")));
+                                    e.invalid = Some(why);
+                                }
                             }
                         }
                         self.doc = doc;
@@ -526,6 +530,11 @@ impl Policy {
             out.extend(files.get(&Scope::Project(p.into())).map(|f| f.doc.sandbox.clone()).unwrap_or_default());
         }
         out
+    }
+
+    /// `scope`'s allowances alone (`None`: no such file).
+    pub(crate) fn sandbox_of(&self, scope: &Scope) -> Option<Vec<SandboxEntry>> {
+        self.lock().get(scope).map(|f| f.doc.sandbox.clone())
     }
 
     /// The next free `s<n>` id across every file.

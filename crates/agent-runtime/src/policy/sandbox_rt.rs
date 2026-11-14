@@ -59,7 +59,18 @@ impl Runtime {
             .map(|p| GuardProject { id: p.id, checkout: p.path, worktree_root: p.worktree_root })
             .collect();
         let ssh = std::env::var_os("SSH_AUTH_SOCK").filter(|s| !s.is_empty()).map(PathBuf::from);
-        Guard::new(&crate::paths::home_dir(), &self.cfg.paths.root, projects, ssh)
+        let mut g = Guard::new(&crate::paths::home_dir(), &self.cfg.paths.root, projects, ssh);
+        // The login PATH's folders (`~/.cargo/bin`, `~/go/bin`, …): what is
+        // written there runs outside the sandbox the next time the user types its name.
+        let on_path = std::env::split_paths(&self.login_path)
+            .filter(|p| p.is_absolute() && p.parent().is_some())
+            .map(|p| super::sandbox::real_lenient(&p));
+        for p in on_path {
+            if !g.unsandboxed.contains(&p) {
+                g.unsandboxed.push(p);
+            }
+        }
+        g
     }
 
     /// `rec`'s allowances (global and `project`'s files, its role),
@@ -78,17 +89,23 @@ impl Runtime {
         if rec.is_overwatch() {
             return rec.role.network_allow.clone();
         }
+        self.network_allow_for(&rec.role.name, project, &rec.role.network_allow)
+    }
+
+    /// `base`, then the network allowances of `role` in `project`.
+    pub(crate) fn network_allow_for(&self, role: &str, project: Option<&str>, base: &[String]) -> Vec<String> {
         self.policy_ensure(project);
-        let entries = self.policy.sandbox_entries(project);
         let hosts = Allowances {
-            network: entries
-                .iter()
-                .filter(|e| e.kind == SandboxKind::Network && e.applies(&rec.role.name))
-                .filter_map(|e| e.value.clone())
+            network: self
+                .policy
+                .sandbox_entries(project)
+                .into_iter()
+                .filter(|e| e.kind == SandboxKind::Network && e.applies(role))
+                .filter_map(|e| e.value)
                 .collect(),
             ..Default::default()
         };
-        hosts.network_with(&rec.role.network_allow)
+        hosts.network_with(base)
     }
 
     /// `sandbox_kinds`: what the installed CLI supports.
@@ -192,7 +209,12 @@ impl Runtime {
         drop(w);
         let out = json!({"removed": entry_json(&entry), "file": sc.label(), "applies": applies_label(),
                          "running": self.sandbox_running(&sc, entry.role.as_deref())});
-        self.db.audit("user", None, "sandbox_remove", entry.value.as_deref().or(Some(id)), "ok", out.clone())?;
+        // Out of the file already: a failed log line is no failure of the remove.
+        if let Err(e) =
+            self.db.audit("user", None, "sandbox_remove", entry.value.as_deref().or(Some(id)), "ok", out.clone())
+        {
+            eprintln!("warn: sandbox entry {id} removed but not logged: {e:#}");
+        }
         Ok(out)
     }
 

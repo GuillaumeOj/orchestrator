@@ -194,7 +194,7 @@ pub struct Runtime {
     usage: Mutex<UsageCollector>,
     live: Mutex<BTreeMap<String, Arc<Live>>>,
     decisions: Mutex<VecDeque<AdmissionDecision>>,
-    login_path: String,
+    pub(crate) login_path: String,
     user_statusline: Option<String>,
     git_identity: (String, String),
     pub warnings: Vec<String>,
