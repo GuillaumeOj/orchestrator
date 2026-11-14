@@ -92,7 +92,7 @@ The agent's reason is shown even for an invalid request.
 | Reply | "Replied by you: {message, clamped}" |
 
 - **Undo** runs `sandbox_remove` on the entry the decision wrote. It is offered only when the decision created that entry: when the allowance already existed (`sandbox_add` returns the existing entry on a duplicate), the line reads "Already allowed for {project}" with no Undo, so Undo never removes an allowance the user set earlier. (Back: `decide` must report whether the entry is new.) On success the line becomes "Allowance removed · {agent} keeps it until it next starts" when `applies` is `next_start`, else "Allowance removed". It is not offered once the entry is gone (removed in Settings or by hand) — the line then reads "Allowed for {project} by you · removed".
-- Undo does not message the agent. (Rationale in §0: it is an edit of the allowance, not a new decision.)
+- Undo does not message the agent. (It edits the allowance; it is not a new decision.)
 - Undo failing: inline red "Could not remove it: {reason}." and the line keeps its Undo.
 - Restart outcome follows the existing lifecycle marker ("{agent} restarted", failures as other cards).
 
@@ -235,7 +235,7 @@ A block **Test a call**, always open, between Rules and "When no rule matches":
   - Matched a rule: "**{Effect}** · rule {id} ({file name}): {summary}" — e.g. "Allow · rule r12 (this project's file): Bash commands starting with `cargo test`".
   - No rule: "**{Effect}** · no rule matches; the default for {team roles|solo sessions} applies."
   - Decided by the core: "**Only you can allow this** · {core reason}."
-  - Never reachable for the sandbox: for a Bash call to a host/path that is outside the effective sandbox, an extra muted line: "Passing this test doesn't mean the command can reach it. Check the sandbox: **Open Sandbox settings**." (shown only when the tool is a shell command and the input mentions a URL; otherwise not shown).
+  - Sandbox hint: for a Bash call to a host/path that is outside the effective sandbox, an extra muted line: "Passing this test doesn't mean the command can reach it. Check the sandbox: **Open Sandbox settings**." (shown only when the tool is a shell command and the input mentions a URL; otherwise not shown).
 - Errors: "Could not test the call: {reason}." Empty input: the Test button is disabled; no inline error.
 - Flow: Settings → Permissions → Test a call → choose role and tool → type the input → **Test** → read the effect and the deciding rule → optional jump to the rule's row (the id is a link that scrolls to it) or to Sandbox.
 
