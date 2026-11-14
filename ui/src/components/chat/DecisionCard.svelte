@@ -9,6 +9,7 @@
   import { byWords, lineMarker, verbText } from '../../lib/chat.js';
   import { clock, dayTime, waited } from '../../lib/format.js';
   import { agentOf, blockOf, deliveryPrimary, isProgramCard, keyless, parked, restarted, subjectLine } from '../../lib/inbox.js';
+  import { errText, invoke } from '../../lib/ipc.js';
   import {
     decidingName,
     decidingShare,
@@ -21,13 +22,15 @@
     SOURCES_SHOWN,
   } from '../../lib/overwatch.js';
   import { programTag } from '../../lib/program.js';
+  import { cardSubject, decidedText, GITHUB_LINE, isGithub, reason, cardTitle as sandboxTitle } from '../../lib/sandbox.js';
   import { decisionKind, LIFECYCLE } from '../../lib/status.js';
   import { tooltip } from '../../lib/tooltip.js';
   import ContextBlocks from '../ContextBlocks.svelte';
   import LifecycleMarker from '../LifecycleMarker.svelte';
+  import Menu from '../Menu.svelte';
   import BriefBody from './BriefBody.svelte';
 
-  /** @type {{ d: any, line?: any, selected?: boolean, marked?: boolean, pending?: any, ref?: any, replying?: string | null, pulse?: boolean, deciding?: boolean, refok?: (ref: any) => boolean, handed?: number | null, entries?: any, choices?: string[][], onkey?: (key: string) => void, onact?: (id: string) => void, onreply?: (text: string | null) => void, onjump?: () => void, onhold?: (held: boolean) => void, onref?: (ref: any) => void }} */
+  /** @type {{ d: any, line?: any, selected?: boolean, marked?: boolean, pending?: any, ref?: any, replying?: string | null, pulse?: boolean, deciding?: boolean, refok?: (ref: any) => boolean, handed?: number | null, entries?: any, choices?: string[][], onkey?: (key: string) => void, onact?: (id: string) => void, onreply?: (text: string | null) => void, onjump?: () => void, onhold?: (held: boolean) => void, onref?: (ref: any) => void, onscope?: (scope: string) => void, menu?: boolean, onmenu?: (open: boolean) => void }} */
   let {
     d,
     line = null,
@@ -48,6 +51,9 @@
     onjump = () => {},
     onhold = () => {},
     onref = () => {},
+    onscope = () => {},
+    menu = false,
+    onmenu = () => {},
   } = $props();
 
   const live = $derived(!line);
@@ -55,7 +61,8 @@
   const brief = $derived(d.kind === 'brief');
   // A brief's Launch / Edit opened the dialog: the card stays open meanwhile, its actions off (notes §8.4).
   const opening = $derived(live && brief && app.overlay?.intake?.brief_decision === d.id);
-  const cardTitle = $derived(brief ? [d.title ?? d.payload?.title, projectName(d.project ?? d.payload?.project) ?? d.payload?.project_name ?? d.project].filter(Boolean).join(' · ') : d.title);
+  const sandbox = $derived(d.kind === 'sandbox');
+  const cardTitle = $derived(sandbox ? sandboxTitle(d) : brief ? [d.title ?? d.payload?.title, projectName(d.project ?? d.payload?.project) ?? d.payload?.project_name ?? d.project].filter(Boolean).join(' · ') : d.title);
   // "Permission · by rule" on an expanded line settled without you.
   const kindBy = $derived(line?.by && line.by !== 'you' ? ` · ${byWords({ ...line, by_detail: undefined })}` : '');
   const k = $derived(decisionKind(d));
@@ -136,6 +143,36 @@
       : null,
   );
 
+
+  // The sandbox card (ux-flows §2): the allowance asked for, the scope menu, the decided line and its Undo.
+  const sp = $derived(d.payload ?? {});
+  const who = $derived(agentOf(d) ?? sp.agent ?? 'the agent');
+  const invalid = $derived(sandbox ? (sp.invalid ?? null) : null);
+  const scopeItems = $derived([{ id: 'global', label: 'Allow everywhere' }, ...(sp.role ? [{ id: 'role', label: `Allow for ${sp.role} only` }] : [])]);
+  const decideError = $derived(app.decideErrors[d.id] ?? '');
+  const decidedLine = $derived(sandbox && !live ? decidedText(d, projectName) : null);
+  let removed = $state('');
+  let undoError = $state('');
+  let caret = $state(/** @type {HTMLElement | undefined} */ (undefined));
+  // ⇧a asks for the scope menu.
+  $effect(() => {
+    if (menu && caret) {
+      untrack(() => onmenu(false));
+      caret.click();
+    }
+  });
+  /** Undo of an Allow: removes the entry it wrote (only when it created it). */
+  async function undoAllow() {
+    const e = sp.outcome?.entry;
+    undoError = '';
+    try {
+      const r = await invoke('sandbox_remove', { id: e.id, file: e.file });
+      removed = r?.applies === 'next_start' ? `Allowance removed · ${who} keeps it until it next starts` : 'Allowance removed';
+    } catch (err) {
+      undoError = `Could not remove it: ${reason(err)}.`;
+    }
+  }
+
   let text = $state('');
   $effect(() => {
     if (!replying) text = '';
@@ -160,7 +197,7 @@
   }
 </script>
 
-<div class="card {state}" class:open class:selected class:marked class:pulse class:ro={!live} class:muted={state === 'stale'} data-decision={d.id} data-state={pending && !pending.sent ? 'pending' : state}>
+<div class="card {state}" class:open class:selected class:marked class:pulse class:ro={!live} class:muted={state === 'stale'} data-decision={d.id} data-kind={d.kind} data-state={pending && !pending.sent ? 'pending' : state}>
   {#if ref && !pending && waitsOnUser}
     {@const what = `${verbText(ref.verb)} ${ref.what}`}
     <button class="ref" onclick={onjump} aria-label="Follows: {what}, {clock(ref.at_ms, now)}. Jump to it">↳ after: {what} · {clock(ref.at_ms, now)}</button>
@@ -172,7 +209,8 @@
   </div>
   <div class="title">{cardTitle}</div>
   {#if tag}<div class="ptag" data-program-tag><span aria-hidden="true">{'\u{F0328}'}</span> {tag}</div>{/if}
-  {#if subjectLine(d)}<div class="subject secondary">{subjectLine(d)}</div>{/if}
+  {#if sandbox}<div class="subject secondary">{cardSubject(d, projectName)}</div>
+  {:else if subjectLine(d)}<div class="subject secondary">{subjectLine(d)}</div>{/if}
   {#if askText}<div class="why muted" data-asks>{askText}</div>{/if}
   {#if d.summary && !d.context?.length}<p class="summary">{d.summary}</p>{/if}
   {#if brief}
@@ -187,6 +225,19 @@
     <p class="muted note">This was still waiting when the core restarted. Your answer reaches {agentOf(d) ?? 'the agent'} as a turn.</p>
   {/if}
   {#if advice}<p class="muted note">{advice}</p>{/if}
+  {#if sandbox && live && waitsOnUser}
+    {#if state !== 'stale'}<p class="muted note" data-sandbox-help>Widens what {who}'s shell commands can reach. Permissions rules can't do this.</p>{/if}
+    {#if sp.kind === 'network' && isGithub(sp.value)}<p class="muted note" data-github>{GITHUB_LINE}</p>{/if}
+    {#if invalid}<p class="invalid" role="alert" data-invalid>Can't be allowed: {invalid}</p>{/if}
+    {#if decideError}<p class="err" role="alert">{decideError}</p>{/if}
+    {#if state === 'stale'}<p class="muted note">{who} is no longer running. Nothing to retry.</p>{/if}
+  {/if}
+  {#if decidedLine}
+    <p class="decided" data-sandbox-decided>
+      {removed || decidedLine}{#if !removed && sp.outcome?.created}{' · '}<button class="link" aria-label="Undo allowing {sp.value ?? 'local ports'}" onclick={undoAllow}>Undo</button>{/if}
+    </p>
+    {#if undoError}<p class="err" role="alert">{undoError}</p>{/if}
+  {/if}
   {#if replying}
     <div class="reply">
       <!-- svelte-ignore a11y_autofocus -->
@@ -213,7 +264,25 @@
       {/if}
     </div>
   {/if}
-  {#if acting}
+  {#if acting && sandbox}
+    <div class="actions" data-sandbox-actions>
+      {#if state === 'stale'}
+        <button class="btn" onclick={() => onact('dismiss')}>Dismiss</button>
+      {:else}
+        {#if !invalid}
+          <span class="split">
+            <button class="btn primary" use:tooltip={{ label: 'Allow for this project', key: 'a' }} onclick={() => onkey('a')}>Allow for this project</button>
+            <Menu items={scopeItems} label="More ways to allow" onselect={(i) => onscope(String(i.id))}>
+              {#snippet trigger(attrs)}<button class="btn primary caret" bind:this={caret} {...attrs} aria-label="More ways to allow">▾</button>{/snippet}
+            </Menu>
+          </span>
+        {/if}
+        <button class="btn" class:ghost={!invalid} use:tooltip={{ label: 'Reject', key: 'r' }} onclick={() => onkey('r')}>Reject</button>
+        <button class="btn" class:ghost={!invalid} use:tooltip={{ label: 'Reply', key: 'y' }} onclick={() => onkey('y')}>Reply</button>
+      {/if}
+    </div>
+    {#if state !== 'stale'}<p class="muted note" data-sandbox-after>{invalid ? 'The agent is told no. Reply to suggest something narrower.' : `${who} restarts and retries.`}</p>{/if}
+  {:else if acting}
     <div class="actions">
       {#each keyed as x (x.id)}
         <button
@@ -273,6 +342,9 @@
   }
   .card.open {
     border-color: var(--color-status-waiting-for-you);
+  }
+  .card.open[data-kind='sandbox'] {
+    border-color: var(--color-decision-sandbox);
   }
   .card.failed {
     border-color: var(--color-lifecycle-failed);
@@ -364,6 +436,26 @@
   }
   .actions .btn {
     white-space: nowrap;
+  }
+  .split {
+    display: inline-flex;
+    gap: 1px;
+  }
+  .invalid,
+  .err {
+    margin: 0;
+    padding: var(--space-xs) var(--space-sm);
+    color: var(--color-status-error);
+    border: var(--border-width-default) solid var(--color-status-error);
+    border-radius: var(--radius-sm);
+  }
+  .err {
+    border: 0;
+    padding: 0;
+  }
+  .decided {
+    margin: 0;
+    color: var(--color-text-secondary);
   }
   /* The Overwatch's recommendation: an accent outline and a tag, never pre-selected (notes §4.1). */
   .actions .btn.rec {

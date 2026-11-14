@@ -34,7 +34,7 @@
 </script>
 
 <div class="blocks">
-  {#each decision.context ?? [] as block, i (`${decision.id}:${i}`)}
+  {#each (decision.context ?? []).map((block, i) => ({ block, i })).filter((x) => x.block.type !== 'sandbox') as { block, i } (`${decision.id}:${i}`)}
     <section class="blk" data-block={block.type}>
       {#if block.type === 'options'}
         <OptionsBlock {block} name={decision.id} bind:choices />

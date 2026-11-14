@@ -18,6 +18,7 @@ import * as L from './layout.js';
 import { runNowCost, runNowDialog } from './mission.js';
 import { attention, clearDigest, counts, needsYou, statusOf } from './now.svelte.js';
 import { canOpenSession, overwatchOf } from './overwatch.js';
+import { reason as reasonOf } from './sandbox.js';
 import { isLocalHost, liveTitle, looksLikePath, POLL_MS, parseOsc7 } from './shellcwd.js';
 import { STATUS } from './status.js';
 import { runStateLabel } from './teams.js';
@@ -91,7 +92,8 @@ export const app = $state({
   // The Settings window's last section, while the app runs (§3.2).
   settingsSection: /** @type {string | null} */ (null),
   toasts: [],
-  pending: [], // decisions in their undo window: { item, card, action, message, at, toast }
+  pending: [], // decisions in their undo window: { item, card, action, message, scope, at, toast }
+  decideErrors: /** @type {Record<string, string>} */ ({}), // a refused sandbox Allow, by decision id
   // What the Inspector shows when no agent pane has focus (D10): set by the
   // sidebar, the palette and Mission control. { kind: 'agent' | 'run' | 'decision', id }
   selection: null,
@@ -2374,7 +2376,7 @@ export function jumpTargets() {
 
 /** Records a decision; it reaches the core when its 5 s undo window ends (FR-707 `u`).
  *  Its toast says what will be sent; the effect is said when the core pushes it. */
-export function decide(d, action, message = null) {
+export function decide(d, action, message = null, scope = null) {
   if (app.pending.some((p) => p.item === d.id)) return;
   // Always allow writes a rule: it asks once (Cancel · Always allow), then goes at once, with no undo window.
   if (action === 'always') {
@@ -2396,7 +2398,7 @@ export function decide(d, action, message = null) {
   const t = toast(pendingToast(d, action), { ms: UNDO_MS, undo: true, item: d.id });
   app.pending = [
     ...app.pending,
-    { item: d.id, action, message, at: Date.now(), toast: t, project: d.subject?.project ?? null },
+    { item: d.id, action, message, scope, at: Date.now(), toast: t, project: d.subject?.project ?? null },
   ];
 }
 
@@ -2436,13 +2438,24 @@ export async function flushDecisions(now = Date.now()) {
   // The decision as sent: an answer with no version is newer only than that card.
   const sent = batch.map((p) => app.now.decisions[p.item]);
   const acts = await Promise.allSettled(
-    batch.map((p) => invoke('inbox_act', { item: p.item, action: p.action, message: p.message })),
+    batch.map((p) =>
+      invoke('inbox_act', {
+        item: p.item,
+        action: p.action,
+        ...(p.scope ? { scope: p.scope } : {}),
+        message: p.message,
+      }),
+    ),
   );
   batch.forEach((p, i) => {
     const r = acts[i];
     if (r.status === 'rejected') {
       mine.delete(p.item);
-      toast(errText(r.reason), { kind: 'error' });
+      // A sandbox Allow the core refused: the card stays open and says so (ux-flows §2.3).
+      const sandbox = app.now.decisions[p.item]?.kind === 'sandbox' && p.action === 'approve';
+      const why = sandbox ? `Could not allow it: ${reasonOf(r.reason)}. Nothing was changed.` : errText(r.reason);
+      if (sandbox) app.decideErrors = { ...app.decideErrors, [p.item]: why };
+      toast(why, { kind: 'error' });
       return;
     }
     // The answer's lifecycle counts as a push unless older than what we hold: a
@@ -2491,6 +2504,7 @@ export function decisionPushed(prev, d) {
 export function decisionGone(id) {
   undoItem(id);
   mine.delete(id);
+  if (app.decideErrors[id]) delete app.decideErrors[id];
 }
 
 /** FR-415: the agent again as a fresh session with its brief (agent menu). */

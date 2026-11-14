@@ -135,12 +135,13 @@ describe('openers (design-notes §3.1)', () => {
     expect(app.window).toMatchObject({ kind: 'project-settings', projectId: 'shop-api' });
   });
 
-  it('Settings has 9 sections, Keyboard is gone', () => {
+  it('Settings has 10 sections, Keyboard is gone', () => {
     expect(SETTINGS_SECTIONS.map((s) => s.id)).toEqual([
       'claude',
       'integrations',
       'overwatch',
       'permissions',
+      'sandbox',
       'mcp',
       'terminal',
       'pacing',
