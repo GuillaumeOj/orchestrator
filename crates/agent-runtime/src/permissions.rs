@@ -158,7 +158,7 @@ pub fn form_pattern(tool: &str, value: &str, home: &std::path::Path) -> Result<S
             if p.is_empty() {
                 return Err("/ is every file: pick a folder.".into());
             }
-            if p.contains(['(', ')', '*', '?', '[', ']', '{', '}']) {
+            if p.contains(['(', ')']) || p.contains(crate::project_files::GLOB_CHARS) {
                 return Err("A path with ( ) * ? [ ] { } can't be written as a rule.".into());
             }
             let tool = if tool == "read" { "Read" } else { "Edit" };
@@ -195,7 +195,7 @@ pub fn form_call(tool: &str, value: &str, home: &std::path::Path) -> Result<(Str
             }
             (format!("mcp__{n}"), serde_json::json!({}))
         }
-        other => return Err(format!("tool {other:?}: bash | read | edit | webfetch | mcp")),
+        other => return Err(format!("tool {other:?}: {}", FORM_TOOLS[..FORM_TOOLS.len() - 1].join(" | "))),
     })
 }
 
@@ -210,12 +210,19 @@ pub fn rule_summary(pattern: &str) -> String {
     // `//abs` is absolute; `~/…`, `/…` (the settings file's folder) and
     // relative paths are shown as written.
     let path = |s: &str| s.strip_prefix('/').filter(|abs| abs.starts_with('/')).unwrap_or(s).to_string();
-    let file_verb = |t: &str| match t {
+    let file_verb = match tool {
         "Read" => Some("Reading"),
         "Edit" | "MultiEdit" => Some("Editing"),
         "Write" => Some("Writing"),
         _ => None,
     };
+    if let Some(v) = file_verb {
+        return match spec.map(|s| (s, s.strip_suffix("/**"))) {
+            None => format!("{v} any file"),
+            Some((_, Some(dir))) => format!("{v} files in `{}`", path(dir)),
+            Some((s, None)) => format!("{v} `{}`", path(s)),
+        };
+    }
     match (tool, spec) {
         ("*", None) => "Any tool call".into(),
         ("Bash", None) => "Any Bash command".into(),
@@ -228,14 +235,6 @@ pub fn rule_summary(pattern: &str) -> String {
             Some(d) => format!("Fetching pages from `{d}`"),
             None => format!("Fetching `{s}`"),
         },
-        (t, None) if file_verb(t).is_some() => format!("{} any file", file_verb(t).unwrap_or_default()),
-        (t, Some(s)) if file_verb(t).is_some() => {
-            let v = file_verb(t).unwrap_or_default();
-            match s.strip_suffix("/**") {
-                Some(dir) => format!("{v} files in `{}`", path(dir)),
-                None => format!("{v} `{}`", path(s)),
-            }
-        }
         ("mcp__*", None) => "Any MCP tool".into(),
         (t, None) if t.starts_with("mcp__") => {
             let rest = &t["mcp__".len()..];

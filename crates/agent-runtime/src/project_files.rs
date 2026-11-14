@@ -51,7 +51,7 @@ pub(crate) const UNSANDBOXED_NAMES: &[&str] = &[".git", ".claude"];
 
 /// Claude Code's rule patterns are gitignore-style: a path with these would
 /// be read as a pattern, and the escaping is not documented.
-const GLOB_CHARS: &[char] = &['*', '?', '[', ']', '{', '}'];
+pub(crate) const GLOB_CHARS: &[char] = &['*', '?', '[', ']', '{', '}'];
 
 /// What a project file may not touch.
 #[derive(Clone, Debug)]

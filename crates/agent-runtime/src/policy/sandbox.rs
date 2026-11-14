@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 
 use crate::compile::CREDENTIAL_STORES;
-use crate::project_files::{UNSANDBOXED, UNSANDBOXED_NAMES, UNSANDBOXED_SYSTEM, fold, guarded};
+use crate::project_files::{GLOB_CHARS, UNSANDBOXED, UNSANDBOXED_NAMES, UNSANDBOXED_SYSTEM, fold, guarded};
 
 /// What an allowance widens.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
@@ -131,27 +131,12 @@ const SYSTEM: &[&str] =
     &["/System", "/usr", "/bin", "/sbin", "/etc", "/private/etc", "/Library", "/var", "/private/var", "/cores", "/dev"];
 const SYSTEM_OPEN: &[&str] = &["/var/folders", "/private/var/folders", "/tmp", "/private/tmp"];
 
-/// Claude Code's sandbox paths are patterns: these would be read as one.
-const PATTERN_CHARS: &[char] = &['*', '?', '[', ']', '{', '}', '\\', '"'];
+/// Escapes and quotes in a sandbox path (on top of [`GLOB_CHARS`], read as a pattern).
+const ESCAPE_CHARS: &[char] = &['\\', '"'];
 
-/// `p` through its links; a missing tail is kept as typed after the
-/// nearest existing ancestor's real path (a cache folder not created yet).
-pub fn real_lenient(p: &Path) -> PathBuf {
-    let mut tail = vec![];
-    let mut cur = p.to_path_buf();
-    loop {
-        if let Ok(r) = std::fs::canonicalize(&cur) {
-            return tail.into_iter().rev().fold(r, |acc: PathBuf, c| acc.join(c));
-        }
-        match (cur.parent(), cur.file_name()) {
-            (Some(parent), Some(name)) => {
-                tail.push(name.to_os_string());
-                cur = parent.to_path_buf();
-            }
-            _ => return p.to_path_buf(),
-        }
-    }
-}
+/// `p` through its links; a missing tail is kept after the nearest existing
+/// ancestor's real path (a cache folder not created yet).
+pub(crate) use super::hard::real_through_links as real_lenient;
 
 /// `~`, `~/…` expanded ([`project_files::expand`]); `..` refused; the result absolute.
 fn expand(raw: &str, home: &Path) -> Result<PathBuf, String> {
@@ -203,7 +188,7 @@ fn check_common(shown: &str, canon: &Path, g: &Guard) -> Result<(), String> {
     let contains = |inner: &Path| fold(inner).starts_with(&c);
     let overlaps = |list: &[PathBuf]| list.iter().any(|p| inside(p) || contains(p));
     let s = canon.to_string_lossy();
-    if s.contains(PATTERN_CHARS) || s.chars().any(char::is_control) {
+    if s.contains(GLOB_CHARS) || s.contains(ESCAPE_CHARS) || s.chars().any(char::is_control) {
         return Err(format!("{shown}: names with * ? [ ] {{ }} \\ \" or control characters can't be allowed."));
     }
     if canon.parent().is_none() || contains(&g.home) {
@@ -316,14 +301,16 @@ pub fn validate(
 
 /// The canonical path a valid `write` / `unix_socket` value compiles to
 /// (re-validated: links may have moved since it was added).
-pub fn resolve(kind: SandboxKind, raw: &str, g: &Guard, project: Option<&str>) -> Result<PathBuf, String> {
+/// `Ok(None)` for the kinds without a path.
+pub fn resolve(kind: SandboxKind, raw: &str, g: &Guard, project: Option<&str>) -> Result<Option<PathBuf>, String> {
+    let check: fn(&str, &Path, &Guard, Option<&str>) -> Result<(), String> = match kind {
+        SandboxKind::Write => check_write,
+        SandboxKind::UnixSocket => |shown, canon, g, _| check_socket(shown, canon, g),
+        SandboxKind::Network | SandboxKind::LocalPorts => return Ok(None),
+    };
     let canon = real_lenient(&expand(raw, &g.home)?);
-    match kind {
-        SandboxKind::Write => check_write(raw, &canon, g, project)?,
-        SandboxKind::UnixSocket => check_socket(raw, &canon, g)?,
-        _ => return Err(format!("{} has no path", kind.as_str())),
-    }
-    Ok(canon)
+    check(raw, &canon, g, project)?;
+    Ok(Some(canon))
 }
 
 /// What the allowances add to an agent's sandbox (`compile` and the hard
@@ -348,14 +335,21 @@ impl Allowances {
         let mut out = Allowances::default();
         for e in entries.into_iter().filter(|e| e.applies(role)) {
             let v = e.value.as_deref().unwrap_or("");
-            match e.kind {
-                SandboxKind::Network => push_new(&mut out.network, v.to_string()),
-                SandboxKind::LocalPorts => out.local_binding = true,
-                SandboxKind::Write | SandboxKind::UnixSocket => match resolve(e.kind, v, g, project) {
-                    Ok(p) if e.kind == SandboxKind::Write => push_new(&mut out.write, p),
-                    Ok(p) => push_new(&mut out.unix_sockets, p),
-                    Err(why) => eprintln!("warn: sandbox entry {} skipped: {why}", e.id),
-                },
+            let paths = match e.kind {
+                SandboxKind::Network => {
+                    push_new(&mut out.network, v.to_string());
+                    continue;
+                }
+                SandboxKind::LocalPorts => {
+                    out.local_binding = true;
+                    continue;
+                }
+                SandboxKind::Write => &mut out.write,
+                SandboxKind::UnixSocket => &mut out.unix_sockets,
+            };
+            match resolve(e.kind, v, g, project) {
+                Ok(p) => paths.extend(p.filter(|p| !paths.contains(p))),
+                Err(why) => eprintln!("warn: sandbox entry {} skipped: {why}", e.id),
             }
         }
         out
@@ -371,7 +365,7 @@ impl Allowances {
     }
 }
 
-fn push_new<T: PartialEq>(v: &mut Vec<T>, x: T) {
+pub(crate) fn push_new<T: PartialEq>(v: &mut Vec<T>, x: T) {
     if !v.contains(&x) {
         v.push(x);
     }

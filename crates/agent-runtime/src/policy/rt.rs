@@ -67,11 +67,12 @@ impl Runtime {
     /// commands; the hot paths only [`Runtime::policy_ensure`].
     pub fn policy_sync(&self) {
         let mut want = BTreeMap::from([(Scope::Global, self.global_policy_path())]);
-        for p in self.db.projects(false).unwrap_or_default() {
-            want.insert(Scope::Project(p.id.clone()), self.project_policy_path(&p));
+        let projects = self.db.projects(false).unwrap_or_default();
+        for p in &projects {
+            want.insert(Scope::Project(p.id.clone()), self.project_policy_path(p));
         }
         // Projects moved, came or went: which allowances are valid may have too.
-        let revalidate = self.policy.set_guard(self.sandbox_guard());
+        let revalidate = self.policy.set_guard(self.sandbox_guard(&projects));
         let read: Vec<Scope> = self
             .policy
             .set_paths(want)
@@ -280,8 +281,7 @@ impl Runtime {
         if pattern.is_empty() {
             bail!("a rule needs a pattern");
         }
-        let note = note.map(crate::project_files::normalize_note).transpose().map_err(|e| anyhow!(e))?.flatten();
-        let role = role.map(str::trim).filter(|r| !r.is_empty()).map(str::to_string);
+        let (role, note) = super::form_role_note(role, note)?;
         self.policy_sync();
         let (target, role, agent) = match scope {
             "global" => (Scope::Global, role, None),
@@ -437,7 +437,7 @@ impl Runtime {
         let wt = proj.as_ref().map(|p| p.path.clone()).unwrap_or_else(|| PathBuf::from("/"));
         let mut hctx = self.hard_ctx_base(wt, proj.as_ref());
         let defaults: Vec<String> = crate::role::DEFAULT_NETWORK_ALLOW.iter().map(|h| h.to_string()).collect();
-        hctx.network_allow = self.network_allow_for(role, proj.as_ref().map(|p| p.id.as_str()), &defaults);
+        hctx.network_allow = self.policy.sandbox_hosts(proj.as_ref().map(|p| p.id.as_str()), role, &defaults);
         let hard = hard::check(&hctx, tool, input);
         let s = Subject {
             agent_id: String::new(),

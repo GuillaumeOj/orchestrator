@@ -49,14 +49,16 @@ fn entry_json(e: &SandboxEntry) -> Value {
 }
 
 impl Runtime {
-    /// What no allowance may touch, from the registered projects.
-    pub(crate) fn sandbox_guard(&self) -> Guard {
-        let projects = self
-            .db
-            .projects(false)
-            .unwrap_or_default()
-            .into_iter()
-            .map(|p| GuardProject { id: p.id, checkout: p.path, worktree_root: p.worktree_root })
+    /// What no allowance may touch, from the registered `projects` (built
+    /// at each [`Runtime::policy_sync`]; the rest reads [`super::Policy::guard`]).
+    pub(crate) fn sandbox_guard(&self, projects: &[orch_store::Project]) -> Guard {
+        let projects = projects
+            .iter()
+            .map(|p| GuardProject {
+                id: p.id.clone(),
+                checkout: p.path.clone(),
+                worktree_root: p.worktree_root.clone(),
+            })
             .collect();
         let ssh = std::env::var_os("SSH_AUTH_SOCK").filter(|s| !s.is_empty()).map(PathBuf::from);
         let mut g = Guard::new(&crate::paths::home_dir(), &self.cfg.paths.root, projects, ssh);
@@ -66,11 +68,15 @@ impl Runtime {
             .filter(|p| p.is_absolute() && p.parent().is_some())
             .map(|p| super::sandbox::real_lenient(&p));
         for p in on_path {
-            if !g.unsandboxed.contains(&p) {
-                g.unsandboxed.push(p);
-            }
+            super::sandbox::push_new(&mut g.unsandboxed, p);
         }
         g
+    }
+
+    /// The current guard, the files read first when they never were.
+    fn guard(&self, project: Option<&str>) -> Guard {
+        self.policy_ensure(project);
+        self.policy.guard()
     }
 
     /// `rec`'s allowances (global and `project`'s files, its role),
@@ -79,8 +85,8 @@ impl Runtime {
         if rec.is_overwatch() {
             return Allowances::default();
         }
-        self.policy_ensure(project);
-        Allowances::of(&self.policy.sandbox_entries(project), &rec.role.name, &self.sandbox_guard(), project)
+        let g = self.guard(project);
+        Allowances::of(&self.policy.sandbox_entries(project), &rec.role.name, &g, project)
     }
 
     /// The hosts `rec` may reach: its role's, then the network allowances
@@ -89,23 +95,18 @@ impl Runtime {
         if rec.is_overwatch() {
             return rec.role.network_allow.clone();
         }
-        self.network_allow_for(&rec.role.name, project, &rec.role.network_allow)
+        self.policy_ensure(project);
+        self.policy.sandbox_hosts(project, &rec.role.name, &rec.role.network_allow)
     }
 
-    /// `base`, then the network allowances of `role` in `project`.
-    pub(crate) fn network_allow_for(&self, role: &str, project: Option<&str>, base: &[String]) -> Vec<String> {
-        self.policy_ensure(project);
-        let hosts = Allowances {
-            network: self
-                .policy
-                .sandbox_entries(project)
-                .into_iter()
-                .filter(|e| e.kind == SandboxKind::Network && e.applies(role))
-                .filter_map(|e| e.value)
-                .collect(),
-            ..Default::default()
-        };
-        hosts.network_with(base)
+    /// The running agents (not the Overwatch) of `project` (`None`: all).
+    pub(crate) fn live_in_scope(&self, project: Option<&str>) -> Vec<AgentRecord> {
+        self.live_ids()
+            .iter()
+            .filter_map(|id| self.store.read(|s| s.agents.get(id).cloned()))
+            .filter(|rec| !rec.is_overwatch())
+            .filter(|rec| project.is_none_or(|p| self.agent_project(rec).as_deref() == Some(p)))
+            .collect()
     }
 
     /// `sandbox_kinds`: what the installed CLI supports.
@@ -117,7 +118,7 @@ impl Runtime {
     pub fn sandbox_check(&self, kind: &str, value: Option<&str>, scope: &str, project: Option<&str>) -> Result<Value> {
         let kind = kind_of(kind)?;
         let sc = scope_of(scope, project)?;
-        Ok(match super::sandbox::validate(kind, value, &self.sandbox_guard(), sc.project()) {
+        Ok(match super::sandbox::validate(kind, value, &self.guard(sc.project()), sc.project()) {
             Ok(v) => json!({"ok": true, "value": v}),
             Err(reason) => json!({"ok": false, "reason": reason}),
         })
@@ -125,18 +126,12 @@ impl Runtime {
 
     /// Live agents a change of `scope`'s file (for `role`) reaches.
     fn sandbox_running(&self, scope: &Scope, role: Option<&str>) -> usize {
-        self.live_ids()
-            .iter()
-            .filter_map(|id| self.store.read(|s| s.agents.get(id).cloned()))
-            .filter(|rec| !rec.is_overwatch() && role.is_none_or(|r| r == rec.role.name))
-            .filter(|rec| scope.project().is_none_or(|p| self.agent_project(rec).as_deref() == Some(p)))
-            .count()
+        self.live_in_scope(scope.project()).iter().filter(|rec| role.is_none_or(|r| r == rec.role.name)).count()
     }
 
     /// `sandbox_add`: validates, appends to the file of `scope` (a duplicate
     /// returns the existing entry), logs it (actor `user`).
     /// `{entry, file, path, applies, running, created}`.
-    #[allow(clippy::too_many_arguments)]
     pub fn sandbox_add(
         &self,
         scope: &str,
@@ -153,9 +148,8 @@ impl Runtime {
             bail!("no project {}", sc.project().unwrap_or(""));
         }
         let value =
-            super::sandbox::validate(kind, value, &self.sandbox_guard(), sc.project()).map_err(|r| anyhow!(r))?;
-        let role = role.map(str::trim).filter(|r| !r.is_empty()).map(str::to_string);
-        let note = note.map(crate::project_files::normalize_note).transpose().map_err(|e| anyhow!(e))?.flatten();
+            super::sandbox::validate(kind, value, &self.policy.guard(), sc.project()).map_err(|r| anyhow!(r))?;
+        let (role, note) = super::form_role_note(role, note)?;
         let path = self.policy_path(&sc)?;
         let w = self.policy.write_lock();
         let existing = self

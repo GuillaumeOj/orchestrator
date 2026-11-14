@@ -1080,7 +1080,7 @@ impl Runtime {
             session: mode,
             env,
             git_identity: self.git_identity.clone(),
-            sandbox: if overwatch.is_some() { Default::default() } else { self.allowances(rec, project.as_deref()) },
+            sandbox: self.allowances(rec, project.as_deref()),
             project_files,
             overwatch,
         };
@@ -1090,25 +1090,18 @@ impl Runtime {
     /// Rewrites the `settings.json` of running agents (a sandbox allowance
     /// changed): the agent dir's other files and the process stay as they are.
     /// `project`: only that project's agents (`None`: every agent).
-    pub(crate) fn rewrite_live_settings(&self, project: Option<&str>) -> usize {
-        let mut n = 0;
-        for id in self.live_ids() {
-            let Some(rec) = self.store.read(|s| s.agents.get(&id).cloned()) else { continue };
-            if rec.is_overwatch() || project.is_some_and(|p| self.agent_project(&rec).as_deref() != Some(p)) {
-                continue;
-            }
+    pub(crate) fn rewrite_live_settings(&self, project: Option<&str>) {
+        for rec in self.live_in_scope(project) {
             let done = self.compile_ctx(&rec, SessionMode::Resume(rec.session_id.clone())).and_then(|(ctx, _)| {
                 let c = compile(&rec.role, &ctx);
                 let pretty = serde_json::to_string_pretty(&c.settings)?;
                 crate::compile::write_atomic(&c.settings_path, pretty.as_bytes())?;
                 Ok(())
             });
-            match done {
-                Ok(()) => n += 1,
-                Err(e) => eprintln!("warn: settings of {id} not rewritten: {e:#}"),
+            if let Err(e) = done {
+                eprintln!("warn: settings of {} not rewritten: {e:#}", rec.id);
             }
         }
-        n
     }
 
     /// `id` is the Overwatch's record (made by its own start, never a

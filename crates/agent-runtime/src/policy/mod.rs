@@ -401,6 +401,17 @@ pub fn evaluate(
     })
 }
 
+/// A Settings form's optional `role` (trimmed, empty = none) and `note`
+/// (normalised like a project file's).
+pub(crate) fn form_role_note(
+    role: Option<&str>,
+    note: Option<&str>,
+) -> anyhow::Result<(Option<String>, Option<String>)> {
+    let role = role.map(str::trim).filter(|r| !r.is_empty()).map(str::to_string);
+    let note = note.map(crate::project_files::normalize_note).transpose().map_err(|e| anyhow::anyhow!(e))?.flatten();
+    Ok((role, note))
+}
+
 /// The global file's `[defaults]`, else D3's.
 fn defaults_of(files: &BTreeMap<Scope, FileState>) -> Defaults {
     files.get(&Scope::Global).and_then(|f| f.doc.defaults).unwrap_or_default()
@@ -524,10 +535,23 @@ impl Policy {
     /// The allowances of the global file then `project`'s (invalid ones
     /// included: [`SandboxEntry::applies`] skips them).
     pub fn sandbox_entries(&self, project: Option<&str>) -> Vec<SandboxEntry> {
+        let project = project.map(|p| Scope::Project(p.into()));
+        std::iter::once(Scope::Global).chain(project).filter_map(|sc| self.sandbox_of(&sc)).flatten().collect()
+    }
+
+    /// `base`, then the network allowances of `role` (global, then
+    /// `project`'s), deduplicated: read under the lock, nothing cloned but hosts.
+    pub fn sandbox_hosts(&self, project: Option<&str>, role: &str, base: &[String]) -> Vec<String> {
+        let mut out = vec![];
+        for h in base {
+            sandbox::push_new(&mut out, h.clone());
+        }
         let files = self.lock();
-        let mut out: Vec<SandboxEntry> = files.get(&Scope::Global).map(|f| f.doc.sandbox.clone()).unwrap_or_default();
-        if let Some(p) = project {
-            out.extend(files.get(&Scope::Project(p.into())).map(|f| f.doc.sandbox.clone()).unwrap_or_default());
+        let project = project.map(|p| Scope::Project(p.into()));
+        for f in std::iter::once(Scope::Global).chain(project).filter_map(|sc| files.get(&sc)) {
+            for e in f.doc.sandbox.iter().filter(|e| e.kind == sandbox::SandboxKind::Network && e.applies(role)) {
+                sandbox::push_new(&mut out, e.value.clone().unwrap_or_default());
+            }
         }
         out
     }
