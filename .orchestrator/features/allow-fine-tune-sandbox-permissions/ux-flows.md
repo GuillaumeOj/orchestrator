@@ -62,7 +62,7 @@ Same card frame as the permission `DecisionCard`: kind line · title · subject 
 | Line under the actions (muted) | "{agent} restarts and retries." (fixed: an approved request always restarts the agent) |
 | Extra line when the host matches `github.com` / `*.github.com` / `api.github.com` / `*.githubusercontent.com` | "Without your GitHub login: issues and pull requests still go through the orchestrator." |
 | Menu item help (muted, second line) | Allow everywhere: "Every project's agents." · Allow for {role} only: "Only {role} agents of this project." |
-| Keyboard | `a` allow for this project (same slot as other cards' primary), `r` reject, `y` reply; the caret menu opens with `⇧a` |
+| Keyboard | `a` allow for this project (same slot as other cards' primary), `r` reject, `y` reply; the caret menu opens with `⇧a`. `u` stays the card's existing undo of a just-sent decision; the decided line's **Undo** (§2.4) is a button only and takes no key |
 
 The agent's reason is shown even for an invalid request.
 
@@ -91,7 +91,7 @@ The agent's reason is shown even for an invalid request.
 | Reject | "Rejected by you" |
 | Reply | "Replied by you: {message, clamped}" |
 
-- **Undo** runs `sandbox_remove` on the entry the decision wrote. On success the line becomes "Allowance removed · {agent} keeps it until it next starts" when `applies` is `next_start`, else "Allowance removed". It is not offered once the entry is gone (removed in Settings or by hand) — the line then reads "Allowed for {project} by you · removed".
+- **Undo** runs `sandbox_remove` on the entry the decision wrote. It is offered only when the decision created that entry: when the allowance already existed (`sandbox_add` returns the existing entry on a duplicate), the line reads "Already allowed for {project}" with no Undo, so Undo never removes an allowance the user set earlier. (Back: `decide` must report whether the entry is new.) On success the line becomes "Allowance removed · {agent} keeps it until it next starts" when `applies` is `next_start`, else "Allowance removed". It is not offered once the entry is gone (removed in Settings or by hand) — the line then reads "Allowed for {project} by you · removed".
 - Undo does not message the agent. (Rationale in §0: it is an edit of the allowance, not a new decision.)
 - Undo failing: inline red "Could not remove it: {reason}." and the line keeps its Undo.
 - Restart outcome follows the existing lifecycle marker ("{agent} restarted", failures as other cards).
