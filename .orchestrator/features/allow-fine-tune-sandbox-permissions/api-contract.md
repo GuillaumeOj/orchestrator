@@ -30,6 +30,7 @@ local_ports = true
 unix_socket = "/tmp/my-test.sock"
 ```
 
+- `id` absent (hand-written): the core gives it a positional id `s<n>` (n = 1-based index among the file's `[[sandbox]]` tables, suffixed `x` when an explicit id already took it), exactly as rules get `r<n>`. `sandbox_remove` and warnings use it; the file is not rewritten.
 - Exactly one of `network` (string), `write` (string), `local_ports` (`true`), `unix_socket` (string) per table. Otherwise a parse error at the table's line (same handling as rules: last good version kept, one `policy_parse` alert).
 - A table whose value is never allowed (spec §3.1) parses but is **skipped** and listed in the file's `warnings` (`{id, message}`), like a neutralised rule.
 - `~` is expanded to the user's home; paths are canonicalised at compile time (symlinks resolved) and re-validated at each spawn (like project files).
@@ -62,12 +63,12 @@ Global first, then each registered project (only `project` when given).
   "entries": [
     {"id": "s3", "kind": "network", "value": "api.github.com", "role": "back", "note": "…", "source": "file"}
   ],
-  "defaults": [                  // global scope only: read-only, what every agent gets
-    {"kind": "network", "value": "registry.npmjs.org", "source": "core"}
-  ]
+  "defaults": [                  // read-only, never removable. Global: the core's (what every agent gets).
+    {"kind": "network", "value": "registry.npmjs.org", "source": "core"}   // Project: the hosts of its team's roles (`network_allow`),
+  ]                                                                          // `source: "role:<role id>"`, `role: "<role id>"`; [] when none
 }
 ```
-`kind`: `network` | `write` | `local_ports` | `unix_socket` (`value` is `null` for `local_ports`). `source`: `core` (defaults), `role:<role id>` (a role's `network_allow`, listed under the project scope when a team uses it, optional), `file`.
+`kind`: `network` | `write` | `local_ports` | `unix_socket` (`value` is `null` for `local_ports`). `source`: `core` (global defaults), `role:<role id>` (project defaults: a role's `network_allow` for the roles of the team(s) used in that project), `file` (entries).
 
 ### `sandbox_kinds` → `["network", "write", "local_ports", "unix_socket"]`
 The kinds the installed CLI supports (spec §3.1 "Supported keys"); the UI offers only these.
@@ -83,9 +84,10 @@ Audited (`sandbox_remove`), emits `sandbox_changed`.
 
 ### Rules (existing, extended)
 - `policy_rules {project?}` (existing) → each rule gains `"summary"`: a plain-language sentence built by the core ("Bash commands starting with `cargo test`").
-- `add_rule {scope, scope_id, pattern, effect, note?}`: `scope` also accepts `global` (`scope_id` ignored); `note` written to the rule.
-- `rule_preview {tool, value}` → `{pattern, summary}` | error: builds the pattern from the form's tool and value (`Bash` + `cargo test` → `Bash(cargo test:*)`; `WebFetch` + `docs.rs` → `WebFetch(domain:docs.rs)`; `Read`/`Edit` + a path → `Read(//abs/**)`; `mcp` + `server__tool`). The UI never builds patterns itself.
-- `revoke_rule`, `policy_test`, `policy_files` unchanged.
+- `add_rule {scope, scope_id, pattern, effect, role?, note?}`. The Settings form uses `scope: "global"` (`scope_id` ignored) or `scope: "project"` (`scope_id` = project id), plus `role` (written as the rule's `role`; absent = any role) and `note`. Existing `role` / `agent` scopes (cards) unchanged. Returns `{rule, file, path}`, the rule with its id (for Undo).
+- `rule_preview {tool, value?}` → `{pattern, summary}` | error. `tool`: `bash` | `read` | `edit` | `webfetch` | `mcp` | `any`. Mapping: `bash` + `cargo test` → `Bash(cargo test:*)`; `webfetch` + `docs.rs` → `WebFetch(domain:docs.rs)`; `read`/`edit` + a path → `Read(//abs/**)` / `Edit(//abs/**)` (`~` expanded); `mcp` + `server__tool` → `mcp__server__tool`, + `server` → `mcp__server__*`, + empty → `mcp__*`; `any` (value ignored) → `*` (summary "Any tool call"). The UI never builds patterns itself.
+- `policy_test {project?, role?, solo?, tool, value}` (new form, the old `{role, tool, input}` stays for the CLI): `tool` as in `rule_preview` minus `any`; the core builds the input (`bash` → `{command: value}` — a full command, not a prefix; `read`/`edit` → `{file_path}`; `webfetch` → `{url: "https://<value>/"}`; `mcp` → tool name `mcp__<value>`, `{}`). Role: `solo: true` → a solo session; else `role` = the role id, or absent = a team agent of no specific role (role-scoped rules don't match). Returns today's `{tool, input, role, evaluation, hard}`; front renders `evaluation` (effect, deciding rule id/file, or default) and `hard` (core-only).
+- `revoke_rule`, `policy_files` unchanged.
 
 ## 4. Events
 
@@ -103,9 +105,11 @@ Core:
 4. Else creates Inbox item kind **`sandbox`**, priority 30, payload `{kind, value, why, project, role, agent}`, never routed to the Overwatch, and returns "ORCH: asked the user; stop your turn and wait". The agent is parked at Stop like a parked permission (no hold: the tool returns at once).
 
 Decide (`decide(item, decision, scope, message)`):
+- Restart timing: an agent with an approved request is restarted at its turn's **Stop** (if it is already stopped, at once). If it keeps working after "stop your turn", the restart waits for Stop (the turn ceiling still applies); nothing interrupts it. Several approvals before Stop **coalesce into one restart** and one message listing every allowance ("ORCH: approved: network api.github.com, local ports … Retry."). A Reject/Reply is delivered as a normal turn and never restarts.
 - `Approve` with `scope`: `project` (default) | `global` | `role` (project file, `role` = agent's role) → `sandbox_add` (note = `why`, audited actor `user`), then the agent is restarted with `--resume` on the recompiled settings (or not, when the CLI reloads live) and gets "ORCH: approved: <kind> <value> is now allowed by the sandbox. Retry.".
 - `Reject` → "ORCH: denied: sandbox access to <kind> <value>." ; `Reply` → the same with the user's words.
 - Inbox item shape for front: same as other items, `kind: "sandbox"`, `payload` above, plus `invalid?: string` when validation fails at decision time (then Approve is refused).
+- After an Approve the decided item carries `outcome: {entry: {id, file, …}, created: bool, scope}`: `created: false` when the allowance already existed (duplicate) — front offers Undo (`sandbox_remove {id, file}`) only when `created` is true.
 
 Preamble (solo and team) gains: "If the sandbox blocks a host, a folder, a local port or a socket you need, ask with mcp__orch__request_sandbox_access (say why), then stop and wait."
 
