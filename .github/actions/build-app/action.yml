@@ -28,5 +28,10 @@ runs:
           unzip -j -d "$RUNNER_TEMP/fonts" "$RUNNER_TEMP/FiraCode.zip" "FiraCodeNerdFontMono-$w.ttf"
         done
         echo "ORCH_FONT_DIR=$RUNNER_TEMP/fonts" >> "$GITHUB_ENV"
+    - name: Toolchain versions
+      shell: bash
+      run: |
+        sw_vers
+        xcodebuild -version
     - run: scripts/app.sh build
       shell: bash

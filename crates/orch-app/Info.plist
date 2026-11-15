@@ -2,7 +2,8 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <!-- The Liquid Glass icon: icons/Assets.car is compiled from icons/Orchestrator.icon (README). -->
+  <!-- The Liquid Glass icon: CFBundleIconName resolves in Assets.car, compiled from icons/Orchestrator.icon
+       at build time by scripts/app.sh (needs Xcode 26+ on macOS 26+; see icons/README.md). -->
   <key>CFBundleIconName</key>
   <string>Icon</string>
 </dict>

@@ -83,7 +83,7 @@ jobs:
     name: Build and release the app
     needs: [rust-fmt, rust, ui]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: macos-latest
+    runs-on: macos-26
     permissions:
       contents: write
     # Builds publish one at a time. GitHub keeps one pending run per group, so a burst of merges
@@ -153,7 +153,7 @@ jobs:
       && github.event.pull_request.head.repo.full_name == github.repository
       && !github.event.pull_request.draft
       && github.event.pull_request.user.login != 'renovate[bot]'
-    runs-on: macos-latest
+    runs-on: macos-26
     permissions:
       contents: read
     # A newer push supersedes the build in progress (app-pr-publish has the same group).
