@@ -19,9 +19,9 @@ describe('palette rows', () => {
     const li = rule('li');
     expect(li).toMatch(/min-height:\s*var\(--size-row\)/);
     expect(li).not.toMatch(/(^|[\s;])height:/);
-    const label = rule('\\.label');
-    expect(label).toMatch(/min-width:\s*0/);
-    expect(label).toMatch(/overflow-wrap:\s*anywhere/);
+    const wrap = rule('\\.label,\\n  li > \\.muted');
+    expect(wrap).toMatch(/min-width:\s*0/);
+    expect(wrap).toMatch(/overflow-wrap:\s*anywhere/);
     expect(src).toMatch(/\.kbd\) \{[^}]*flex-shrink:\s*0/);
   });
 

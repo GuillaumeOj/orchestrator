@@ -115,8 +115,14 @@
   li.on {
     background: var(--color-surface-selected);
   }
+  /* The label and the muted parts share the row: each starts at its natural
+     width and shrinks (wraps) in proportion, so a long path can't squeeze the
+     label to nothing nor push the row wider than the palette. */
   .label {
-    flex: 1;
+    flex: 1 1 auto;
+  }
+  .label,
+  li > .muted {
     min-width: 0;
     overflow-wrap: anywhere;
   }
