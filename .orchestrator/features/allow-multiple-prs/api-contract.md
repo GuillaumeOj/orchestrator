@@ -39,8 +39,8 @@ One list for both modes, built by the core. The UI reads only this for PR surfac
 
 | Command | Args | Returns | Errors (`{code, message}` JSON text) |
 |---|---|---|---|
-| `launch_team` (existing) | `LaunchSpec` gains `issues?: string[]` (refs as typed), `pr_mode?: "single" \| "per_issue"` | as today | `bad_ref {ref}` (not parsable, or a GitHub repo other than the project's), `too_many` (> 10), `per_issue_needs_two` |
-| `feature_set_prs` (new) | `{ feature: id \| slug, issues?: string[], pr_mode?: "single" \| "per_issue" }` (the full new list when given) | the `feature` JSON | `bad_ref`, `too_many`, `per_issue_needs_two`, `issue_has_pr {ref}` (removing an issue with a pending, open or merged PR), `pr_busy` (mode change while a PR is pending or open), `finished` (run done) |
+| `launch_team` (existing) | `LaunchSpec` gains `issues?: string[]` (refs as typed; duplicates after canonicalisation are dropped, no error), `pr_mode?: "single" \| "per_issue"` (the form always sends it) | as today | `bad_ref {ref}` (not parsable, or a GitHub repo other than the project's), `too_many` (> 10), `per_issue_needs_two` |
+| `feature_set_prs` (new) | `{ feature: id \| slug, issues?: string[], pr_mode?: "single" \| "per_issue" }` (the full new list when given) | the `feature` JSON | `bad_ref`, `too_many`, `per_issue_needs_two`, `issue_has_pr {ref}` (removing an issue with a pending, open or merged PR), `pr_busy` (mode change once the feature's latest run has had a PR or a PR gate, any state), `finished` (run done). `per_issue_needs_two` only when choosing per_issue or before the first PR. |
 | `issue_suggest` (new) | `{ project, text }` | `[{ref, key, title, url}]` ≤ 8 | Matches the project's intake rows by ref or title (no network). Empty when nothing matches. |
 | `intake_prefill` (existing) | | the form gains `issues: [ref]` (the item's, when GitHub or Linear) and `pr_mode: "single"` | |
 | `pr_refresh` (existing) | | checks every open PR of the run | |
@@ -49,7 +49,7 @@ Ctl / `orchd`: `launch … --issue <ref> (repeat) --pr-mode <m>`, `feature prs <
 
 ## 4. Tasks
 
-`task` JSON gains `"issue": "#12"` (or `null`). `task_update` from the UI does not set it (lead only).
+`task` JSON gains `"issue": "#12"` (or `null`) and `"reported_sha"` (the branch head at the last `report_done`, or `null`). `task_update` from the UI sets neither (lead / core only).
 
 ## 5. Timeline events
 
@@ -59,13 +59,13 @@ New:
 | kind | detail |
 |---|---|
 | `feature.prs` | `{ issues: [ref], pr_mode, by: "user" }` — the user changed them |
-| `pr.build` | `{ issue, ok, commits, shared, skipped, conflict?: {task?, commit, files} }` — a build for `request_pr` |
+| `pr.build` | `{ issue, ok, commits, shared, skipped, conflict?: {task?, commit, files} }` — a build for `request_pr`. `commits` = commits of the issue replayed, `shared` = shared commits replayed, `skipped` = commits (either kind) whose change was already there and were left out (empty) |
 
 `run.state` new `why`s: `"every issue PR merged"` (→ `done`), `"no PR open"` (→ `integrating`, the last open PR closed, or merged with issues left).
 
 ## 6. Inbox
 
-- `push_pr` and `push_pr_update` payloads gain `issue` (null in single mode) and, for `push_pr`, `fork_sha`, `integration_head`. In per_issue mode `branch` is the issue branch.
+- `push_pr` and `push_pr_update` payloads gain `issue` (null in single mode). In per_issue mode both also carry `fork_sha` (the build's fork point), `integration_head` (the integration head built from) and `head` (the built issue-branch head pushed); the gate is stale when the integration head or the issue branch moved since. `branch` is the issue branch.
 - Info items `pr_merged` / `pr_closed` gain `issue`. The "Feature <slug> merged" item comes once, when the run is `done`.
 
 ## 7. Orchestrator MCP (agents)
@@ -74,6 +74,7 @@ New:
 |---|---|---|
 | `request_pr` | lead | `{ issue?, title, body, draft? }`. per_issue: `issue` required; builds the issue branch, then a `push_pr` gate (no PR yet) or `push_pr_update` gate (PR open). Refused: build conflict (`task`, commit, files in the text), up to date, a gate of that issue pending. single: `issue` refused; as today, plus `Closes` lines. |
 | `create_task` / `update_task` | lead | `issue?: string` — a feature issue ref; else refused. |
-| `merge` | lead | per_issue: `task` required. Always adds trailer `Orch-Task: <id>` when `task` is given. Refuses `orch/<slug>/issue/…`. |
+| `merge` | lead | per_issue: `task` required, and the task's `reported_sha` is merged (not the branch tip). Adds trailer `Orch-Task: <id>` (after a blank line) when `task` is given. Refuses `orch/<slug>/issue/…`. |
+| `report_done` | specialists | records the branch head as the task's `reported_sha` (both modes; only per_issue merges use it). |
 | `commit` | lead | `issue?: string` → trailer `Orch-Issue: <ref>`. |
 | `team_status` | all | gains `issues`, `pr_mode`, and per issue `{tasks: [handle], pr: {number, state}}`. |

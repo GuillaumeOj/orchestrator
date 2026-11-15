@@ -29,22 +29,24 @@ The default does not change: one PR for the feature. Only the user switches a fe
 - `IssueLink = {ref, title?, url?}`. `ref` is canonical:
   - GitHub issue of the project's repository: `#12` (input `12`, `#12`, `owner/repo#12` or an issue URL of **that** repository, parsed with `github_issue::parse_issue_ref`; another repository is refused).
   - Linear issue: `ABC-123` (upper-cased; `[A-Z][A-Z0-9]*-\d+`).
-  - At most 10 issues; no duplicates.
+  - At most 10 issues; a duplicate (same canonical ref) is dropped silently.
   - `title` / `url` are filled best effort from the intake cache (the project's intake rows); no network call is needed to add an issue.
 - Each issue has a **key** used in branch names: `12` for `#12`, `abc-123` for `ABC-123`.
 - **Who sets them: the user only** (launch form, feature pane; `orchd`). No MCP tool changes issues or the mode.
-  - `per_issue` needs at least 2 issues.
+  - Choosing `per_issue` needs at least 2 issues (`per_issue_needs_two`). Once the run has had a PR, the list may drop to 1 issue (the locked ones stay).
   - Adding an issue: any time the run is not finished.
-  - Removing an issue: refused while it has a PR pending, open or merged.
-  - Changing the mode: refused while any PR of the run is pending (gate) or open.
+  - Removing an issue: refused while it has a PR pending, open or merged (`issue_has_pr`).
+  - Changing the mode: refused once the feature's latest run has had a PR or a PR gate, in any state (`pr_busy`): the mode is chosen before the first PR. (A closed PR or a merged one would otherwise leave PRs of the other mode behind.)
+  - After a change the core re-evaluates the run state (§3.5): removing the last issue without a merged PR in `per_issue` mode, with no PR open, makes the run `done`.
   - A change during a run is told to the lead in one ORCH turn (§3.7).
 - A start from an intake item prefills `issues` with that item's ref (GitHub or Linear item; a repo doc has none).
-- In `single` mode with issues listed, the PR body gets one `Closes <ref>` line per listed issue the lead's body does not already close (any `close[sd]?|fix(e[sd])?|resolve[sd]?` keyword before the ref, case-insensitive). Nothing else changes in `single` mode.
+- In `single` mode with issues listed, the PR body gets one `Closes <ref>` line per listed issue the lead's body does not already close. "Already closes" = the regex `(?i)\b(close[sd]?|fix(e[sd])?|resolve[sd]?)\b:?\s+<ref>\b` (whole keyword: `enclosed #12` does not count; whole ref: `#123` does not close `#12`). Nothing else changes in `single` mode.
 
 ### 3.2 Tasks and commits carry their issue
 
 - `Task` gains `issue: Option<String>` (a feature issue ref; column `tasks.issue TEXT`). `create_task` and `update_task` take `issue`; a ref not on the feature is refused. Allowed in both modes (shown on the board); it only changes PRs in `per_issue` mode.
-- `merge {branch, task}`: the merge commit message gets the trailer `Orch-Task: <task id>` (both modes). In `per_issue` mode `task` is **required** (refused without it: the core could not tell which PR the merge belongs to).
+- `merge {branch, task}`: the merge commit message gets the trailer `Orch-Task: <task id>` (both modes), after a blank line so `git interpret-trailers --parse` reads it. In `per_issue` mode `task` is **required** (refused without it: the core could not tell which PR the merge belongs to).
+- **One merge = one task** (`per_issue` mode): a specialist keeps one branch and may start its next task before the lead merges the reported one, so the branch tip can hold work of another task. `report_done` records the branch head on the task (`reported_sha`); `merge {task}` in `per_issue` mode merges **that commit**, not the branch tip (refused when the task has no `reported_sha`, or when it is not on the branch). A report after a conflict fix records the new head. `single` mode keeps merging the tip.
 - `commit {…, issue?}` (lead in the integration worktree): adds the trailer `Orch-Issue: <ref>`; a ref not on the feature is refused.
 - Trailers survive `rebase_base` (`--rebase-merges` keeps messages).
 - `merge` refuses the issue branches `orch/<slug>/issue/<key>` (they are not task branches).
@@ -62,11 +64,12 @@ For issue `I`, branch `orch/<slug>/issue/<key>`, a local branch of the project r
 3. **Replay** onto `F` the commits attributed to `I` or shared: each commit `C` is applied as its own change, `diff(C^1, C)` (for a task merge, that is exactly what the task brought), with `git merge-tree --write-tree --merge-base <C^1> <head> <C>` then `git commit-tree` with `C`'s author and message. A commit whose change is already there (empty) is skipped.
 4. **Conflict**: the build stops and nothing is written. The core returns the commit, its task (handle, node) and the files. Usual cause: a task of `I` builds on code from another issue's task. The lead fixes it by re-tagging tasks (`update_task issue`), or asks the user (`ask_user`) to group the issues differently or to go back to one PR.
 5. **Update** of a branch whose PR is open:
-   - same fork point as the PR's last build → the rebuilt tree is added as **one commit on top of the PR head** (`Update for <ref>: <task handles>`), a fast-forward push. Nothing is pushed when the tree did not change.
+   - same fork point as the PR's last pushed build (`RunPr.fork_sha`) → the rebuilt tree is added as **one commit on top of the PR's pushed head** (`RunPr.built_sha` = `pr.pushed_sha`, never the local ref, which a declined gate may have moved) (`Update for <ref>: <task handles>`), a fast-forward push. Nothing is pushed when the tree did not change.
    - fork point changed (after `rebase_base`) → the full rebuild replaces the branch: force push with lease, exactly as the single PR after a rebase (lease = the PR's `pushed_sha`).
+6. The local ref `orch/<slug>/issue/<key>` is rewritten by every build. `RunPr.fork_sha` and `built_sha` change **only after a successful push** (open or update): a declined or failed gate leaves them as they were.
 - The build runs inside `request_pr`, so the gate the user approves shows the exact branch head and diff (`base...issue branch`).
 
-Shared work (untagged commits, the feature docs under `.orchestrator/features/<slug>/`) goes into **every** issue PR: each PR then builds and tests on its own. Identical changes merge cleanly when the PRs land one after the other.
+Shared work (untagged commits, the feature docs under `.orchestrator/features/<slug>/`) goes into **every** issue PR: each PR then builds and tests on its own. Every PR holds the same final content of the shared files, so when one lands (merge, squash or rebase) the others carry an identical change against the same fork point and still merge cleanly; after `rebase_base` the shared commits already in the base replay empty and are skipped.
 
 ### 3.4 Requesting, opening and updating the PRs
 
@@ -83,15 +86,16 @@ Shared work (untagged commits, the feature docs under `.orchestrator/features/<s
 ### 3.5 The run's PRs, watched one by one
 
 - `TeamRun` gains `prs: Vec<RunPr>` (column `team_runs.prs TEXT`, JSON), one per issue that ever had a PR in `per_issue` mode:
-  `RunPr = {issue, branch, number, url, pr: PrStatus?, fork_sha, built_sha}` (`fork_sha` = `F` of its last build, `built_sha` = the head last built and pushed).
+  `RunPr = {issue, branch, number, url, pr: PrStatus?, fork_sha, built_sha}` (`fork_sha` = `F` of its last **pushed** build, `built_sha` = the head the app last pushed to it, equal to `pr.pushed_sha` once checked).
 - In `single` mode the existing fields (`pr_url`, `pr_number`, `pr`) stay the single source; `prs` is empty. The UI reads one list (`prs_view`, api-contract §2) built by the core for both modes.
-- `PrStatus` per issue PR as today, except: `unpushed` = commits on the integration branch attributed to the issue or shared since its last build; `rewritten` = the fork point moved since the last build.
+- `PrStatus` per issue PR as today, except: `unpushed` = first-parent commits on the integration branch attributed to the issue or shared since its last pushed build; `rewritten` = the current fork point differs from `RunPr.fork_sha`. Same meaning as in `single` mode (the next push is a force push with lease), computed from the build instead of from the branch history.
 - `pr_tick` checks every open PR of every run (each with its own fetch throttle). Messages to the lead name the issue: `ORCH: CI fails on PR #34 (issue #12): …`, `PR #34 (issue #12) is behind main by 3 commits …`.
 - **Run state** in `per_issue` mode:
   - `pr_gate` while a `push_pr` gate is pending and no PR is open; `pr_open` while at least one issue PR is open;
   - a PR merged → the lead is told `PR #34 (issue #12) was merged; N issue(s) left: …`; the run moves to `done` when **every** issue of the feature has a merged PR (Inbox info "Feature <slug> merged", as today);
   - a PR closed unmerged → the lead is told; the run stays `pr_open` while another PR is open, else goes back to `integrating`. The lead may request that issue's PR again (a new PR replaces the closed one in `prs`).
   - when the last open PR merges but issues without a PR remain → `integrating` (work left).
+  - the state is also re-evaluated after `feature_set_prs` (§3.1).
 - A pending `push_pr_update` gate of a PR that merges or closes is withdrawn (that PR's only).
 - `pr_refresh` checks every open PR of the feature's run.
 
