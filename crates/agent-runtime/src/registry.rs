@@ -307,12 +307,28 @@ pub fn probe_stdio(s: &McpServer, env: &[(String, String)], deadline: Duration) 
 /// A stdio server as Claude Code starts it: `(command, args)`.
 type StdioSpec = (String, Vec<String>);
 
+/// What is read of `~/.claude.json`: the `mcpServers` objects, nothing else
+/// (the file also holds account details, and is large).
+#[derive(serde::Deserialize, Default)]
+#[serde(default)]
+struct ClaudeJson {
+    #[serde(rename = "mcpServers")]
+    mcp_servers: Map<String, Value>,
+    projects: std::collections::BTreeMap<String, ClaudeProject>,
+}
+
+#[derive(serde::Deserialize, Default)]
+#[serde(default)]
+struct ClaudeProject {
+    #[serde(rename = "mcpServers")]
+    mcp_servers: Map<String, Value>,
+}
+
 /// The servers of an `mcpServers` object, by name: `Some` for a stdio one (an
 /// entry without `type` is stdio), `None` for any other (it still shadows a
 /// user server of the same name). Only the command and args are kept: `env`
 /// may hold tokens.
-fn stdio_specs(v: &Value) -> std::collections::BTreeMap<String, Option<StdioSpec>> {
-    let Some(m) = v.as_object() else { return Default::default() };
+fn stdio_specs(m: &Map<String, Value>) -> std::collections::BTreeMap<String, Option<StdioSpec>> {
     let spec = |e: &Value| -> Option<StdioSpec> {
         if e.get("type").and_then(Value::as_str).is_some_and(|t| t != "stdio") {
             return None;
@@ -338,23 +354,21 @@ pub(crate) struct ClaudeServers {
 }
 
 impl ClaudeServers {
-    /// Re-reads `file` if it changed (a missing or unreadable file has none).
-    fn refresh(&mut self, file: &std::path::Path) {
-        let stamp = std::fs::metadata(file).ok().map(|m| (m.len(), m.modified().ok()));
-        if stamp == self.stamp {
-            return;
-        }
-        let v: Value = std::fs::read(file).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or(Value::Null);
-        let projects = v["projects"]
-            .as_object()
-            .map(|m| {
-                m.iter()
-                    .map(|(k, p)| (k.clone(), stdio_specs(&p["mcpServers"])))
-                    .filter(|(_, s)| !s.is_empty())
-                    .collect()
-            })
-            .unwrap_or_default();
-        *self = ClaudeServers { stamp, user: stdio_specs(&v["mcpServers"]), projects };
+    /// The file's size and mtime (`None`: missing).
+    fn stamp_of(file: &std::path::Path) -> Option<(u64, Option<std::time::SystemTime>)> {
+        std::fs::metadata(file).ok().map(|m| (m.len(), m.modified().ok()))
+    }
+
+    /// Reads `file` (an unreadable or invalid one has no servers).
+    fn read(file: &std::path::Path, stamp: Option<(u64, Option<std::time::SystemTime>)>) -> ClaudeServers {
+        let v: ClaudeJson = std::fs::read(file).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        let projects = v
+            .projects
+            .into_iter()
+            .map(|(k, p)| (k, stdio_specs(&p.mcp_servers)))
+            .filter(|(_, s)| !s.is_empty())
+            .collect();
+        ClaudeServers { stamp, user: stdio_specs(&v.mcp_servers), projects }
     }
 
     /// The server `name` as a session in one of `dirs` sees it (a project's
@@ -504,7 +518,7 @@ impl Runtime {
         let out = self.server_json(scope, &server.id)?;
         // The save reset its status: a design tool doesn't wait for a role to use it.
         if probed_alone(&server) {
-            self.probe_in_background(scope.project().map(str::to_string), vec![server.id.clone()]);
+            self.probe_in_background(scope.project().map(str::to_string), vec![server.id.clone()], true);
         }
         Ok(out)
     }
@@ -554,8 +568,9 @@ impl Runtime {
     /// Probes the servers of `refs` on a thread (at spawn, and every 30 min
     /// while used). Connectors are skipped (nothing to probe), and so are
     /// servers probed less than [`PROBE_FRESH_MS`] ago or being probed now
-    /// (several agents of a team spawn together).
-    pub(crate) fn probe_in_background(&self, project: Option<String>, refs: Vec<String>) {
+    /// (several agents of a team spawn together). `saved`: the entries were
+    /// just saved, so one being probed is probed again once done.
+    pub(crate) fn probe_in_background(&self, project: Option<String>, refs: Vec<String>, saved: bool) {
         let Some(me) = self.me.upgrade() else { return };
         let Ok(reg) = self.db.mcp_registry(project.as_deref()) else { return };
         let now = now_ms();
@@ -568,31 +583,33 @@ impl Runtime {
                             && s.checked_at_ms.is_none_or(|t| now.saturating_sub(t) >= PROBE_FRESH_MS)
                     })
                 })
-                .filter(|id| busy.insert((project.clone(), id.clone())))
+                .filter(|id| match busy.get_mut(&(project.clone(), id.clone())) {
+                    Some(again) => {
+                        *again |= saved;
+                        false
+                    }
+                    None => {
+                        busy.insert((project.clone(), id.clone()), false);
+                        true
+                    }
+                })
                 .collect()
         };
         if todo.is_empty() {
             return;
         }
         std::thread::spawn(move || {
-            // The entry's definition, its status left out.
-            let def = |id: &str| {
-                let reg = me.db.mcp_registry(project.as_deref()).ok()?;
-                let s = reg.get(id)?;
-                Some(McpServer { status: McpStatus::Unknown, detail: None, checked_at_ms: None, ..s.clone() })
-            };
             for id in todo {
+                let key = (project.clone(), id);
                 loop {
-                    let probed = def(&id);
-                    let _ = me.probe_server(&id, project.as_deref());
-                    // A save during the probe found it busy and skipped its own:
-                    // probe the new definition (checked under the lock, so a later
-                    // save finds it free).
+                    let _ = me.probe_server(&key.1, project.as_deref());
+                    // Saved during the probe: the new definition is probed too.
                     let mut busy = me.probing.lock().unwrap_or_else(|e| e.into_inner());
-                    if def(&id) == probed {
-                        busy.remove(&(project.clone(), id));
+                    if busy.get(&key) != Some(&true) {
+                        busy.remove(&key);
                         break;
                     }
+                    busy.insert(key.clone(), false);
                 }
             }
         });
@@ -619,7 +636,7 @@ impl Runtime {
         for (p, mut refs) in by_project {
             refs.sort();
             refs.dedup();
-            self.probe_in_background(p, refs);
+            self.probe_in_background(p, refs, false);
         }
     }
 
@@ -698,9 +715,15 @@ impl Runtime {
 
     /// Claude Code's stdio server `name` (command and args) for a session in `dirs`.
     fn claude_code_stdio(&self, name: &str, dirs: &[&std::path::Path]) -> Option<StdioSpec> {
-        let mut c = self.claude_servers.lock().unwrap_or_else(|e| e.into_inner());
-        c.refresh(&self.cfg.home.join(".claude.json"));
-        c.get(name, dirs).cloned()
+        let file = self.cfg.home.join(".claude.json");
+        let stamp = ClaudeServers::stamp_of(&file);
+        let lock = || self.claude_servers.lock().unwrap_or_else(|e| e.into_inner());
+        if lock().stamp != stamp {
+            // Read outside the lock: concurrent hooks don't wait on the parse.
+            let fresh = ClaudeServers::read(&file, stamp);
+            *lock() = fresh;
+        }
+        lock().get(name, dirs).cloned()
     }
 
     /// FR-604 at runtime: an agent's call to a registry server's tool.
@@ -728,7 +751,7 @@ impl Runtime {
             all.iter()
                 .find(|s| s.kind == McpKind::Stdio && s.command.as_deref() == Some(cmd.as_str()) && s.args == args)
         });
-        let Some(s) = found.map(|s| (*s).clone()) else { return };
+        let Some(s) = found.cloned().cloned() else { return };
         if s.status == status && status == McpStatus::Connected {
             return; // the common case: nothing to write
         }
@@ -1028,33 +1051,27 @@ pub(crate) mod tests {
     }
 
     /// A FigCraft stdio entry whose fake server answers with one tool.
-    fn figcraft(id: &str) -> McpServer {
+    pub(crate) fn figcraft(id: &str) -> McpServer {
         let mut s = fake_stdio(
             r#"read l; echo '{"jsonrpc":"2.0","id":1,"result":{}}'; read l; read l; echo '{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"a"}]}}'; sleep 5"#,
         );
-        s.id = id.into();
+        (s.id, s.name) = (id.into(), "FigCraft".into());
         s.design_tool = Some(orch_team::mcp::DesignTool::Figcraft);
         s
     }
 
     /// Waits (up to 10 s) for a background probe to give `id` `status`.
     pub(crate) fn wait_status(rt: &Runtime, scope: &Scope, id: &str, status: McpStatus) -> McpServer {
-        let end = Instant::now() + Duration::from_secs(10);
-        loop {
-            let s = rt.db.mcp_server(scope, id).unwrap().unwrap();
-            if s.status == status && s.checked_at_ms.is_some() {
-                return s;
-            }
-            assert!(Instant::now() < end, "{id} is still {:?} ({:?})", s.status, s.detail);
-            std::thread::sleep(Duration::from_millis(50));
-        }
+        let get = || rt.db.mcp_server(scope, id).unwrap().unwrap();
+        wait(&format!("{id} {status:?}"), || get().status == status && get().checked_at_ms.is_some());
+        get()
     }
 
-    /// No probe of the runtime is running.
-    fn idle(rt: &Runtime) {
+    /// Waits (up to 10 s) for `f`.
+    fn wait(what: &str, f: impl Fn() -> bool) {
         let end = Instant::now() + Duration::from_secs(10);
-        while !rt.probing.lock().unwrap().is_empty() {
-            assert!(Instant::now() < end, "probes still running");
+        while !f() {
+            assert!(Instant::now() < end, "timed out waiting for {what}");
             std::thread::sleep(Duration::from_millis(50));
         }
     }
@@ -1082,7 +1099,7 @@ pub(crate) mod tests {
         let g = wait_status(&rt, &Scope::Global, "figcraft", McpStatus::Connected);
         assert_eq!(g.detail.as_deref(), Some("1 tool(s)"));
         wait_status(&rt, &project, "figcraft", McpStatus::Connected);
-        idle(&rt);
+        wait("probes to end", || rt.probing.lock().unwrap().is_empty());
         let get = |scope: &Scope, id: &str| rt.db.mcp_server(scope, id).unwrap().unwrap();
         assert_eq!(get(&Scope::Global, "fresh").detail.as_deref(), Some("just now"));
         assert_eq!(get(&Scope::Global, "plain").checked_at_ms, None);

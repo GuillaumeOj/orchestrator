@@ -253,8 +253,9 @@ pub struct Runtime {
     pub(crate) linear_token: crate::linear::TokenCache,
     /// P4.5 intake: the refresher's schedule and the last `now.intake` sent.
     pub(crate) intake: crate::intake::Refresher,
-    /// FR-604: (project, server) probes running in the background.
-    pub(crate) probing: Mutex<std::collections::BTreeSet<(Option<String>, String)>>,
+    /// FR-604: (project, server) probes running in the background; `true`:
+    /// saved meanwhile, probe it again once done.
+    pub(crate) probing: Mutex<BTreeMap<(Option<String>, String), bool>>,
     /// Claude Code's stdio servers, read from `<home>/.claude.json` ([`crate::registry::ClaudeServers`]).
     pub(crate) claude_servers: Mutex<crate::registry::ClaudeServers>,
     /// Told of every Inbox outcome ([`Runtime::set_outcome_sink`]).
@@ -1026,7 +1027,7 @@ impl Runtime {
         role.model = self.turn_model(&rec);
         let compiled = compile(&role, &ctx);
         compiled.write()?;
-        self.probe_in_background(project, rec.role.mcp_refs.clone());
+        self.probe_in_background(project, rec.role.mcp_refs.clone(), false);
         let weak = self.me.clone();
         let id_owned = id.to_string();
         // The pid is known only after the spawn; the exit callback needs it so a

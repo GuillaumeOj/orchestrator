@@ -433,15 +433,7 @@ mod tests {
     #[test]
     fn figcraft_is_probed_over_stdio() {
         let (_d, rt, _net) = test_runtime_net();
-        let mut s = McpServer::new("figcraft", "FigCraft", McpKind::Stdio);
-        s.command = Some("/bin/sh".into());
-        s.args = vec![
-            "-c".into(),
-            r#"read l; echo '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{},"serverInfo":{"name":"x","version":"1"}}}'
-               read l; read l; echo '{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"a"}]}}'; sleep 5"#
-                .into(),
-        ];
-        s.design_tool = Some(DesignTool::Figcraft);
+        let mut s = crate::registry::tests::figcraft("figcraft");
         // Saved, it is probed in the background: no Test needed (no role uses it).
         assert_eq!(rt.mcp_server_save(s.clone(), &Scope::Global).unwrap().status, McpStatus::Unknown);
         let e = crate::registry::tests::wait_status(&rt, &Scope::Global, "figcraft", McpStatus::Connected);
