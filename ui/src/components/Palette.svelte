@@ -110,7 +110,6 @@
   }
   li > :global(.kbd) {
     flex-shrink: 0;
-    white-space: nowrap;
   }
   li.on {
     background: var(--color-surface-selected);
