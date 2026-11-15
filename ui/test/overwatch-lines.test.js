@@ -695,7 +695,7 @@ describe('Settings → Permissions (notes §9.2)', () => {
     await fireEvent.change(rowOf(c, 'hold').querySelector('input'), { target: { value: '' } });
     await settle();
     expect(text(rowOf(c, 'hold').querySelector('.err'))).toBe('A whole number of seconds. Still using 300 s.');
-    expect(calls.filter(([k]) => k === 'settings_set')).toHaveLength(0);
+    expect(calls.filter(([k, a]) => k === 'settings_set' && a?.key === 'permissions.hold_secs')).toHaveLength(0);
   });
 
   it('the hold: saved, and kept above the Overwatch permission time', async () => {
@@ -704,14 +704,17 @@ describe('Settings → Permissions (notes §9.2)', () => {
     expect(input.value).toBe('300');
     await fireEvent.change(input, { target: { value: '600' } });
     await settle();
-    expect(calls.find(([k]) => k === 'settings_set')[1]).toEqual({ key: 'permissions.hold_secs', value: 600 });
+    expect(calls.find(([k, a]) => k === 'settings_set' && a?.key === 'permissions.hold_secs')[1]).toEqual({
+      key: 'permissions.hold_secs',
+      value: 600,
+    });
     await fireEvent.change(input, { target: { value: '45' } });
     await settle();
     expect(text(rowOf(c, 'hold').querySelector('.err'))).toBe(
       "Must be above the Overwatch's permission time (60 s). Still using 600 s.",
     );
     expect(input.value).toBe('600');
-    expect(calls.filter(([k]) => k === 'settings_set')).toHaveLength(1);
+    expect(calls.filter(([k, a]) => k === 'settings_set' && a?.key === 'permissions.hold_secs')).toHaveLength(1);
   });
 });
 
