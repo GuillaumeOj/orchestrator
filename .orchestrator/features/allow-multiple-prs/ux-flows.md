@@ -21,7 +21,7 @@
 
 - **Launch, per issue**: type refs → chips (invalid ones turn red, Launch disabled) → second chip enables `One PR per issue` → pick it → helper explains the build → Launch.
 - **Drop to one issue**: remove chips down to 1 while `per issue` is selected → mode silently falls back to One PR, helper text changes.
-- **Mid-run switch**: Edit → mode control enabled only when no PR is open or waiting → Save → `Saved; the lead is told.`
+- **Mid-run switch**: Edit → mode control enabled only until the feature has had its first PR or PR request (ux-brief §2.1) → Save → `Saved; the lead is told.` Issues can still be added (and removed while they have no PR) after that.
 - **PR life per issue**: none → pending (gate in Inbox) → open (CI, position) → merged / closed; a closed one may go back to none → pending when the lead requests it again.
 
 ## Copy changes
