@@ -29,6 +29,7 @@ pub fn decision_id(kind: &str, id: u64) -> String {
         "rule_proposal" => format!("rule-{id}"),
         "brief" => format!("brief-{id}"),
         "program" => format!("prog-{id}"),
+        "sandbox" => format!("sandbox-{id}"),
         _ => format!("alert-{id}"),
     }
 }
@@ -306,6 +307,7 @@ fn kind_of(i: &InboxItem) -> (&'static str, Option<&'static str>) {
             },
             None,
         ),
+        "sandbox" => ("sandbox", None),
         _ if i.payload.get("source").and_then(Value::as_str) == Some("notion") => ("notion", None),
         _ => ("alert", None),
     }
@@ -314,7 +316,7 @@ fn kind_of(i: &InboxItem) -> (&'static str, Option<&'static str>) {
 /// 1 blocking · 2 errors · 3 budget.
 fn level_of(kind: &str) -> u8 {
     match kind {
-        "permission" | "question" | "gate" | "trust" | "wait" => 1,
+        "permission" | "question" | "gate" | "sandbox" | "trust" | "wait" => 1,
         "budget" | "ask" | "notion" => 3,
         // Blocks nobody: never notifies, not in the badge (P4.4).
         "rule_proposal" | "brief" | "program_dependency_added" | "program_done" => 4,
@@ -389,6 +391,26 @@ fn program_card(kind: &str, p: &Value) -> (String, String, Vec<Value>, Vec<Actio
     };
     let text = s(p, "text");
     (cut(s(p, "title"), 80), cut(text, 120), vec![markdown(text, None)], actions)
+}
+
+/// The `sandbox` card (api-contract §5): what the agent asks for and why.
+/// Allow writes to the project's file by default (`inbox_act` scope:
+/// `project` | `global` | `role`).
+fn sandbox_card(p: &Value, who: &str, parked: bool) -> (String, String, Vec<Value>, Vec<Action>) {
+    let what = crate::policy::sandbox_ask::label_of(p);
+    let summary = if parked { format!("{who} stopped; it resumes on your answer") } else { cut(s(p, "why"), 120) };
+    let ctx = vec![
+        markdown(s(p, "why"), None),
+        json!({"type": "sandbox", "kind": p.get("kind"), "value": p.get("value"), "project": p.get("project"),
+               "role": p.get("role"), "invalid": p.get("invalid")}),
+    ];
+    let actions = vec![
+        act("approve", "Allow", Some("a")),
+        act("reject", "Deny", Some("r")),
+        act("reply", "Deny with message", Some("enter")),
+        OPEN_PANE,
+    ];
+    (format!("Sandbox · {}", cut(&what, 70)), summary, ctx, actions)
 }
 
 /// A stored item as a Decision.
@@ -498,6 +520,7 @@ fn stored(cx: &Ctx, i: &InboxItem) -> Decision {
             ];
             (format!("Spec gate · {feature}"), cut(summary, 120), ctx, actions)
         }
+        ("sandbox", _) => sandbox_card(p, who, i.status == InboxStatus::Parked),
         ("startup", _) => {
             let failed = p.get("failed").and_then(Value::as_str);
             let (title, why) = match failed {

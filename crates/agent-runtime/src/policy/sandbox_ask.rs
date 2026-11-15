@@ -1,0 +1,349 @@
+//! An agent asks for sandbox access (api-contract §5): the
+//! `request_sandbox_access` tool, the `sandbox` Inbox card it parks on, the
+//! user's decision, and the restart that applies an approval.
+
+use anyhow::{Result, anyhow, bail};
+use orch_protocol::InboxDecision;
+use serde_json::{Value, json};
+
+use super::sandbox::{self, Allowances, SandboxKind};
+use super::sandbox_rt::{SETTINGS_RELOAD_LIVE, kind_of};
+use crate::inbox::{PRIORITY_BLOCKING, Stage};
+use crate::runtime::Runtime;
+use crate::state::AgentState;
+use crate::store::AgentRecord;
+use crate::team::str_arg;
+use orch_store::{InboxItem, InboxStatus};
+
+/// The Inbox kind of a request.
+pub const KIND: &str = "sandbox";
+/// `why` is refused past this (the tool's schema says so too): it becomes
+/// the entry's note, which holds as much.
+pub const WHY_MAX: usize = crate::project_files::MAX_NOTE;
+
+pub(crate) const ASKED: &str = "ORCH: asked the user; stop your turn and wait";
+pub(crate) const ALREADY_ASKED: &str = "already asked; stop and wait";
+pub(crate) const ALREADY_ALLOWED: &str = "already allowed";
+pub(crate) const RESTART_TO_APPLY: &str = "; it applies when you restart: stop your turn";
+
+/// "network api.github.com", "local ports": what the user and the agent read.
+pub fn label(kind: SandboxKind, value: Option<&str>) -> String {
+    let k = kind.as_str().replace('_', " ");
+    match value {
+        Some(v) if kind.has_value() => format!("{k} {v}"),
+        _ => k,
+    }
+}
+
+/// The message an approval (or several, coalesced) restarts the agent with.
+pub fn approved_message(labels: &[String]) -> String {
+    let verb = if labels.len() > 1 { "are" } else { "is" };
+    format!("ORCH: approved: {} {verb} now allowed by the sandbox. Retry.", labels.join(", "))
+}
+
+/// "network api.github.com" from a `sandbox` item's payload (the raw kind
+/// when it is not one).
+pub fn label_of(p: &Value) -> String {
+    let kind = p.get("kind").and_then(Value::as_str).unwrap_or("");
+    SandboxKind::parse(kind).map_or_else(|| kind.to_string(), |k| label(k, p.get("value").and_then(Value::as_str)))
+}
+
+/// `allow` (plus the `role`'s own hosts and write folders) already grants
+/// `kind` `value` (`path`: the value's canonical path for write and socket).
+fn covered(
+    allow: &Allowances,
+    role: &crate::role::Role,
+    kind: SandboxKind,
+    value: Option<&str>,
+    path: Option<&std::path::Path>,
+) -> bool {
+    match kind {
+        SandboxKind::Network => {
+            super::hard::host_allowed(&allow.network_with(&role.network_allow), value.unwrap_or(""))
+        }
+        SandboxKind::LocalPorts => allow.local_binding,
+        SandboxKind::Write => path.is_some_and(|p| {
+            allow.write.iter().any(|w| p.starts_with(w))
+                || role.extra_write.iter().any(|w| p.starts_with(sandbox::real_lenient(w)))
+        }),
+        SandboxKind::UnixSocket => path.is_some_and(|p| allow.unix_sockets.iter().any(|s| s == p)),
+    }
+}
+
+fn same_request(i: &InboxItem, agent: &str, kind: SandboxKind, value: Option<&str>) -> bool {
+    i.kind == KIND
+        && i.open()
+        && i.agent_id.as_deref() == Some(agent)
+        && i.payload.get("kind").and_then(Value::as_str) == Some(kind.as_str())
+        && i.payload.get("value").and_then(Value::as_str) == value
+}
+
+impl Runtime {
+    /// `request_sandbox_access {kind, value?, why}` (api-contract §5): the
+    /// text for the agent, or the reason it can never be allowed (an error).
+    pub(crate) fn request_sandbox_access(&self, rec: &AgentRecord, args: &Value) -> Result<(String, Value)> {
+        let kind = kind_of(str_arg(args, "kind").unwrap_or(""))?;
+        if !SandboxKind::SUPPORTED.contains(&kind) {
+            bail!("{} is not supported by the installed Claude Code", kind.as_str());
+        }
+        let why = str_arg(args, "why").ok_or_else(|| anyhow!("why: say what you need it for"))?;
+        if why.chars().count() > WHY_MAX {
+            bail!("why: at most {WHY_MAX} characters");
+        }
+        let project = self.agent_project(rec);
+        let guard = self.guard(project.as_deref());
+        let value =
+            sandbox::validate(kind, str_arg(args, "value"), &guard, project.as_deref()).map_err(|r| anyhow!(r))?;
+        let path = match value.as_deref() {
+            Some(v) => sandbox::resolve(kind, v, &guard, project.as_deref()).map_err(|r| anyhow!(r))?,
+            None => None,
+        };
+        let what = label(kind, value.as_deref());
+        // Already in its effective sandbox: maybe not in the settings it runs on yet.
+        let effective = self.allowances(rec, project.as_deref());
+        if covered(&effective, &rec.role, kind, value.as_deref(), path.as_deref()) {
+            let running = self.live_get(&rec.id).map(|l| l.sandbox.clone());
+            let stale = !SETTINGS_RELOAD_LIVE
+                && running.is_some_and(|r| !covered(&r, &rec.role, kind, value.as_deref(), path.as_deref()));
+            if stale {
+                self.sandbox_restart_due(&rec.id, what);
+                return Ok((format!("{ALREADY_ALLOWED}{RESTART_TO_APPLY}"), json!({"allowed": true, "restart": true})));
+            }
+            return Ok((ALREADY_ALLOWED.into(), json!({"allowed": true})));
+        }
+        if let Some(id) =
+            self.store.read(|s| s.inbox.iter().find(|i| same_request(i, &rec.id, kind, value.as_deref())).map(|i| i.id))
+        {
+            return Ok((ALREADY_ASKED.into(), json!({"item": id})));
+        }
+        let payload = json!({
+            "kind": kind.as_str(), "value": value, "why": why, "project": project,
+            "role": rec.role.name, "agent": rec.id,
+        });
+        let body = format!("{}: sandbox access: {what}", rec.id);
+        let id = self.add_item(Some(&rec.id), KIND, body, payload, PRIORITY_BLOCKING)?;
+        // No hold: parked at once, so its Stop frees the slot (FR-705) and
+        // the idle logic does not resume it for other work.
+        if let Ok(true) = self.store.write(|s| s.park_inbox(id))
+            && let Some(i) = self.store.read(|s| s.inbox.iter().find(|i| i.id == id).cloned())
+        {
+            self.outcome(&i, "core", "parked");
+        }
+        let _ = self.db.audit(
+            &format!("agent:{}", rec.id),
+            Some(&rec.id),
+            "sandbox_request",
+            value.as_deref().or(Some(kind.as_str())),
+            "asked",
+            json!({"item": id, "kind": kind.as_str(), "value": value, "why": why}),
+        );
+        Ok((ASKED.into(), json!({"item": id})))
+    }
+
+    /// An approved allowance of `agent` waits for a restart: at its Stop,
+    /// or now when it is not in a turn. Several coalesce into one restart.
+    /// (The decided item keeps `restart_pending` until then, so a restart of
+    /// the core does not lose it: [`Runtime::sandbox_restarts_after_restart`].)
+    pub(crate) fn sandbox_restart_due(&self, agent: &str, what: String) {
+        self.sandbox_restart_queue(agent, what);
+        self.sandbox_restart_if_idle(agent);
+    }
+
+    fn sandbox_restart_queue(&self, agent: &str, what: String) {
+        let mut h = self.house();
+        let due = h.sandbox_restart.entry(agent.to_string()).or_default();
+        if !due.contains(&what) {
+            due.push(what);
+        }
+    }
+
+    fn sandbox_restart_if_idle(&self, agent: &str) {
+        let busy = self.live_get(agent).is_some()
+            && self.store.read(|s| s.agents.get(agent).is_some_and(|a| a.tracker.state != AgentState::Idle));
+        if !busy {
+            self.sandbox_restart_now(agent);
+        }
+    }
+
+    /// Restarts `agent` with `--resume` on recompiled settings (a stopped
+    /// one starts on them anyway) and tells it what is now allowed; a no-op
+    /// when no approval waits (every Stop calls it).
+    pub(crate) fn sandbox_restart_now(&self, agent: &str) {
+        let Some(labels) = self.house().sandbox_restart.remove(agent) else { return };
+        self.sandbox_restart_done(agent);
+        // The stop intent is set first: the pump pastes nothing meanwhile,
+        // and the turn goes to the respawned process.
+        let restarted = !SETTINGS_RELOAD_LIVE && self.suspend_in_background(agent, "sandbox");
+        self.event(agent, "sandbox_restart", json!({"allowances": labels, "restarted": restarted}));
+        if let Err(e) = self.deliver_user(agent, &approved_message(&labels)) {
+            eprintln!("warn: {agent} not told its sandbox allowances: {e:#}");
+        }
+    }
+
+    /// The approved allowances of `agent` are being applied: their items
+    /// no longer wait for a restart.
+    fn sandbox_restart_done(&self, agent: &str) {
+        let pending = |i: &InboxItem| {
+            i.kind == KIND
+                && i.agent_id.as_deref() == Some(agent)
+                && i.payload.get("restart_pending") == Some(&json!(true))
+        };
+        if self.store.read(|s| s.inbox.iter().any(pending)) {
+            let _ = self.store.write(|s| {
+                for i in s.inbox.iter_mut().filter(|i| pending(i)) {
+                    i.payload["restart_pending"] = json!(false);
+                }
+            });
+        }
+    }
+
+    /// The core started: approvals whose restart the last run did not get to
+    /// (`restart_pending` on a decided item) are applied now, one restart
+    /// and one message per agent still there; for an agent that is gone the
+    /// flag is cleared.
+    pub(crate) fn sandbox_restarts_after_restart(&self) {
+        let waiting: Vec<(String, String)> = self.store.read(|s| {
+            s.inbox
+                .iter()
+                .filter(|i| i.kind == KIND && i.payload.get("restart_pending") == Some(&json!(true)))
+                .filter_map(|i| Some((i.agent_id.clone()?, i.payload.get("approved")?.as_str()?.to_string())))
+                .collect()
+        });
+        let agents: std::collections::BTreeSet<&String> = waiting.iter().map(|(a, _)| a).collect();
+        for agent in agents {
+            let there =
+                self.store.read(|s| s.agents.get(agent).is_some_and(|a| a.tracker.state != AgentState::Archived));
+            if !there {
+                self.sandbox_restart_done(agent);
+                continue;
+            }
+            for (_, what) in waiting.iter().filter(|(a, _)| a == agent) {
+                self.sandbox_restart_queue(agent, what.clone());
+            }
+            self.sandbox_restart_if_idle(agent);
+        }
+    }
+
+    /// The user's decision on a `sandbox` item (api-contract §5). Only the
+    /// user decides one (never the Overwatch).
+    pub(crate) fn decide_sandbox(
+        &self,
+        item: InboxItem,
+        decision: InboxDecision,
+        scope: Option<&str>,
+        message: Option<&str>,
+        by: &str,
+    ) -> Result<Value> {
+        let id = item.id;
+        if by != "user" {
+            bail!("only the user decides sandbox access");
+        }
+        let p = &item.payload;
+        let get = |k: &str| p.get(k).and_then(Value::as_str);
+        let kind = get("kind").and_then(SandboxKind::parse).ok_or_else(|| anyhow!("item {id} has no sandbox kind"))?;
+        let (value, project, role, why) = (get("value"), get("project"), get("role"), get("why"));
+        let what = label(kind, value);
+        // Checked before claiming: an Approve that can't be written is refused whole.
+        let add = match decision {
+            InboxDecision::Approve => {
+                let sc = scope.unwrap_or("project");
+                if !matches!(sc, "project" | "global" | "role") {
+                    bail!("scope: project | global | role");
+                }
+                let file_scope = if sc == "global" { "global" } else { "project" };
+                if file_scope == "project" && project.is_none() {
+                    bail!("the agent has no project: allow it globally");
+                }
+                if let Err(reason) = sandbox::validate(kind, value, &self.guard(project), project) {
+                    self.set_payload(id, &[("invalid", json!(reason))]);
+                    bail!("{reason}");
+                }
+                Some((sc, file_scope, role.filter(|_| sc == "role")))
+            }
+            InboxDecision::AlwaysAllow => bail!("approve it with a scope instead"),
+            _ => None,
+        };
+        let word = orch_store::tag(&decision);
+        let status = if decision == InboxDecision::Dismiss { InboxStatus::Dismissed } else { InboxStatus::Decided };
+        let was = item.status;
+        self.store
+            .write(|s| {
+                s.close_inbox(id, status, Some(word.clone()), by).map(|i| {
+                    if let Some(m) = message {
+                        i.payload["reply"] = json!(m);
+                    }
+                })
+            })?
+            .map_err(|now| anyhow!("Decision {id} is already {now:?}"))?;
+        let mut result = json!({"item": id, "decision": word, "decided_by": by});
+        let agent = item.agent_id.as_deref();
+        let effect = match add {
+            Some((sc, file_scope, add_role)) => {
+                let added = self
+                    .sandbox_add(file_scope, project, kind.as_str(), value, add_role, why)
+                    .inspect_err(|_| self.unclaim(id, was))?;
+                let mut entry = added["entry"].clone();
+                entry["file"] = added["file"].clone();
+                let outcome = json!({"entry": entry, "created": added["created"], "scope": sc});
+                let mut keep = vec![("outcome", outcome.clone()), ("invalid", Value::Null)];
+                if agent.is_some() {
+                    keep.extend([("restart_pending", json!(true)), ("approved", json!(what))]);
+                }
+                self.set_payload(id, &keep);
+                result["outcome"] = outcome;
+                result["sandbox"] = added;
+                if let Some(a) = agent {
+                    self.sandbox_restart_due(a, what.clone());
+                }
+                "allowed"
+            }
+            None if decision == InboxDecision::Dismiss => {
+                if let Some(a) = agent {
+                    let _ = self.deliver_user(
+                        a,
+                        &format!("ORCH: the user dismissed your sandbox access request ({what}). Continue without it."),
+                    );
+                }
+                "dismissed"
+            }
+            None => {
+                if let Some(a) = agent {
+                    let mut text = format!("ORCH: denied: sandbox access to {what}.");
+                    if let Some(m) = message.filter(|m| !m.trim().is_empty()) {
+                        text.push_str(&format!(" The user said: {m}"));
+                    }
+                    // Nobody was told: the agent still waits, so the item does too.
+                    result["turn"] = json!(self.deliver_user(a, &text).inspect_err(|_| self.unclaim(id, was))?);
+                }
+                "denied"
+            }
+        };
+        // After the effect (it carries the outcome): a failed log line must
+        // not leave the item decided with no lifecycle.
+        let logged = self.db.audit(
+            by,
+            agent,
+            KIND,
+            value.or(Some(kind.as_str())),
+            &word,
+            json!({"item": id, "body": item.body, "message": message, "scope": scope, "kind": kind.as_str(),
+                   "value": value, "outcome": result.get("outcome")}),
+        );
+        if let Err(e) = logged {
+            eprintln!("warn: sandbox decision {id} not logged: {e:#}");
+        }
+        let stage = match effect {
+            "dismissed" => Stage::Effect("dismissed", None),
+            _ if agent.is_some() => Stage::Sent,
+            e => Stage::Effect(e, None),
+        };
+        self.advance(id, stage);
+        result["effect"] = json!(effect);
+        result["lifecycle"] = self.lifecycle(id);
+        self.outcome(&item, by, effect);
+        Ok(result)
+    }
+}
+
+#[cfg(test)]
+mod tests;

@@ -55,7 +55,8 @@ usage: orchd [--home DIR] <command> [args]
   commit <agent> <message...> [--path P]...   commit in the agent's worktree (same path as orch-mcp)
   inbox                         pending Inbox items
   decide <item> approve|reject|always|reply|dismiss [--scope project|role|agent] [--message TEXT]
-  rules [--project P] | rule add <project|role|agent> <id> <pattern> <allow|deny|overwatch|user> | rule revoke <id> [--file F]
+  rules [--project P] | rule add <global|project|role|agent> [<id>] <pattern> <allow|deny|overwatch|user> [--role R] [--note N] | rule revoke <id> [--file F]
+  sandbox list [--project P] | kinds | add|check <network|write|local_ports|unix_socket> [VALUE] [--project P] [--role R] [--note N] | remove <id> [--file F]
   policy [--project P] [--test TOOL INPUT --role R]   the policy files and merged rules; --test: a call's effect and what decides it
   overwatch [--json] [restart]                 the Overwatch: status, today's turns and p50 / p90 wake; restart: a fresh session
   intake [--week] [--json]                     intake sources and items per project; --week: this week's starts from intake
@@ -505,7 +506,10 @@ fn run() -> Result<()> {
                 Some((tool, input)) => {
                     let input = test_input(&tool, &input);
                     let role = role.unwrap_or_else(|| "solo".into());
-                    print(request(&sock, CtlRequest::PolicyTest { project, role, tool, input })?)
+                    print(request(
+                        &sock,
+                        CtlRequest::PolicyTest { project, role, tool, input, solo: false, value: None },
+                    )?)
                 }
                 None => {
                     print(request(&sock, CtlRequest::PolicyFiles)?)?;
@@ -515,12 +519,19 @@ fn run() -> Result<()> {
         }
         "rule" => {
             let req = match a.next("rule subcommand")?.as_str() {
-                "add" => CtlRequest::AddRule {
-                    scope: a.next("scope")?,
-                    scope_id: a.next("scope id")?,
-                    pattern: a.next("pattern")?,
-                    effect: a.next("effect")?,
-                },
+                "add" => {
+                    let (role, note) = (a.opt("--role")?, a.opt("--note")?);
+                    let scope = a.next("scope")?;
+                    let scope_id = if scope == "global" { String::new() } else { a.next("scope id")? };
+                    CtlRequest::AddRule {
+                        scope,
+                        scope_id,
+                        pattern: a.next("pattern")?,
+                        effect: a.next("effect")?,
+                        role,
+                        note,
+                    }
+                }
                 "revoke" => {
                     let file = a.opt("--file")?;
                     let id = a.next("rule id")?;
@@ -529,6 +540,30 @@ fn run() -> Result<()> {
                     CtlRequest::RevokeRule { id, file }
                 }
                 other => bail!("unknown rule subcommand {other:?}"),
+            };
+            a.done()?;
+            print(request(&sock, req)?)
+        }
+        "sandbox" => {
+            let req = match a.next("sandbox subcommand")?.as_str() {
+                "list" => CtlRequest::SandboxList { project: a.opt("--project")? },
+                "kinds" => CtlRequest::SandboxKinds,
+                sub @ ("add" | "check") => {
+                    let (project, role, note) = (a.opt("--project")?, a.opt("--role")?, a.opt("--note")?);
+                    let scope = if project.is_some() { "project" } else { "global" }.to_string();
+                    let kind = a.next("kind")?;
+                    let value = if kind == "local_ports" { None } else { Some(a.next("value")?) };
+                    if sub == "add" {
+                        CtlRequest::SandboxAdd { scope, project, kind, value, role, note }
+                    } else {
+                        CtlRequest::SandboxCheck { kind, value, scope, project }
+                    }
+                }
+                "remove" => {
+                    let file = a.opt("--file")?.unwrap_or_else(|| "global".into());
+                    CtlRequest::SandboxRemove { id: a.next("entry id")?, file }
+                }
+                other => bail!("unknown sandbox subcommand {other:?}"),
             };
             a.done()?;
             print(request(&sock, req)?)

@@ -64,6 +64,11 @@ pub fn matches(pattern: &str, tool: &str, input: &Value) -> bool {
     }
     let Some(spec) = spec else { return true };
     let Some(arg) = primary_input(tool, input) else { return false };
+    // `WebFetch(domain:docs.rs)` (Claude Code's form): the URL's host; `*.x` its subdomains.
+    if let Some(domain) = spec.strip_prefix("domain:").filter(|_| tool == "WebFetch") {
+        return crate::policy::hard::url_host(&arg)
+            .is_some_and(|h| crate::policy::hard::host_allowed(&[domain.to_string()], &h));
+    }
     // A prefix rule never covers a compound command: `git status:*` must not
     // allow `git status && rm -rf ~`.
     if tool == "Bash" && is_compound(&arg) && spec.ends_with('*') {
@@ -104,6 +109,152 @@ pub fn always_pattern(tool: &str, input: &Value) -> Option<String> {
     }
 }
 
+/// The tools of the Settings rule form (`rule_preview`, `policy_test`).
+pub const FORM_TOOLS: &[&str] = &["bash", "read", "edit", "webfetch", "mcp", "any"];
+
+/// The host of `value` (`docs.rs`, `https://docs.rs/x`, `*.docs.rs`), lowercased.
+fn form_host(value: &str) -> Result<String, String> {
+    let v = value.trim();
+    if let Some(rest) = v.strip_prefix("*.") {
+        return form_host(rest).map(|h| format!("*.{h}"));
+    }
+    crate::policy::hard::url_host(v)
+        .filter(|h| !h.is_empty() && h != "*")
+        .ok_or_else(|| "Enter a domain, like docs.rs.".to_string())
+}
+
+/// The MCP tool name of `value` (`server__tool`, `server`, empty), without the `mcp__` prefix.
+fn form_mcp(value: &str) -> Result<String, String> {
+    let v = value.trim().trim_start_matches("mcp__").trim_end_matches('*').trim_end_matches("__");
+    if !v.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-')) {
+        return Err("Enter an MCP server, or server__tool, with letters, digits, _ and -.".into());
+    }
+    Ok(v.to_string())
+}
+
+/// `rule_preview`: the pattern for the Settings form's `tool` and `value`
+/// (api-contract §3 Rules). The UI never builds patterns itself.
+pub fn form_pattern(tool: &str, value: &str, home: &std::path::Path) -> Result<String, String> {
+    let v = value.trim();
+    Ok(match tool {
+        "any" => "*".into(),
+        "bash" => {
+            let cmd = v.trim_end_matches('*').trim_end_matches(':').trim();
+            if cmd.is_empty() {
+                return Err("Enter the start of a command, like cargo test.".into());
+            }
+            if cmd.contains(['(', ')']) || cmd.contains('\n') {
+                return Err("A command with ( ) or a line break can't be written as a rule.".into());
+            }
+            format!("Bash({cmd}:*)")
+        }
+        "webfetch" => format!("WebFetch(domain:{})", form_host(v)?),
+        "read" | "edit" => {
+            if v.is_empty() {
+                return Err("Enter a folder or a file, like ~/notes.".into());
+            }
+            let p = crate::project_files::expand(v, home)?;
+            let p = p.to_string_lossy().trim_end_matches('/').to_string();
+            if p.is_empty() {
+                return Err("/ is every file: pick a folder.".into());
+            }
+            if p.contains(['(', ')']) || p.contains(crate::project_files::GLOB_CHARS) {
+                return Err("A path with ( ) * ? [ ] { } can't be written as a rule.".into());
+            }
+            let tool = if tool == "read" { "Read" } else { "Edit" };
+            format!("{tool}({}/**)", crate::compile::rule_path(std::path::Path::new(&p)))
+        }
+        "mcp" => match form_mcp(v)? {
+            n if n.is_empty() => "mcp__*".into(),
+            n if n.contains("__") => format!("mcp__{n}"),
+            n => format!("mcp__{n}__*"),
+        },
+        other => return Err(format!("tool {other:?}: {}", FORM_TOOLS.join(" | "))),
+    })
+}
+
+/// `policy_test`'s form: the tool name and input a call of `tool` with
+/// `value` has (a full Bash command, a path, a domain, an MCP tool).
+pub fn form_call(tool: &str, value: &str, home: &std::path::Path) -> Result<(String, Value), String> {
+    let v = value.trim();
+    Ok(match tool {
+        "bash" => ("Bash".into(), serde_json::json!({"command": v})),
+        "read" | "edit" => {
+            let p = crate::project_files::expand(v, home)?;
+            let name = if tool == "read" { "Read" } else { "Edit" };
+            (name.into(), serde_json::json!({"file_path": p.display().to_string()}))
+        }
+        "webfetch" => {
+            let h = form_host(v)?;
+            if h.starts_with("*.") {
+                return Err("Test a real host, like api.docs.rs: a wildcard isn't a call.".into());
+            }
+            ("WebFetch".into(), serde_json::json!({"url": format!("https://{h}/")}))
+        }
+        "mcp" => {
+            let n = form_mcp(v)?;
+            if !n.contains("__") {
+                return Err("Enter the MCP tool as server__tool.".into());
+            }
+            (format!("mcp__{n}"), serde_json::json!({}))
+        }
+        other => return Err(format!("tool {other:?}: {}", FORM_TOOLS[..FORM_TOOLS.len() - 1].join(" | "))),
+    })
+}
+
+/// A rule's pattern in plain language (`policy_rules`' `summary`):
+/// "Bash commands starting with `cargo test`".
+pub fn rule_summary(pattern: &str) -> String {
+    let p = pattern.trim();
+    let (tool, spec) = match p.split_once('(') {
+        Some((t, rest)) if rest.ends_with(')') => (t, Some(&rest[..rest.len() - 1])),
+        _ => (p, None),
+    };
+    // `//abs` is absolute; `~/…`, `/…` (the settings file's folder) and
+    // relative paths are shown as written.
+    let path = |s: &str| s.strip_prefix('/').filter(|abs| abs.starts_with('/')).unwrap_or(s).to_string();
+    let file_verb = match tool {
+        "Read" => Some("Reading"),
+        "Edit" | "MultiEdit" => Some("Editing"),
+        "Write" => Some("Writing"),
+        _ => None,
+    };
+    if let Some(v) = file_verb {
+        return match spec.map(|s| (s, s.strip_suffix("/**"))) {
+            None => format!("{v} any file"),
+            Some((_, Some(dir))) => format!("{v} files in `{}`", path(dir)),
+            Some((s, None)) => format!("{v} `{}`", path(s)),
+        };
+    }
+    match (tool, spec) {
+        ("*", None) => "Any tool call".into(),
+        ("Bash", None) => "Any Bash command".into(),
+        ("Bash", Some(s)) => match s.strip_suffix(":*").or_else(|| s.strip_suffix('*')) {
+            Some(prefix) => format!("Bash commands starting with `{}`", prefix.trim_end()),
+            None => format!("The Bash command `{s}`"),
+        },
+        ("WebFetch", None) => "Fetching any web page".into(),
+        ("WebFetch", Some(s)) => match s.strip_prefix("domain:") {
+            Some(d) => format!("Fetching pages from `{d}`"),
+            None => format!("Fetching `{s}`"),
+        },
+        ("mcp__*", None) => "Any MCP tool".into(),
+        (t, None) if t.starts_with("mcp__") => {
+            let rest = &t["mcp__".len()..];
+            match rest.strip_suffix("__*") {
+                Some(server) => format!("Any tool of the `{server}` MCP server"),
+                None => match rest.split_once("__") {
+                    Some((server, name)) => format!("The `{name}` tool of the `{server}` MCP server"),
+                    None => format!("MCP tools starting with `{}`", rest.trim_end_matches('*')),
+                },
+            }
+        }
+        (t, None) if t.ends_with('*') => format!("Tools starting with `{}`", t.trim_end_matches('*')),
+        (t, None) => format!("Any `{t}` call"),
+        (t, Some(s)) => format!("`{t}` calls matching `{s}`"),
+    }
+}
+
 /// One line for the Inbox: `Bash: cargo test -p x`.
 pub fn summary(tool: &str, input: &Value) -> String {
     let arg = primary_input(tool, input).unwrap_or_default();
@@ -118,6 +269,82 @@ pub fn summary(tool: &str, input: &Value) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn form_patterns_and_summaries() {
+        let home = std::path::Path::new("/Users/u");
+        let pat = |t: &str, v: &str| form_pattern(t, v, home);
+        assert_eq!(pat("bash", " cargo test ").unwrap(), "Bash(cargo test:*)");
+        assert_eq!(pat("bash", "cargo test:*").unwrap(), "Bash(cargo test:*)");
+        assert_eq!(pat("webfetch", "docs.rs").unwrap(), "WebFetch(domain:docs.rs)");
+        assert_eq!(pat("webfetch", "https://Docs.rs/x").unwrap(), "WebFetch(domain:docs.rs)");
+        assert_eq!(pat("read", "~/notes/").unwrap(), "Read(//Users/u/notes/**)");
+        assert_eq!(pat("edit", "/tmp/x").unwrap(), "Edit(//tmp/x/**)");
+        assert_eq!(pat("mcp", "linear__save_issue").unwrap(), "mcp__linear__save_issue");
+        assert_eq!(pat("mcp", "linear").unwrap(), "mcp__linear__*");
+        assert_eq!(pat("mcp", "").unwrap(), "mcp__*");
+        assert_eq!(pat("any", "ignored").unwrap(), "*");
+        for (t, v) in [
+            ("bash", ""),
+            ("bash", "f(x)"),
+            ("read", "rel"),
+            ("read", "/"),
+            ("webfetch", ""),
+            ("mcp", "a b"),
+            ("x", ""),
+        ] {
+            assert!(pat(t, v).is_err(), "{t} {v}");
+        }
+        // Each generated pattern matches the call it describes, and reads in words.
+        let cases = [
+            (
+                "bash",
+                "cargo test",
+                "Bash",
+                json!({"command": "cargo test -p x"}),
+                "Bash commands starting with `cargo test`",
+            ),
+            (
+                "webfetch",
+                "docs.rs",
+                "WebFetch",
+                json!({"url": "https://docs.rs/serde"}),
+                "Fetching pages from `docs.rs`",
+            ),
+            (
+                "read",
+                "~/notes",
+                "Read",
+                json!({"file_path": "/Users/u/notes/a.md"}),
+                "Reading files in `/Users/u/notes`",
+            ),
+            ("mcp", "linear", "mcp__linear__save_issue", json!({}), "Any tool of the `linear` MCP server"),
+            ("any", "", "Edit", json!({"file_path": "/x"}), "Any tool call"),
+        ];
+        for (t, v, tool, input, words) in cases {
+            let p = pat(t, v).unwrap();
+            assert!(matches(&p, tool, &input), "{p}");
+            assert_eq!(rule_summary(&p), words);
+        }
+        assert!(!matches("WebFetch(domain:docs.rs)", "WebFetch", &json!({"url": "https://evil.com/docs.rs"})));
+        assert!(matches("WebFetch(domain:*.docs.rs)", "WebFetch", &json!({"url": "https://a.docs.rs/"})));
+        assert_eq!(rule_summary("Bash(cargo test)"), "The Bash command `cargo test`");
+        assert_eq!(rule_summary("Bash"), "Any Bash command");
+        assert_eq!(rule_summary("Edit(//a/b)"), "Editing `/a/b`");
+        assert_eq!(rule_summary("Read(~/notes/**)"), "Reading files in `~/notes`");
+        assert_eq!(rule_summary("Edit(src/**)"), "Editing files in `src`");
+        assert_eq!(rule_summary("mcp__orch__commit"), "The `commit` tool of the `orch` MCP server");
+        assert_eq!(rule_summary("mcp__*"), "Any MCP tool");
+        assert_eq!(rule_summary("Glob"), "Any `Glob` call");
+        // policy_test's calls.
+        assert_eq!(form_call("bash", "git push", home).unwrap(), ("Bash".into(), json!({"command": "git push"})));
+        assert_eq!(form_call("webfetch", "docs.rs", home).unwrap().1, json!({"url": "https://docs.rs/"}));
+        let e = form_call("webfetch", "*.docs.rs", home).unwrap_err();
+        assert_eq!(e, "Test a real host, like api.docs.rs: a wildcard isn't a call.");
+        assert_eq!(form_call("read", "~/a", home).unwrap().1, json!({"file_path": "/Users/u/a"}));
+        assert_eq!(form_call("mcp", "orch__commit", home).unwrap().0, "mcp__orch__commit");
+        assert!(form_call("mcp", "orch", home).is_err() && form_call("any", "", home).is_err());
+    }
 
     #[test]
     fn pattern_matching() {

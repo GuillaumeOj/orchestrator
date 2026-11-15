@@ -218,12 +218,62 @@ pub enum CtlRequest {
     },
     /// Appends a rule to the policy file of its scope.
     AddRule {
-        /// `project` / `role` / `agent`.
+        /// `global` / `project` (the Settings form, with `role` and `note`),
+        /// or a card's `role` / `agent`.
         scope: String,
+        /// The project, role or agent id (ignored for `global`).
+        #[serde(default)]
         scope_id: String,
         pattern: String,
         /// `allow` / `deny` / `overwatch` / `user` (`ask` reads as `user`).
         effect: String,
+        /// Only agents of this role id (`global` / `project` scopes).
+        #[serde(default)]
+        role: Option<String>,
+        #[serde(default)]
+        note: Option<String>,
+    },
+    /// `rule_preview {tool, value?}`: the pattern the Settings form makes
+    /// (`bash` | `read` | `edit` | `webfetch` | `mcp` | `any`), and its words.
+    RulePreview {
+        tool: String,
+        #[serde(default)]
+        value: String,
+    },
+    /// `sandbox_list {project?}`: the sandbox allowances per file (api-contract §3).
+    SandboxList {
+        #[serde(default)]
+        project: Option<String>,
+    },
+    /// The allowance kinds the installed CLI supports.
+    SandboxKinds,
+    /// Validation only: `{ok, value}` | `{ok: false, reason}`.
+    SandboxCheck {
+        /// `network` | `write` | `local_ports` | `unix_socket`.
+        kind: String,
+        #[serde(default)]
+        value: Option<String>,
+        /// `global` | `project`.
+        scope: String,
+        #[serde(default)]
+        project: Option<String>,
+    },
+    SandboxAdd {
+        scope: String,
+        #[serde(default)]
+        project: Option<String>,
+        kind: String,
+        #[serde(default)]
+        value: Option<String>,
+        #[serde(default)]
+        role: Option<String>,
+        #[serde(default)]
+        note: Option<String>,
+    },
+    /// `file`: `global` | `project:<id>`.
+    SandboxRemove {
+        id: String,
+        file: String,
     },
     /// Removes a policy rule by id (`file`: `global` | `project:<id>` when ids repeat).
     RevokeRule {
@@ -284,12 +334,21 @@ pub enum CtlRequest {
         project: Option<String>,
     },
     /// `orchd policy --test`: the effect of a call and what decides it.
+    /// With `value`, the Settings form: `tool` is `bash` | `read` | `edit` |
+    /// `webfetch` | `mcp`, the core builds the input; `role` empty = a team
+    /// agent of no specific role, `solo` a solo session.
     PolicyTest {
         #[serde(default)]
         project: Option<String>,
+        #[serde(default)]
         role: String,
         tool: String,
+        #[serde(default)]
         input: serde_json::Value,
+        #[serde(default)]
+        solo: bool,
+        #[serde(default)]
+        value: Option<String>,
     },
     Audit {
         #[serde(default)]

@@ -381,7 +381,7 @@ describe('Settings pane', () => {
     app.window = { kind: 'settings', section: 'integrations' };
     const { container, getByText } = render(SettingsWindow);
     const nav = container.querySelector('[role="tablist"]');
-    for (let i = 0; i < 4; i++) {
+    for (let i = 0; i < 5; i++) {
       await fireEvent.keyDown(nav, { key: 'j' });
       await tick();
     }

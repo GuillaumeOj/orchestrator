@@ -4,7 +4,8 @@
 //! the agent's identity comes from the environment the core set at spawn.
 //!
 //! Tools (an agent sees the subset `ORCH_TOOLS` names; a solo session has
-//! `commit`, `request_pr`, `read_issue` and `update_issue`):
+//! `commit`, `request_pr`, `read_issue`, `update_issue` and
+//! `request_sandbox_access`):
 //! - `commit(message, paths?)`: the core commits in the agent's worktree,
 //!   outside the sandbox (sandboxed git can't write the repository's git dir
 //!   under Claude Code 2.1.302), logged and subject to permission rules;
@@ -13,6 +14,9 @@
 //! - `read_issue(issue, offset?)`, `update_issue(issue, …)`: the core reads and
 //!   changes an issue of the project's GitHub repository with the user's `gh`
 //!   login (the sandbox has neither the login nor a route to GitHub);
+//! - `request_sandbox_access(kind, value?, why)`: asks the user to widen the
+//!   agent's OS sandbox (an Inbox card); approved, the agent restarts on its
+//!   session with the new settings;
 //! - team tools (P2): `send_message`, `inbox`, `list_tasks`, `handoff`,
 //!   `request_review`, `ask_user`, `create_task`, `update_task`,
 //!   `request_spec_approval`, `merge`, `report_done`, `sync_integration`;
@@ -58,7 +62,7 @@ impl McpEnv {
 }
 
 /// Tools a solo session has when `ORCH_TOOLS` is not set (P1).
-pub const SOLO_TOOLS: &[&str] = &["commit", "request_pr", "read_issue", "update_issue"];
+pub const SOLO_TOOLS: &[&str] = &["commit", "request_pr", "read_issue", "update_issue", "request_sandbox_access"];
 
 fn tool(name: &str, description: &str, properties: Value, required: &[&str]) -> Value {
     json!({
@@ -153,6 +157,16 @@ pub fn tools() -> Value {
                 "comment": s("A comment to post (Markdown).")
             }),
             &["issue"],
+        ),
+        tool(
+            "request_sandbox_access",
+            "Ask the user to widen your OS sandbox when it blocks something you need: a network host, a folder to write, local ports (to run a server), or a Unix socket. Say why. Some places are never allowed (credential stores, the app's data, other checkouts); the error says so. Returns at once: stop your turn and wait. Once approved, you are restarted on the same session and told to retry.",
+            json!({
+                "kind": s("network, write, local_ports or unix_socket."),
+                "value": s("The host (api.github.com, *.example.com), the absolute folder or socket path (~ allowed). Omit for local_ports."),
+                "why": {"type": "string", "maxLength": 500, "description": "What you need it for, in a sentence the user can judge (at most 500 characters)."}
+            }),
+            &["kind", "why"],
         ),
         tool(
             "create_task",
@@ -495,7 +509,7 @@ mod tests {
         assert_eq!(out[0]["result"]["protocolVersion"], "2025-03-26");
         assert_eq!(out[0]["result"]["serverInfo"]["name"], "orch");
         let names: Vec<_> = out[1]["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].clone()).collect();
-        assert_eq!(names, ["commit", "request_pr", "read_issue", "update_issue"]);
+        assert_eq!(names, ["commit", "request_pr", "read_issue", "update_issue", "request_sandbox_access"]);
         assert_eq!(out[2]["error"]["code"], -32601);
         assert_eq!(out[3]["error"]["code"], -32602);
         assert_eq!(out[4]["result"], json!({}));

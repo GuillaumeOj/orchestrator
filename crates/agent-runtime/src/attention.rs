@@ -467,6 +467,10 @@ pub mod copy {
         let what = if parked { "permission (parked)" } else { "permission" };
         if input.is_empty() { format!("{what}: {tool}") } else { format!("{what}: {tool} {input}") }
     }
+    /// `what`: [`crate::policy::sandbox_ask::label`].
+    pub fn sandbox(what: &str) -> String {
+        format!("sandbox access: {}", cut(what, 72))
+    }
     pub fn question(first_line: &str) -> String {
         format!("question: {}", cut(first_line, 60))
     }
@@ -828,7 +832,7 @@ impl<'a> Ctx<'a> {
     /// Rule 2: needs you. Ranked permission > question > gate > ask > trust > pane prompt, oldest first.
     fn needs_you(&self, a: &AgentRecord) -> Option<Found> {
         let rank = |it: &InboxItem| match it.kind.as_str() {
-            "permission" => Some(0),
+            "permission" | "sandbox" => Some(0),
             "question" => Some(1),
             "gate" => Some(2),
             _ => None,
@@ -856,6 +860,7 @@ impl<'a> Ctx<'a> {
                     let (tool, input) = tool.split_once(' ').unwrap_or((&tool, ""));
                     (Status::WaitingForYou, copy::permission(tool, input, it.status == InboxStatus::Parked))
                 }
+                "sandbox" => (Status::WaitingForYou, copy::sandbox(&crate::policy::sandbox_ask::label_of(&it.payload))),
                 "question" => {
                     let qs = it.payload.get("questions").and_then(Value::as_array);
                     let reason = match qs {
@@ -1194,7 +1199,7 @@ impl<'a> Ctx<'a> {
         let facts = crate::blocker::Facts {
             state: a.tracker.state,
             crashed: !live && crate::startup::crashed(a),
-            parked: self.items(&a.id).iter().any(|it| it.kind == "permission" && it.status == InboxStatus::Parked),
+            parked: self.items(&a.id).iter().any(|it| it.status == InboxStatus::Parked),
             hold: self.entries.get(a.id.as_str()).map(|(_, e)| crate::blocker::hold_of(&e.reason)),
             unacked: self.i.unacked.contains(&a.id),
             typing: self.i.typing.contains(&a.id),

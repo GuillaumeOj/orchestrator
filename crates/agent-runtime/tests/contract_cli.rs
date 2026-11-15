@@ -14,6 +14,7 @@ use std::process::Command;
 
 use agent_runtime::compile::{CompileCtx, HelperPaths, SessionMode, compile};
 use agent_runtime::env::EnvInputs;
+use agent_runtime::policy::sandbox::Allowances;
 use agent_runtime::role::{PermissionMode, Role};
 
 fn claude() -> Option<PathBuf> {
@@ -67,6 +68,7 @@ fn app_args(mode: PermissionMode, session: SessionMode) -> Vec<String> {
         env,
         git_identity: ("N".into(), "e@x".into()),
         project_files: vec![],
+        sandbox: Allowances::default(),
         overwatch: None,
     };
     compile(&role, &ctx).args

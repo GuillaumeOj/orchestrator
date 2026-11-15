@@ -7,11 +7,12 @@
   // (`u`, or the button when expanded), "undone 14:03" once used, "Can't be
   // undone: …" when it can't be; "Correct the answer" opens a reply field.
   import { tick } from 'svelte';
-  import { now30, projectName, toast, undoLine } from '../../lib/app.svelte.js';
+  import { app, now30, projectName, toast, undoLine, undoSandboxAllow } from '../../lib/app.svelte.js';
   import { lineLabel, lineText, tailText, verbText, warnVerb } from '../../lib/chat.js';
   import { clock } from '../../lib/format.js';
   import { errText } from '../../lib/ipc.js';
   import { undoChip, undoInfo, undoneTail, undoState } from '../../lib/overwatch.js';
+  import { decidedText } from '../../lib/sandbox.js';
   import { tooltip } from '../../lib/tooltip.js';
   import DecisionCard from './DecisionCard.svelte';
 
@@ -25,6 +26,9 @@
   const tail = $derived(tailText(line, entries));
   const undone = $derived(undoneTail(line, now));
   const chip = $derived(undoChip(line));
+  // A sandbox Allow: what it did, and its Undo, on the collapsed line too (ux-flows §2.4).
+  const allowed = $derived(item.d?.kind === 'sandbox' ? decidedText(item.d, projectName) : null);
+  const allowUndo = $derived(app.sandboxUndo[item.d?.id ?? ''] ?? {});
   let busy = $state(false);
   let failed = $state('');
   let correcting = $state(false);
@@ -99,6 +103,11 @@
       <span class="what">{line.what ?? ''}</span>
       {#if tail}<span class="tail muted">· {tail}</span>{/if}
     </button>
+    {#if allowed}
+      <span class="tail muted" data-sandbox-line>{allowUndo.done ?? allowed}</span>
+      {#if !allowUndo.done && item.d.payload?.outcome?.created}<button class="chip link" data-sandbox-undo aria-label="Undo allowing {item.d.payload.value ?? 'local ports'}" onclick={() => undoSandboxAllow(item.d)}>Undo</button>{/if}
+    {/if}
+    {#if allowUndo.error}<span class="err" role="alert">{allowUndo.error}</span>{/if}
     {#if chip}<button class="chip link" data-undo-run onclick={press} aria-label={line.undo.label} use:tooltip={{ label: chip.replace(/ u$/, ''), key: 'u' }}>{chip.replace(/ u$/, '')}</button>{/if}
     <span class="at muted">{undone || clock(line.at_ms, now)}</span>
   </div>

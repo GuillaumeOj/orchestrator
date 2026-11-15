@@ -225,13 +225,21 @@ pub fn ctl(rt: &Runtime, req: CtlRequest) -> CtlReply {
             ok_or(rt.decide(item_id, decision, scope.as_deref(), message.as_deref()))
         }
         CtlRequest::Rules { project } => CtlReply::ok(json!(rt.policy_rules(project.as_deref()))),
-        CtlRequest::AddRule { scope, scope_id, pattern, effect } => ok_or((|| {
-            let sc =
-                orch_store::RuleScope::parse(&scope).ok_or_else(|| anyhow::anyhow!("scope: project | role | agent"))?;
+        CtlRequest::AddRule { scope, scope_id, pattern, effect, role, note } => ok_or((|| {
             let ef = crate::policy::Effect::parse(&effect)
                 .ok_or_else(|| anyhow::anyhow!("effect: allow | deny | overwatch | user"))?;
-            rt.add_rule(sc, &scope_id, None, &pattern, ef, None)
+            rt.add_rule_form(&scope, &scope_id, &pattern, ef, role.as_deref(), note.as_deref())
         })()),
+        CtlRequest::RulePreview { tool, value } => ok_or(rt.rule_preview(&tool, &value)),
+        CtlRequest::SandboxList { project } => CtlReply::ok(json!(rt.sandbox_list(project.as_deref()))),
+        CtlRequest::SandboxKinds => CtlReply::ok(json!(rt.sandbox_kinds())),
+        CtlRequest::SandboxCheck { kind, value, scope, project } => {
+            ok_or(rt.sandbox_check(&kind, value.as_deref(), &scope, project.as_deref()))
+        }
+        CtlRequest::SandboxAdd { scope, project, kind, value, role, note } => {
+            ok_or(rt.sandbox_add(&scope, project.as_deref(), &kind, value.as_deref(), role.as_deref(), note.as_deref()))
+        }
+        CtlRequest::SandboxRemove { id, file } => ok_or(rt.sandbox_remove(&id, &file)),
         CtlRequest::RevokeRule { id, file } => {
             ok_or(rt.revoke_rule(&id, file.as_deref()).map(|done| json!({"revoked": done})))
         }
@@ -254,9 +262,10 @@ pub fn ctl(rt: &Runtime, req: CtlRequest) -> CtlReply {
         CtlRequest::PolicyOpen { scope, project } => {
             ok_or(rt.policy_open(&scope, project.as_deref()).map(|p| json!({"path": p})))
         }
-        CtlRequest::PolicyTest { project, role, tool, input } => {
-            ok_or(rt.policy_test(project.as_deref(), &role, &tool, &input))
-        }
+        CtlRequest::PolicyTest { project, role, tool, input, solo, value } => ok_or(match value {
+            Some(v) => rt.policy_test_form(project.as_deref(), Some(&role), solo, &tool, &v),
+            None => rt.policy_test(project.as_deref(), &role, &tool, &input),
+        }),
         CtlRequest::Audit { agent_id, limit } => {
             ok_or(rt.db.audit_log(agent_id.as_deref(), limit.unwrap_or(100)).map(|v| json!(v)))
         }

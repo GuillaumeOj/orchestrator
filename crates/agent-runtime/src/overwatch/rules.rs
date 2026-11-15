@@ -371,7 +371,7 @@ impl Runtime {
                 // The user's own edit is not what closes it now (see `rules_check_edited`).
                 let edited = p.get("edited_at_ms").cloned();
                 self.set_payload(n, &[("edited_at_ms", Value::Null)]);
-                let r = self.add_rule_to(&scope, role, None, &pattern, effect, from).inspect_err(|_| {
+                let r = self.add_rule_to(&scope, role, None, &pattern, effect, from, None).inspect_err(|_| {
                     if let Some(e) = &edited {
                         self.set_payload(n, &[("edited_at_ms", e.clone())]);
                     }

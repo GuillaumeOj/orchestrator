@@ -108,10 +108,17 @@ export function keyIntent(key, d) {
       return { kind: 'undo' };
     case 'e':
       return agentOf(d) ? { kind: 'editor' } : null;
+    // A sandbox card: ⇧a opens the scope menu, y replies (ux-flows §2.1).
+    case 'A':
+      return d?.kind === 'sandbox' ? { kind: 'scope-menu' } : null;
+    case 'y':
+      return d?.kind === 'sandbox' ? { kind: 'reply' } : null;
     case 'a':
     case 'r':
     case 'enter':
     case 'o': {
+      // A sandbox value the core found can't be allowed has no Allow: its key does not send one either.
+      if (key === 'a' && d?.kind === 'sandbox' && d.payload?.invalid) return null;
       const act = actionByKey(d, key);
       return act ? intentFor(d, act.id) : null;
     }
@@ -186,6 +193,8 @@ export function pendingVerb(d, action) {
       return { skip: 'Skipping', keep: 'Keeping', start_anyway: 'Starting anyway' }[action] ?? 'Opening';
     case 'permission':
       return { approve: 'Allowing once', always: 'Always allowing' }[action] ?? 'Denying';
+    case 'sandbox':
+      return { approve: 'Allowing', reject: 'Rejecting' }[action] ?? 'Replying';
     case 'startup':
       return { restart_fresh: 'Restarting fresh', delete: 'Deleting' }[action] ?? 'Dismissing';
     case 'delivery':
@@ -269,6 +278,7 @@ export function effectText(d, mine = {}) {
   if (lc.state === 'failed') return `Failed: ${cut(lc.error ?? 'unknown error', 80)}`;
   switch (lc.effect) {
     case 'allowed':
+      if (d.kind === 'sandbox') return `Allowed · ${agent} restarts and retries`;
       if (action === 'always') {
         const rule = d.payload?.always;
         return `Always allowed${rule ? ` · ${rule}` : ''} · ${agent} resumed`;

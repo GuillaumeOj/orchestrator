@@ -152,6 +152,7 @@
   --color-decision-ask: #e0af68;
   --color-decision-budget: #9ece6a;
   --color-decision-trust: #2ac3de;
+  --color-decision-sandbox: #2ac3de;
   --color-decision-wait: #7dcfff;
   --color-decision-alert: #f7768e;
   --color-decision-notion: #a9b1d6;
@@ -256,6 +257,7 @@
   --color-decision-ask: #806239;
   --color-decision-budget: #547036;
   --color-decision-trust: #157180;
+  --color-decision-sandbox: #157180;
   --color-decision-wait: #006f94;
   --color-decision-alert: #ce0a43;
   --color-decision-notion: #3b4a80;
@@ -361,6 +363,7 @@
     --color-decision-ask: #806239;
     --color-decision-budget: #547036;
     --color-decision-trust: #157180;
+    --color-decision-sandbox: #157180;
     --color-decision-wait: #006f94;
     --color-decision-alert: #ce0a43;
     --color-decision-notion: #3b4a80;

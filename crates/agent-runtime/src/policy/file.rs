@@ -1,6 +1,6 @@
 //! `policy.toml` (api-contract §1): read, and written in place with
-//! `toml_edit` (a rule appended or removed, the defaults set) keeping the
-//! user's comments and order.
+//! `toml_edit` (a rule or a sandbox allowance appended or removed, the
+//! defaults set) keeping the user's comments and order.
 
 use std::path::Path;
 
@@ -8,11 +8,30 @@ use anyhow::{Context, Result, anyhow, bail};
 use serde::Serialize;
 use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, value};
 
+use super::sandbox::{SandboxEntry, SandboxKind};
 use super::{Defaults, Effect, Rule};
 
-/// What a new file starts with.
-pub const HEADER: &str = "# Orchestrator permission policy (FR-1308). Rules: [[rule]] tables with match, effect\n\
+/// What a new file starts with: both table kinds, one commented example each.
+pub const HEADER: &str = "# Orchestrator permission policy (FR-1308). Settings > Permissions and Settings > Sandbox\n\
+# edit this file for you; hand edits work too.\n\
+#\n\
+# Rules ([[rule]] tables) decide whether a tool call needs approval: match, effect\n\
 # (allow | deny | overwatch | user), and optional id, role, agent, note.\n\
+#   [[rule]]\n\
+#   match = \"Bash(cargo test:*)\"\n\
+#   effect = \"allow\"\n\
+#   note = \"tests\"\n\
+#\n\
+# Sandbox allowances ([[sandbox]] tables) widen what Bash commands can reach: exactly one\n\
+# of network, write, local_ports, unix_socket per table, and optional id, role, note.\n\
+#   [[sandbox]]\n\
+#   network = \"api.github.com\"        # a host, or *.example.com\n\
+#   [[sandbox]]\n\
+#   write = \"~/.cache/ms-playwright\"  # a folder Bash may write\n\
+#   [[sandbox]]\n\
+#   local_ports = true                # bind and listen on local ports\n\
+#   [[sandbox]]\n\
+#   unix_socket = \"/tmp/my-test.sock\" # connect to this Unix socket\n\
 version = 1\n";
 
 /// Where a file does not parse (1-based line).
@@ -27,7 +46,10 @@ pub struct ParseError {
 pub struct PolicyDoc {
     pub defaults: Option<Defaults>,
     pub rules: Vec<Rule>,
-    /// `(rule id, message)`: duplicates and rules the hard lists neutralise.
+    /// `[[sandbox]]` tables, in file order (invalid ones flagged at load).
+    pub sandbox: Vec<SandboxEntry>,
+    /// `(id, message)`: duplicates, rules the hard lists neutralise,
+    /// allowances that are never allowed.
     pub warnings: Vec<(String, String)>,
 }
 
@@ -69,9 +91,13 @@ pub fn parse(text: &str) -> Result<PolicyDoc, ParseError> {
         out.defaults =
             Some(Defaults { team: eff("team")?.unwrap_or(base.team), solo: eff("solo")?.unwrap_or(base.solo) });
     }
-    let Some(rules) = doc.get("rule") else { return Ok(out) };
-    let tables =
-        rules.as_array_of_tables().ok_or_else(|| bad(at(rules.span()), "rule must be [[rule]] tables".into()))?;
+    let empty = ArrayOfTables::new();
+    let tables = match doc.get("rule") {
+        None => &empty,
+        Some(rules) => {
+            rules.as_array_of_tables().ok_or_else(|| bad(at(rules.span()), "rule must be [[rule]] tables".into()))?
+        }
+    };
     let mut seen = std::collections::BTreeSet::new();
     for (i, t) in tables.iter().enumerate() {
         let line = at(t.span());
@@ -79,7 +105,7 @@ pub fn parse(text: &str) -> Result<PolicyDoc, ParseError> {
         let effect_raw = str_of(t, "effect").ok_or_else(|| bad(line, "a rule needs effect".into()))?;
         let effect = Effect::parse(&effect_raw)
             .ok_or_else(|| bad(line, format!("effect {effect_raw:?}: allow | deny | overwatch | user")))?;
-        let id = str_of(t, "id").unwrap_or_else(|| generated_id(i, tables));
+        let id = str_of(t, "id").unwrap_or_else(|| generated_id('r', i, tables));
         if !seen.insert(id.clone()) {
             out.warnings.push((id.clone(), "duplicate id in this file: undo and lines may pick the other".into()));
         }
@@ -91,17 +117,60 @@ pub fn parse(text: &str) -> Result<PolicyDoc, ParseError> {
             agent: str_of(t, "agent"),
             note: str_of(t, "note"),
             from: str_of(t, "from"),
-            added_ms: t.get("added_ms").and_then(Item::as_integer).map(|n| n.max(0) as u64),
+            added_ms: added_ms(t),
+        });
+    }
+    let Some(sb) = doc.get("sandbox") else { return Ok(out) };
+    let tables =
+        sb.as_array_of_tables().ok_or_else(|| bad(at(sb.span()), "sandbox must be [[sandbox]] tables".into()))?;
+    let mut seen = std::collections::BTreeSet::new();
+    for (i, t) in tables.iter().enumerate() {
+        let line = at(t.span());
+        let present: Vec<SandboxKind> = SandboxKind::ALL.into_iter().filter(|k| t.contains_key(k.as_str())).collect();
+        let [kind] = present[..] else {
+            return Err(bad(
+                line,
+                "a [[sandbox]] needs exactly one of network, write, local_ports, unix_socket".into(),
+            ));
+        };
+        let item = &t[kind.as_str()];
+        let value = if kind.has_value() {
+            Some(
+                item.as_str()
+                    .map(str::to_string)
+                    .ok_or_else(|| bad(line, format!("{} must be a string", kind.as_str())))?,
+            )
+        } else if item.as_bool() == Some(true) {
+            None
+        } else {
+            return Err(bad(line, "local_ports must be true".into()));
+        };
+        let id = str_of(t, "id").unwrap_or_else(|| generated_id('s', i, tables));
+        if !seen.insert(id.clone()) {
+            out.warnings.push((id.clone(), "duplicate id in this file: Remove may pick the other".into()));
+        }
+        out.sandbox.push(SandboxEntry {
+            id,
+            kind,
+            value,
+            role: str_of(t, "role"),
+            note: str_of(t, "note"),
+            added_ms: added_ms(t),
+            invalid: None,
         });
     }
     Ok(out)
 }
 
-/// `r<n>` for the n-th rule (1-based) when it has no id; suffixed when an
-/// explicit id already took it.
-fn generated_id(i: usize, tables: &ArrayOfTables) -> String {
+fn added_ms(t: &Table) -> Option<u64> {
+    t.get("added_ms").and_then(Item::as_integer).map(|n| n.max(0) as u64)
+}
+
+/// `<prefix><n>` for the n-th table (1-based) when it has no id; suffixed
+/// when an explicit id already took it.
+fn generated_id(prefix: char, i: usize, tables: &ArrayOfTables) -> String {
     let taken = |s: &str| tables.iter().any(|t| t.get("id").and_then(Item::as_str) == Some(s));
-    let mut id = format!("r{}", i + 1);
+    let mut id = format!("{prefix}{}", i + 1);
     while taken(&id) {
         id.push('x');
     }
@@ -152,15 +221,7 @@ pub fn append_rule(path: &Path, rule: &Rule) -> Result<()> {
     if let Some(ms) = rule.added_ms {
         t["added_ms"] = value(ms as i64);
     }
-    match doc.get_mut("rule") {
-        Some(Item::ArrayOfTables(a)) => a.push(t),
-        Some(_) => bail!("{}: `rule` is not an array of tables", path.display()),
-        None => {
-            let mut a = ArrayOfTables::new();
-            a.push(t);
-            doc.insert("rule", Item::ArrayOfTables(a));
-        }
-    }
+    push_table(&mut doc, "rule", t, path)?;
     write_doc(path, &doc)
 }
 
@@ -196,21 +257,64 @@ pub fn append_commented_rule(path: &Path, rule: &Rule) -> Result<()> {
 
 /// Removes the rule `id` (explicit or generated). False if absent.
 pub fn remove_rule(path: &Path, id: &str) -> Result<bool> {
+    remove_table(path, "rule", 'r', id)
+}
+
+/// Removes the `[[sandbox]]` `id` (explicit or generated). False if absent.
+pub fn remove_sandbox(path: &Path, id: &str) -> Result<bool> {
+    remove_table(path, "sandbox", 's', id)
+}
+
+fn remove_table(path: &Path, key: &str, prefix: char, id: &str) -> Result<bool> {
     if !path.exists() {
         return Ok(false);
     }
     let mut doc = read_doc(path)?;
-    let Some(Item::ArrayOfTables(a)) = doc.get_mut("rule") else { return Ok(false) };
+    let Some(Item::ArrayOfTables(a)) = doc.get_mut(key) else { return Ok(false) };
     let pos = a.iter().position(|t| t.get("id").and_then(Item::as_str) == Some(id)).or_else(|| {
-        (0..a.len()).find(|&i| a.get(i).is_some_and(|t| t.get("id").is_none()) && generated_id(i, a) == id)
+        (0..a.len()).find(|&i| a.get(i).is_some_and(|t| t.get("id").is_none()) && generated_id(prefix, i, a) == id)
     });
     let Some(i) = pos else { return Ok(false) };
     a.remove(i);
     if a.is_empty() {
-        doc.remove("rule");
+        doc.remove(key);
     }
     write_doc(path, &doc)?;
     Ok(true)
+}
+
+/// Appends `e` as a `[[sandbox]]` table (the file is created if missing).
+pub fn append_sandbox(path: &Path, e: &SandboxEntry) -> Result<()> {
+    let mut doc = read_doc(path)?;
+    let mut t = Table::new();
+    t["id"] = value(&e.id);
+    match &e.value {
+        Some(v) => t[e.kind.as_str()] = value(v.as_str()),
+        None => t[e.kind.as_str()] = value(true),
+    }
+    for (k, v) in [("role", &e.role), ("note", &e.note)] {
+        if let Some(v) = v {
+            t[k] = value(v.as_str());
+        }
+    }
+    if let Some(ms) = e.added_ms {
+        t["added_ms"] = value(ms as i64);
+    }
+    push_table(&mut doc, "sandbox", t, path)?;
+    write_doc(path, &doc)
+}
+
+fn push_table(doc: &mut DocumentMut, key: &str, t: Table, path: &Path) -> Result<()> {
+    match doc.get_mut(key) {
+        Some(Item::ArrayOfTables(a)) => a.push(t),
+        Some(_) => bail!("{}: `{key}` is not an array of tables", path.display()),
+        None => {
+            let mut a = ArrayOfTables::new();
+            a.push(t);
+            doc.insert(key, Item::ArrayOfTables(a));
+        }
+    }
+    Ok(())
 }
 
 /// Sets `[defaults]` (created at the end when missing; its comments kept).
@@ -323,6 +427,98 @@ role = "back"
         let text = std::fs::read_to_string(&p).unwrap();
         assert!(text.contains("# My policy: keep this comment.") && text.contains("# Installs are routine."));
         assert_eq!(parse(&text).unwrap().rules.len(), 1);
+    }
+
+    const SANDBOX: &str = r#"version = 1
+
+# Hosts for the release check.
+[[sandbox]]
+id = "s3"
+network = "api.github.com"
+role = "back"
+note = "public GitHub API"
+
+[[sandbox]]
+write = "~/.cache/ms-playwright"   # browsers
+
+[[sandbox]]
+local_ports = true
+
+[[sandbox]]
+id = "s2"
+unix_socket = "/tmp/my-test.sock"
+"#;
+
+    #[test]
+    fn parses_sandbox_tables_with_positional_ids() {
+        let d = parse(SANDBOX).unwrap();
+        let got: Vec<_> = d.sandbox.iter().map(|e| (e.id.as_str(), e.kind, e.value.as_deref())).collect();
+        assert_eq!(
+            got,
+            [
+                ("s3", SandboxKind::Network, Some("api.github.com")),
+                // Positional `s2` is taken by an explicit id: suffixed, like rules.
+                ("s2x", SandboxKind::Write, Some("~/.cache/ms-playwright")),
+                ("s3x", SandboxKind::LocalPorts, None),
+                ("s2", SandboxKind::UnixSocket, Some("/tmp/my-test.sock")),
+            ]
+        );
+        assert_eq!(d.sandbox[0].role.as_deref(), Some("back"));
+        assert_eq!(d.sandbox[0].note.as_deref(), Some("public GitHub API"));
+        // The header's examples are comments: it parses to nothing.
+        let h = parse(HEADER).unwrap();
+        assert!(h.rules.is_empty() && h.sandbox.is_empty());
+    }
+
+    #[test]
+    fn sandbox_errors_name_the_line() {
+        let two = "version = 1\n[[sandbox]]\nnetwork = \"a.com\"\nwrite = \"/tmp\"\n";
+        let e = parse(two).unwrap_err();
+        assert_eq!(e.line, 2);
+        assert!(e.message.contains("exactly one"), "{}", e.message);
+        assert!(parse("[[sandbox]]\nnote = \"x\"\n").unwrap_err().message.contains("exactly one"));
+        assert!(parse("[[sandbox]]\nlocal_ports = false\n").unwrap_err().message.contains("true"));
+        assert!(parse("[[sandbox]]\nnetwork = 3\n").unwrap_err().message.contains("string"));
+        assert!(parse("sandbox = 1\n").unwrap_err().message.contains("[[sandbox]]"));
+    }
+
+    #[test]
+    fn sandbox_writer_round_trip() {
+        let d = tmp();
+        let p = d.path().join("policy.toml");
+        std::fs::write(&p, SANDBOX).unwrap();
+        let e = SandboxEntry {
+            id: "s9".into(),
+            kind: SandboxKind::Network,
+            value: Some("*.githubusercontent.com".into()),
+            role: Some("front".into()),
+            note: Some("raw \"files\"".into()),
+            added_ms: Some(5),
+            invalid: None,
+        };
+        append_sandbox(&p, &e).unwrap();
+        let text = std::fs::read_to_string(&p).unwrap();
+        assert!(text.starts_with(SANDBOX), "{text}");
+        assert_eq!(parse(&text).unwrap().sandbox.last(), Some(&e));
+        let lp = SandboxEntry { id: "s10".into(), kind: SandboxKind::LocalPorts, value: None, ..e.clone() };
+        append_sandbox(&p, &lp).unwrap();
+        assert!(std::fs::read_to_string(&p).unwrap().contains("local_ports = true"));
+        assert!(remove_sandbox(&p, "s10").unwrap() && remove_sandbox(&p, "s9").unwrap());
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), SANDBOX);
+        // A positional id removes its table; the others and the comments stay.
+        assert!(remove_sandbox(&p, "s3x").unwrap());
+        assert!(!remove_sandbox(&p, "s3x").unwrap());
+        let text = std::fs::read_to_string(&p).unwrap();
+        assert!(text.contains("# Hosts for the release check.") && text.contains("# browsers"));
+        assert_eq!(parse(&text).unwrap().sandbox.len(), 3);
+        // Rules and sandbox tables don't share ids.
+        assert!(!remove_rule(&p, "s3").unwrap());
+        // A new file: the header, then the table.
+        let q = d.path().join("new/policy.toml");
+        append_sandbox(&q, &e).unwrap();
+        let text = std::fs::read_to_string(&q).unwrap();
+        assert!(text.starts_with(HEADER));
+        assert_eq!(parse(&text).unwrap().sandbox, [e]);
     }
 
     #[test]

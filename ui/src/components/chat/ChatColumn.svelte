@@ -724,6 +724,9 @@
       case 'reply':
         reply = { id: d.id, action: 'reply' };
         return true;
+      case 'scope-menu':
+        scopeMenu = d.id;
+        return true;
       case 'pane':
         if (agentOf(d)) openAgent(agentOf(d));
         return true;
@@ -747,7 +750,7 @@
   });
 
   /** Decide (5 s undo window, on the card); focus goes to the next card still waiting. */
-  function send(d, action, message = null) {
+  function send(d, action, message = null, scope = null) {
     const at = t.cards.findIndex((c) => c.id === d.id);
     // Approving a program's spec: the next pending spec of that program gets the focus (notes §7.5).
     const spec = action === 'approve' ? nextSpec(app.now.decisions, d) : null;
@@ -759,7 +762,7 @@
         (c) => c.id !== d.id && !pendingOf(c.id) && !marked.has(c.id),
       );
     if (cur === `c:${d.id}` && next) sel = `c:${next.id}`;
-    decide(d, action, message);
+    decide(d, action, message, scope);
   }
 
   // A keyless action (Always allow, Restart fresh, Delete, Dismiss…). Delete asks first.
@@ -781,6 +784,9 @@
     }
     apply(keyIntent(key, d), d);
   }
+
+  // The sandbox card's scope menu, asked for with ⇧a.
+  let scopeMenu = $state(/** @type {string | null} */ (null));
 
   function sendReply(d, text) {
     const r = reply;
@@ -1067,6 +1073,9 @@
             onkey={(k) => cardKey(it.d, k)}
             onact={(id) => act(it.d, id)}
             onreply={(text) => sendReply(it.d, text)}
+            onscope={(scope) => send(it.d, 'approve', null, scope)}
+            menu={scopeMenu === it.id}
+            onmenu={() => (scopeMenu = null)}
             onjump={() => jump(it.ref)}
             onhold={(on) => typed(it.id, on)}
           />

@@ -40,11 +40,45 @@ No UI, no Tauri: [`orchd`](../orchd/README.md) drives it from the command line.
 - **statusLine**: `<app>/bin/orch-status`, `refreshInterval: 5`. The user's own `statusLine.command`
   (read from `~/.claude/settings.json`) is passed in `ORCH_USER_STATUSLINE` and chained by orch-status.
 - **Sandbox**: `enabled`, `failIfUnavailable`, `autoAllowBashIfSandboxed`, `allowUnsandboxedCommands: false`,
-  `network.allowedDomains` from the role (package registries by default). `filesystem.denyRead`:
+  `network.allowedDomains` from the role (package registries by default) then the sandbox allowances
+  (below). `filesystem.denyRead`:
   credential stores (`~/.ssh`, `~/.config/gh`, `~/.netrc`, `~/.git-credentials`, `~/.aws`, gcloud, azure,
   kube, docker config, gnupg, `.npmrc`, `.pypirc`, cargo credentials, pass, Keychains; never
   `~/.gitconfig`), the main checkout **entry by entry except its `.git`**, the other worktrees, and the
   core's `state/`. `allowRead`/`allowWrite`: the git common dir.
+- **Sandbox allowances** (`[[sandbox]]` in the policy files, `policy::sandbox`, `CompileCtx::sandbox`):
+  the user widens what Bash reaches, globally or per project, optionally for one role id.
+  - **Effective sandbox** of an agent: the role's `network_allow` (defaults, plus a team node's), then the
+    global file's entries, then its project's, keeping those whose `role` is absent or equals the
+    agent's role. `network` → `allowedDomains` (deduplicated, in that order); `write` → `allowWrite`;
+    `local_ports` → `network.allowLocalBinding: true`; `unix_socket` → `network.allowUnixSockets`.
+    The last two keys are absent when unused. The hard list's `network_allow` is the same host list.
+  - The Overwatch gets none.
+  - Allowances only add: every deny stays, and `excludedCommands` / `allowUnsandboxedCommands` stay off.
+  - Paths: `~` expanded, canonicalised (the nearest existing ancestor for a folder not created yet)
+    and **re-validated at each spawn**; one that now fails is skipped with a warning.
+  - **Never allowed** (`sandbox::validate`, shared by add, check, file load and spawn; the reason is a
+    sentence the UI shows verbatim):
+    - `*` or an empty host; a scheme, path or port in a host; `*.<tld>`;
+    - a path that is `/`, home or one of its ancestors, or names with pattern characters;
+    - a credential store; the app's data (its socket too);
+    - any `.git` / `.claude` component, the `project_files::UNSANDBOXED*` paths;
+    - inside or around a project's main checkout or worktree root (the agent's own worktree: "already
+      writable");
+    - system folders (`/System`, `/usr`, `/etc`, `/Library`, `/var`, … except `/var/folders`, `/tmp`);
+    - container engine sockets (docker, podman, colima, orbstack, lima) and key agent sockets
+      (`$SSH_AUTH_SOCK`, `*ssh*`, `gpg-agent`, launchd listeners).
+  - A hand-written entry that fails is **skipped** and listed in the file's `warnings`.
+  - **CLI support** (checked in Claude Code **2.1.325**'s binary, the installed CLI): the settings schema
+    has `sandbox.network.allowLocalBinding`, `allowUnixSockets` (and `allowAllUnixSockets`, never
+    used). Its text says `allowUnixSockets` is read "from managed, --settings and user settings only",
+    so `sandbox_kinds` offers all four kinds (`SandboxKind::SUPPORTED`).
+  - **When a change applies**: the CLI says a changed `allowLocalBinding` in user settings applies
+    without a restart. A live reload of the `--settings` file itself was **not verified**, so
+    `SETTINGS_RELOAD_LIVE = false` and commands report `applies: "next_start"`.
+  - On every change (an add, a remove, a hand edit seen by the watcher), the running agents in scope
+    still get their `settings.json` rewritten (`rewrite_live_settings`), and the now topic `sandbox` is
+    touched.
 - **Project files** (FR-112, `CompileCtx::project_files`): `Runtime::spawn` reads the agent's project's
   `external_files` and re-checks each (`project_files::at_spawn`: re-canonicalized; one that now fails the
   validation is skipped with a `project_file_skipped` event; a missing one is kept for the prompt only).
@@ -157,7 +191,23 @@ ignored · `SessionEnd` ignored (the process exit and the core's intent decide).
   debounce); a parse error keeps the last good version and raises one `alert` (`policy_parse`, file
   and line). Always allow, `rule add` / `rule revoke` write the files with `toml_edit` (comments and
   order kept). The store's `permission_rules` were exported once (migration 15, `id = "r<row>"`) and
-  are no longer read.
+  are no longer read. `[[sandbox]]` tables (one of `network`, `write`, `local_ports = true`,
+  `unix_socket`; optional `id` (`s<n>`, positional when absent), `role`, `note`) live in the same files
+  (see Compile). A new file's header documents both table kinds with commented examples.
+- **Settings commands** (ctl = Tauri):
+  - `policy_rules` rows carry a plain-language `summary` (`permissions::rule_summary`).
+  - `add_rule {scope: global | project | role | agent, scope_id, pattern, effect, role?, note?}`.
+  - `rule_preview {tool: bash | read | edit | webfetch | mcp | any, value}` → `{pattern, summary}`.
+  - `policy_test {project?, role?, solo?, tool, value}`: the core builds the call.
+  - `sandbox_list {project?}`: per file, entries plus read-only `defaults` (global: the core's
+    registries; project: its team roles' extra hosts as `role:<id>`).
+  - `sandbox_kinds`.
+  - `sandbox_check {kind, value?, scope, project?}` → `{ok, value}` | `{ok: false, reason}`.
+  - `sandbox_add {scope, project?, kind, value?, role?, note?}` → `{entry, file, path, applies,
+    running, created}`. A duplicate returns the existing entry with `created: false`.
+  - `sandbox_remove {id, file}`.
+  - Adds and removes are audited (`sandbox_add` / `sandbox_remove`, actor `user`).
+  - `WebFetch(domain:x)` patterns match the URL's host (`*.x`: its subdomains).
 - **PermissionRequest**: the hard deny list answers first, then a one-shot allow (below; for a
   user-only call only one the user's decision made), then the policy (global and project rules
   merged, the most restrictive wins: `deny` > `user` > `overwatch` > `allow`; no rule: the default
@@ -180,6 +230,33 @@ ignored · `SessionEnd` ignored (the process exit and the core's intent decide).
   first match, 1 h) and the user turn "ORCH: approved: retry the call <tool> <summary>"; Reject →
   "ORCH: denied: <tool> <summary>. <reason>". A restart parks a still-held prompt (`restarted: true`);
   a legacy hold with no item becomes a `restart_gate` gate (Approve → "ORCH: approved: proceed").
+- **Sandbox access** (`policy::sandbox_ask`, api-contract §5): the orch-mcp tool
+  `request_sandbox_access {kind, value?, why}` (`why` required, ≤ 500 chars; in `SOLO_TOOLS` and every
+  team node's tools, never the Overwatch's; the preamble tells agents to use it). The value is
+  validated like `sandbox_check`: never allowed → a tool error with the reason. Already in the agent's
+  effective sandbox (role hosts and `*.` wildcards included) → "already allowed", plus "; it applies
+  when you restart: stop your turn" when the settings its process started with (`Live::sandbox`) lack
+  it (then restarted at its Stop). The same open request (agent, kind, value) → "already asked; stop
+  and wait". Else an Inbox item `sandbox` (priority 30, payload `{kind, value, why, project, role,
+  agent}`), **parked at once** (no hold; its Stop suspends it like a parked permission), audited
+  `sandbox_request`, never routed to the Overwatch, and the tool returns "ORCH: asked the user; stop
+  your turn and wait". The card: decision id `sandbox-<id>`, level 1, title `Sandbox · <kind> <value>`.
+  - Only the user decides (`decide_as` by anyone else is refused). `inbox_act {item, action, scope?,
+    message?}`: `approve` with `scope` `project` (default) | `global` | `role` (project file, `role`
+    = the agent's) → `sandbox_add` (note = `why`, actor `user`); the item's `payload.outcome` (and the
+    result's `outcome`) is `{entry: {id, file, …}, created, scope}`. A value no longer valid at
+    decision time refuses the Approve with the reason, set as `payload.invalid`. `reject` →
+    "ORCH: denied: sandbox access to <kind> <value>."; `reply` → the same plus "The user said: …";
+    `dismiss` → the agent is told it was dismissed. Audited (action `sandbox`) with an
+    `inbox_outcome`.
+  - **Restart**: an approved agent restarts at its turn's Stop (at once when it is idle or not
+    running; nothing interrupts a turn): suspended, then the user turn "ORCH: approved: <kind>
+    <value>[, …] is (are) now allowed by the sandbox. Retry." resumes it with `--resume` on recompiled
+    settings. Approvals before its Stop coalesce into one restart and one message (event
+    `sandbox_restart`). With `SETTINGS_RELOAD_LIVE` the message is sent without the restart.
+    The approved item keeps `payload.restart_pending: true` (and `approved`, its label) until the
+    restart happens, so a restart of the core does not lose it: `recover` restarts or tells each
+    agent still there (one message per agent), then clears the flag.
 - **Who decided** (FR-709): every answer is one audit row whose actor is `user`, `pane`, `rule:<id>`,
   `expired` or `core`, the item keeps `decided_by`, and an `inbox_outcome` event `{item, kind, tool,
   decided_by, effect, created_at_ms, at_ms}` is recorded (and given to `set_outcome_sink`).
@@ -634,6 +711,11 @@ new place, the known worktrees are repaired (targeted) and re-locked.
   autonomous still counts as unmodified.
 
 ## Known gaps
+
+- **Sandbox approval racing a spawn**: an approval landing between a spawn's settings compile and
+  its insertion among the live agents is treated as "not running": the agent is told to retry
+  without a restart and its new process lacks the allowance until its next restart. The window is a
+  few milliseconds.
 
 - **Commits from a sandboxed worktree fail** (worked around: the core commits, see above) (measured 2026-10-21, Claude Code 2.1.302): sandboxed
   Bash cannot create `<repo>/.git/worktrees/<name>/index.lock`, whatever `allowWrite` says (plain
