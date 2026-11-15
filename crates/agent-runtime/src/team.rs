@@ -66,6 +66,12 @@ pub struct LaunchSpec {
     /// P4.5: started from an intake item or a planned brief.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub intake: Option<crate::intake::IntakeLink>,
+    /// The feature's issues as typed (`#12`, `ENG-7`, an issue URL…).
+    #[serde(default)]
+    pub issues: Vec<String>,
+    /// One PR for the feature (default) or one per issue.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr_mode: Option<orch_store::PrMode>,
 }
 
 /// Everything about a run, loaded together.
@@ -352,6 +358,11 @@ impl Runtime {
         {
             bail!("feature slug {:?} is too long", spec.slug);
         }
+        // The issues and mode, checked before anything is created.
+        let issues = crate::issues::normalize(&spec.issues, crate::github_issue::known_repo(&project).as_deref())?;
+        let set_prs = !issues.is_empty() || spec.pr_mode.is_some();
+        let pr_mode = spec.pr_mode.unwrap_or_default();
+        let links = crate::issues::links(&issues, &self.db.intake_items(Some(&project.id)).unwrap_or_default());
         let now = now_ms();
         let feature = match self.db.feature_by_slug(&project.id, &spec.slug)? {
             Some(f) => {
@@ -378,9 +389,14 @@ impl Runtime {
                     allocation: None,
                     created_at_ms: now,
                     archived: false,
+                    issues: vec![],
+                    pr_mode: Default::default(),
                 }
             }
         };
+        // A feature launched again keeps its issues unless the launch names them.
+        let feature = if set_prs { Feature { issues: links, pr_mode, ..feature } } else { feature };
+        crate::issues::check_mode(feature.pr_mode, feature.issues.len())?;
         // The snapshot this run uses (FR-308). A snapshot of this version
         // taken earlier with other roles (a role edited since, or created
         // after a draft was saved) gets a new version instead of being kept.
@@ -417,6 +433,7 @@ impl Runtime {
             ended_at_ms: None,
             pr_number: None,
             pr: None,
+            prs: vec![],
         };
         self.db.upsert_run(&run)?;
         if spec.off_hours {

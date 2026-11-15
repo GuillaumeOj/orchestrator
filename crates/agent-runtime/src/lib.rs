@@ -16,6 +16,7 @@ pub mod inbox;
 pub mod intake;
 pub mod integrations;
 pub mod intervention;
+pub mod issues;
 pub mod linear;
 pub mod live_cap;
 pub mod mcp;

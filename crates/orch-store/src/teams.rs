@@ -33,12 +33,99 @@ pub struct Feature {
     pub created_at_ms: u64,
     #[serde(default)]
     pub archived: bool,
+    /// The issues the feature addresses, in the user's order (≤ 10).
+    #[serde(default)]
+    pub issues: Vec<IssueLink>,
+    /// One PR for the feature, or one per issue (only the user sets it).
+    #[serde(default)]
+    pub pr_mode: PrMode,
 }
 
 impl Feature {
     pub fn integration_branch(&self) -> String {
         format!("orch/{}/integration", self.slug)
     }
+
+    /// The refs of its issues, in order.
+    pub fn issue_refs(&self) -> Vec<String> {
+        self.issues.iter().map(|i| i.reference.clone()).collect()
+    }
+
+    /// `orch/<slug>/issue/<key>`.
+    pub fn issue_branch(&self, reference: &str) -> String {
+        format!("orch/{}/issue/{}", self.slug, issue_key(reference))
+    }
+}
+
+/// An issue of a feature: a canonical `ref` (`#12` for the project's GitHub
+/// repository, `ABC-123` for Linear), its branch `key`, and what the intake
+/// cache knew of it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct IssueLink {
+    #[serde(rename = "ref")]
+    pub reference: String,
+    /// `12` for `#12`, `abc-123` for `ABC-123` (branch names).
+    #[serde(default)]
+    pub key: String,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub url: Option<String>,
+}
+
+impl IssueLink {
+    pub fn new(reference: &str) -> IssueLink {
+        IssueLink { reference: reference.into(), key: issue_key(reference), title: None, url: None }
+    }
+}
+
+/// The branch key of a canonical issue ref: `#12` → `12`, `ABC-123` → `abc-123`.
+pub fn issue_key(reference: &str) -> String {
+    reference.trim_start_matches('#').to_ascii_lowercase()
+}
+
+/// One pull request for the feature (default), or one per issue.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PrMode {
+    #[default]
+    Single,
+    PerIssue,
+}
+
+impl PrMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PrMode::Single => "single",
+            PrMode::PerIssue => "per_issue",
+        }
+    }
+
+    /// `single` / `per_issue`; anything else is refused.
+    pub fn parse(s: &str) -> Option<PrMode> {
+        match s {
+            "single" => Some(PrMode::Single),
+            "per_issue" => Some(PrMode::PerIssue),
+            _ => None,
+        }
+    }
+}
+
+/// The PR of one issue in `per_issue` mode.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct RunPr {
+    pub issue: String,
+    pub branch: String,
+    pub number: u64,
+    pub url: String,
+    #[serde(default)]
+    pub pr: Option<PrStatus>,
+    /// The fork point of its last build.
+    #[serde(default)]
+    pub fork_sha: String,
+    /// The head last built and pushed.
+    #[serde(default)]
+    pub built_sha: String,
 }
 
 /// A team launched on a feature (SPEC §7 TeamRun). The team graph and roles
@@ -67,6 +154,9 @@ pub struct TeamRun {
     /// The PR's last status (the watcher's, §3.3); `None` before the first check.
     #[serde(default)]
     pub pr: Option<PrStatus>,
+    /// `per_issue` mode: one PR per issue that ever had one (empty in `single`).
+    #[serde(default)]
+    pub prs: Vec<RunPr>,
 }
 
 /// The PR number at the end of a PR URL (`…/pull/12`).
@@ -184,6 +274,9 @@ pub struct Task {
     /// The core's workflow state (never synced to a backend).
     #[serde(default)]
     pub flow: TaskFlow,
+    /// The feature issue this task is for (a canonical ref; never synced).
+    #[serde(default)]
+    pub issue: Option<String>,
 }
 
 /// Where a task stands in the team's own workflow: a plan approved by the
@@ -235,6 +328,7 @@ impl Task {
             updated_at_ms: now_ms,
             remote_updated_at: None,
             flow: TaskFlow::default(),
+            issue: None,
         }
     }
 
@@ -688,7 +782,7 @@ fn shadowed<T: serde::de::DeserializeOwned>(rows: Vec<(String, String, String)>)
 }
 
 const FEATURE_COLS: &str =
-    "id, project_id, slug, title, brief, base, integration_worktree, allocation, created_at_ms, archived";
+    "id, project_id, slug, title, brief, base, integration_worktree, allocation, created_at_ms, archived, issues, pr_mode";
 
 fn row_feature(r: &rusqlite::Row) -> rusqlite::Result<Feature> {
     Ok(Feature {
@@ -702,11 +796,20 @@ fn row_feature(r: &rusqlite::Row) -> rusqlite::Result<Feature> {
         allocation: r.get(7)?,
         created_at_ms: r.get::<_, i64>(8)? as u64,
         archived: r.get(9)?,
+        issues: r
+            .get::<_, Option<String>>(10)?
+            .map(|s| from_js::<Vec<IssueLink>>(&s))
+            .transpose()?
+            .unwrap_or_default()
+            .into_iter()
+            .map(|i| if i.key.is_empty() { IssueLink { key: issue_key(&i.reference), ..i } } else { i })
+            .collect(),
+        pr_mode: PrMode::parse(&r.get::<_, String>(11)?).unwrap_or_default(),
     })
 }
 
 const RUN_COLS: &str = "id, team_id, team_version, feature_id, status, resume_status, pr_url, started_at_ms, ended_at_ms, \
-                        team_scope, pr_number, pr_status";
+                        team_scope, pr_number, pr_status, prs";
 
 fn bad(s: String) -> rusqlite::Error {
     rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, s.into())
@@ -730,10 +833,11 @@ fn row_run(r: &rusqlite::Row) -> rusqlite::Result<TeamRun> {
         pr_number: opt_u64(r, 10)?
             .or_else(|| r.get::<_, Option<String>>(6).ok().flatten().and_then(|u| pr_number_from_url(&u))),
         pr: r.get::<_, Option<String>>(11)?.map(|s| from_js(&s)).transpose()?,
+        prs: r.get::<_, Option<String>>(12)?.map(|s| from_js(&s)).transpose()?.unwrap_or_default(),
     })
 }
 
-const TASK_COLS: &str = "id, project_id, backend, external_id, feature_id, team_run_id, title, body, status, node, agent_id, depends_on, branch, pr_url, notes, created_at_ms, updated_at_ms, remote_updated_at, flow";
+const TASK_COLS: &str = "id, project_id, backend, external_id, feature_id, team_run_id, title, body, status, node, agent_id, depends_on, branch, pr_url, notes, created_at_ms, updated_at_ms, remote_updated_at, flow, issue";
 
 fn row_task(r: &rusqlite::Row) -> rusqlite::Result<Task> {
     let status: String = r.get(8)?;
@@ -757,6 +861,7 @@ fn row_task(r: &rusqlite::Row) -> rusqlite::Result<Task> {
         updated_at_ms: r.get::<_, i64>(16)? as u64,
         remote_updated_at: r.get(17)?,
         flow: from_js(&r.get::<_, String>(18)?)?,
+        issue: r.get(19)?,
     })
 }
 
@@ -942,10 +1047,10 @@ impl Store {
         self.write_touching(topics, move |tx| {
             tx.execute(
                 &format!(
-                    "INSERT INTO features({FEATURE_COLS}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)
+                    "INSERT INTO features({FEATURE_COLS}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)
                      ON CONFLICT(id) DO UPDATE SET title=excluded.title, brief=excluded.brief, base=excluded.base,
                        integration_worktree=excluded.integration_worktree, allocation=excluded.allocation,
-                       archived=excluded.archived"
+                       archived=excluded.archived, issues=excluded.issues, pr_mode=excluded.pr_mode"
                 ),
                 params![
                     f.id,
@@ -957,7 +1062,9 @@ impl Store {
                     f.integration_worktree.as_ref().map(|p| p.to_string_lossy().into_owned()),
                     f.allocation,
                     f.created_at_ms as i64,
-                    f.archived
+                    f.archived,
+                    js(&f.issues),
+                    f.pr_mode.as_str()
                 ],
             )?;
             Ok(())
@@ -1008,10 +1115,10 @@ impl Store {
         self.write_touching(topics, move |tx| {
             tx.execute(
                 &format!(
-                    "INSERT INTO team_runs({RUN_COLS}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)
+                    "INSERT INTO team_runs({RUN_COLS}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)
                      ON CONFLICT(id) DO UPDATE SET team_version=excluded.team_version, status=excluded.status,
                        resume_status=excluded.resume_status, pr_url=excluded.pr_url, ended_at_ms=excluded.ended_at_ms,
-                       pr_number=excluded.pr_number, pr_status=excluded.pr_status"
+                       pr_number=excluded.pr_number, pr_status=excluded.pr_status, prs=excluded.prs"
                 ),
                 params![
                     run.id,
@@ -1025,7 +1132,8 @@ impl Store {
                     run.ended_at_ms.map(|v| v as i64),
                     scope_key(&run.team_scope),
                     run.pr_number.map(|v| v as i64),
-                    run.pr.as_ref().map(js)
+                    run.pr.as_ref().map(js),
+                    js(&run.prs)
                 ],
             )?;
             Ok(())
@@ -1084,13 +1192,13 @@ impl Store {
             let id = if t.id == 0 { None } else { Some(t.id as i64) };
             tx.execute(
                 &format!(
-                    "INSERT INTO tasks({TASK_COLS}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)
+                    "INSERT INTO tasks({TASK_COLS}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)
                      ON CONFLICT(id) DO UPDATE SET backend=excluded.backend, external_id=excluded.external_id, feature_id=excluded.feature_id,
                        team_run_id=excluded.team_run_id, title=excluded.title, body=excluded.body,
                        status=excluded.status, node=excluded.node, agent_id=excluded.agent_id,
                        depends_on=excluded.depends_on, branch=excluded.branch, pr_url=excluded.pr_url,
                        notes=excluded.notes, updated_at_ms=excluded.updated_at_ms,
-                       remote_updated_at=excluded.remote_updated_at, flow=excluded.flow"
+                       remote_updated_at=excluded.remote_updated_at, flow=excluded.flow, issue=excluded.issue"
                 ),
                 params![
                     id,
@@ -1111,7 +1219,8 @@ impl Store {
                     t.created_at_ms as i64,
                     t.updated_at_ms as i64,
                     t.remote_updated_at,
-                    js(&t.flow)
+                    js(&t.flow),
+                    t.issue
                 ],
             )?;
             Ok(match id {
