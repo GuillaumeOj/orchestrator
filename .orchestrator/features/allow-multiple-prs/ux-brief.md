@@ -30,12 +30,12 @@ Placed after the brief, before "Run off-hours".
 
 ## 2. Feature pane
 
-### 2.1 Issues and mode (header area or the "PR and artifacts" card head — UX decides)
+### 2.1 Issues and mode (decided: a third row of the feature header, see ux-flows.md)
 - Read view: `Issues #12 · ENG-7` (each a link to its url when known) and `One PR` / `One PR per issue`; an **Edit** button.
 - Edit: the same chip input and segmented control as the launch form, in a popover, **Save** / **Cancel** (`feature_set_prs`).
 - Locked parts, with the reason as tooltip / inline text:
   - an issue with a PR (pending, open or merged): its `×` hidden, tooltip `Has PR #34`;
-  - the mode while a PR is pending or open: control disabled, `A PR is open: change it once no PR is open or waiting.`;
+  - the mode while a PR is pending or open: control disabled, `A PR is open: change it once no PR is open or waiting.` shown inline (not only a tooltip);
   - run done: no Edit button.
 - After a save during a run: a short confirmation `Saved; the lead is told.`
 - Server errors (api-contract §3) shown inline in the popover.
