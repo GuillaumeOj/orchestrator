@@ -13,8 +13,8 @@
 Placed after the brief, before "Run off-hours".
 
 ### 1.1 Issues field
-- Label **Issues** (optional). A chip input: type `12`, `#12`, `ENG-7`, a GitHub issue URL; Enter, comma or space makes a chip. Chip text = the ref; its title (when known) muted after it, truncated. `×` removes it.
-- Suggestions under the field while typing (`issue_suggest`): ref + title rows, from the project's intake. Arrow keys / Enter.
+- Label **Issues** (optional). A chip input: type `12`, `#12`, `ENG-7`, a GitHub issue URL. Space or comma makes a chip only when the text parses as a ref (otherwise the text stays, to search titles); Enter picks the highlighted suggestion, else makes a chip of the typed text (validated on the server). A duplicate is dropped. Chip text = the ref; its title (when known) muted after it, truncated. `×` removes it.
+- Suggestions under the field while typing (`issue_suggest`): ref + title rows, from the project's intake, never an issue already added. Arrow keys / Enter.
 - Invalid entry: the chip in error style, the message under the field: `Not an issue of <owner/repo>: <text>` / `Not an issue ref: <text>`. Launch disabled while one chip is invalid.
 - Prefilled with the intake item's ref when started from an item.
 - At 10 chips the input disables: `10 issues at most`.
@@ -25,8 +25,8 @@ Placed after the brief, before "Run off-hours".
 - Helper line under it (muted), by choice:
   - One PR, no issue: `One PR for the feature.`
   - One PR, issues: `One PR for the feature; it closes #12, ENG-7.`
-  - One PR per issue: `One PR per issue, each built from main with that issue's tasks. Work not tied to an issue goes into every PR.`
-- Removing chips down to 1 while "per issue" is selected switches back to One PR (no message needed, the helper changes).
+  - One PR per issue: `One PR per issue, each with only that issue's tasks. Work not tied to an issue goes into every PR.`
+- Removing chips down to 1 while "per issue" is selected switches back to One PR (no message needed, the helper changes). The form always sends `pr_mode` explicitly.
 
 ## 2. Feature pane
 
@@ -35,7 +35,7 @@ Placed after the brief, before "Run off-hours".
 - Edit: the same chip input and segmented control as the launch form, in a popover, **Save** / **Cancel** (`feature_set_prs`).
 - Locked parts, with the reason as tooltip / inline text:
   - an issue with a PR (pending, open or merged): its `×` hidden, tooltip `Has PR #34`;
-  - the mode while a PR is pending or open: control disabled, `A PR is open: change it once no PR is open or waiting.` shown inline (not only a tooltip);
+  - the mode once the feature's run has had a PR or a PR request (any state): control disabled, `Set before the first PR: this feature already has one.` shown inline (not only a tooltip);
   - run done: no Edit button.
 - After a save during a run: a short confirmation `Saved; the lead is told.`
 - Server errors (api-contract §3) shown inline in the popover.
@@ -61,7 +61,7 @@ Placed after the brief, before "Run off-hours".
 ## 4. Mission run row and run inspector
 
 - single: unchanged (`prText(run.pr)`).
-- per_issue compact summary (pure helper from `prs_view`): `2 PRs open · 1 merged`, `1 of 3 merged`, `3 PRs merged`; the CI dot shows the worst open PR (error > running > waiting > ok). Click opens the feature pane (not a single URL).
+- per_issue compact summary (pure helper from `prs_view`), precedence: every issue merged → `N PRs merged`; at least one open → `N PRs open` (`1 PR open`), then ` · M merged` when M > 0; none open and some merged → `M of T merged`; otherwise `no PR yet` (pending gates and closed PRs add no text). The CI dot shows the worst open PR (error > running > waiting > ok), none when no PR is open. Click opens the feature pane (not a single URL); tooltip lists one line per PR.
 - Run inspector: the list of §2.2 rows (compact).
 
 ## 5. Board and task inspector
