@@ -155,15 +155,7 @@ impl Runtime {
     /// `pr_refresh`: checks the PR of the feature's latest run now (the fetch
     /// throttle skipped, not the offline check). `feature` is an id or a slug.
     pub fn pr_refresh(&self, feature: &str) -> Result<TeamRun> {
-        let f = match self.db.feature(feature)? {
-            Some(f) => f,
-            None => self
-                .db
-                .projects(false)?
-                .iter()
-                .find_map(|p| self.db.feature_by_slug(&p.id, feature).ok().flatten())
-                .ok_or_else(|| anyhow!("no feature {feature}"))?,
-        };
+        let f = self.feature_by_id_or_slug(feature)?;
         let run =
             self.db.runs(Some(&f.id), false)?.into_iter().next().ok_or_else(|| anyhow!("{} has no run", f.slug))?;
         if run.pr_number.is_none() {
@@ -490,7 +482,7 @@ impl Runtime {
             Some(&rec.id),
             "gate",
             title,
-            json!({"action": "push_pr_update", "run": run.id, "branch": branch, "pr_number": n, "url": url,
+            json!({"action": "push_pr_update", "run": run.id, "issue": null, "branch": branch, "pr_number": n, "url": url,
                    "commits": commits.iter().map(|(sha, subject)| json!({"sha": sha, "subject": subject})).collect::<Vec<_>>(),
                    "force": force, "lease_sha": lease, "foreign_replaced": foreign_replaced, "head": head,
                    "base": pr.base, "worktree": wt}),

@@ -125,23 +125,25 @@ pub fn suggest(text: &str, rows: &[IntakeRow]) -> Vec<IssueLink> {
 
 const KEYWORDS: &[&str] = &["close", "closes", "closed", "fix", "fixes", "fixed", "resolve", "resolves", "resolved"];
 
-/// The body closes `reference`: a closing keyword (case-insensitive) right
-/// before it, `Closes #12`, `fixes: ENG-7`.
+/// The body closes `reference`: `(?i)\b(close[sd]?|fix(e[sd])?|resolve[sd]?)\b:?\s+<ref>\b`
+/// (spec §3.1): a whole keyword (`enclosed #12` is none), a whole ref
+/// (`#123` does not close `#12`).
 pub fn body_closes(body: &str, reference: &str) -> bool {
     let (b, r) = (body.to_lowercase(), reference.to_lowercase());
     let word = |c: char| c.is_alphanumeric() || c == '_';
     b.match_indices(&r).any(|(at, _)| {
-        if b[at + r.len()..].chars().next().is_some_and(|c| word(c) || c == '-') {
+        // `<ref>\b`: the ref ends on a word char, so the next one is not.
+        if b[at + r.len()..].chars().next().is_some_and(word) {
             return false;
         }
+        // `\s+`, then `:?`, then the keyword on a word boundary.
         let before = &b[..at];
-        let trimmed = before.trim_end_matches(|c: char| c.is_whitespace() || c == ':');
-        if trimmed.len() == before.len() {
+        let spaced = before.trim_end_matches(char::is_whitespace);
+        if spaced.len() == before.len() {
             return false;
         }
-        KEYWORDS.iter().any(|k| {
-            trimmed.strip_suffix(k).is_some_and(|rest| !rest.chars().next_back().is_some_and(word))
-        })
+        let kw = spaced.strip_suffix(':').unwrap_or(spaced);
+        KEYWORDS.iter().any(|k| kw.strip_suffix(k).is_some_and(|rest| !rest.chars().next_back().is_some_and(word)))
     })
 }
 
@@ -371,6 +373,11 @@ mod tests {
         assert!(!body_closes("See #12", "#12"));
         assert!(!body_closes("prefix #12", "#12"), "fix inside a word is no keyword");
         assert!(!body_closes("Closes XENG-7", "ENG-7"));
+        assert!(!body_closes("enclosed #12", "#12"), "a whole keyword");
+        assert!(!body_closes("Closes #123", "#12"), "a whole ref");
+        assert!(!body_closes("Closes:#12", "#12"), "a space after the keyword");
+        assert!(!body_closes("closes: : #12", "#12"));
+        assert!(body_closes("x (closes  #12)", "#12"));
         let refs = vec!["#1".to_string(), "#2".to_string()];
         assert_eq!(with_closes("Body.\n\nFixes #1\n", &refs), "Body.\n\nFixes #1\n\nCloses #2");
         assert_eq!(with_closes("", &refs), "Closes #1\nCloses #2");
@@ -486,12 +493,22 @@ mod tests {
                 pr: Some(status("open")),
                 ..Default::default()
             },
-            RunPr { issue: "#3".into(), branch: "orch/f/issue/3".into(), number: 5, url: "u5".into(), pr: Some(status("closed")), ..Default::default() },
+            RunPr {
+                issue: "#3".into(),
+                branch: "orch/f/issue/3".into(),
+                number: 5,
+                url: "u5".into(),
+                pr: Some(status("closed")),
+                ..Default::default()
+            },
         ];
         let v = prs_view(&r, &f, &[g(8, "push_pr", Some("#1")), g(9, "push_pr_update", Some("ENG-2"))]);
         let s: Vec<(&str, &str, Option<u64>, Option<u64>)> =
             v.iter().map(|p| (p.issue.as_deref().unwrap(), p.state.as_str(), p.number, p.gate)).collect();
-        assert_eq!(s, [("#1", "pending", None, Some(8)), ("ENG-2", "open", Some(4), Some(9)), ("#3", "closed", Some(5), None)]);
+        assert_eq!(
+            s,
+            [("#1", "pending", None, Some(8)), ("ENG-2", "open", Some(4), Some(9)), ("#3", "closed", Some(5), None)]
+        );
         assert_eq!(v[0].branch, "orch/f/issue/1");
         let v = prs_view(&r, &f, &[]);
         assert_eq!(v[0].state, "none");

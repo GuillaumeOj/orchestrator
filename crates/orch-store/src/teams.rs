@@ -277,6 +277,10 @@ pub struct Task {
     /// The feature issue this task is for (a canonical ref; never synced).
     #[serde(default)]
     pub issue: Option<String>,
+    /// The branch head at the owner's last `report_done`: what a `per_issue`
+    /// merge takes (the tip may already hold the owner's next task).
+    #[serde(default)]
+    pub reported_sha: Option<String>,
 }
 
 /// Where a task stands in the team's own workflow: a plan approved by the
@@ -329,6 +333,7 @@ impl Task {
             remote_updated_at: None,
             flow: TaskFlow::default(),
             issue: None,
+            reported_sha: None,
         }
     }
 
@@ -781,8 +786,7 @@ fn shadowed<T: serde::de::DeserializeOwned>(rows: Vec<(String, String, String)>)
         .collect()
 }
 
-const FEATURE_COLS: &str =
-    "id, project_id, slug, title, brief, base, integration_worktree, allocation, created_at_ms, archived, issues, pr_mode";
+const FEATURE_COLS: &str = "id, project_id, slug, title, brief, base, integration_worktree, allocation, created_at_ms, archived, issues, pr_mode";
 
 fn row_feature(r: &rusqlite::Row) -> rusqlite::Result<Feature> {
     Ok(Feature {
@@ -837,7 +841,7 @@ fn row_run(r: &rusqlite::Row) -> rusqlite::Result<TeamRun> {
     })
 }
 
-const TASK_COLS: &str = "id, project_id, backend, external_id, feature_id, team_run_id, title, body, status, node, agent_id, depends_on, branch, pr_url, notes, created_at_ms, updated_at_ms, remote_updated_at, flow, issue";
+const TASK_COLS: &str = "id, project_id, backend, external_id, feature_id, team_run_id, title, body, status, node, agent_id, depends_on, branch, pr_url, notes, created_at_ms, updated_at_ms, remote_updated_at, flow, issue, reported_sha";
 
 fn row_task(r: &rusqlite::Row) -> rusqlite::Result<Task> {
     let status: String = r.get(8)?;
@@ -862,6 +866,7 @@ fn row_task(r: &rusqlite::Row) -> rusqlite::Result<Task> {
         remote_updated_at: r.get(17)?,
         flow: from_js(&r.get::<_, String>(18)?)?,
         issue: r.get(19)?,
+        reported_sha: r.get(20)?,
     })
 }
 
@@ -1192,13 +1197,14 @@ impl Store {
             let id = if t.id == 0 { None } else { Some(t.id as i64) };
             tx.execute(
                 &format!(
-                    "INSERT INTO tasks({TASK_COLS}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)
+                    "INSERT INTO tasks({TASK_COLS}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)
                      ON CONFLICT(id) DO UPDATE SET backend=excluded.backend, external_id=excluded.external_id, feature_id=excluded.feature_id,
                        team_run_id=excluded.team_run_id, title=excluded.title, body=excluded.body,
                        status=excluded.status, node=excluded.node, agent_id=excluded.agent_id,
                        depends_on=excluded.depends_on, branch=excluded.branch, pr_url=excluded.pr_url,
                        notes=excluded.notes, updated_at_ms=excluded.updated_at_ms,
-                       remote_updated_at=excluded.remote_updated_at, flow=excluded.flow, issue=excluded.issue"
+                       remote_updated_at=excluded.remote_updated_at, flow=excluded.flow, issue=excluded.issue,
+                       reported_sha=excluded.reported_sha"
                 ),
                 params![
                     id,
@@ -1220,7 +1226,8 @@ impl Store {
                     t.updated_at_ms as i64,
                     t.remote_updated_at,
                     js(&t.flow),
-                    t.issue
+                    t.issue,
+                    t.reported_sha
                 ],
             )?;
             Ok(match id {
@@ -1744,6 +1751,7 @@ mod tests {
             ended_at_ms: None,
             pr_number: Some(12),
             pr: None,
+            prs: vec![],
         };
         s.upsert_run(&run).unwrap();
         s.take_topics();
@@ -1834,6 +1842,8 @@ mod tests {
             allocation: None,
             created_at_ms: 1,
             archived: false,
+            issues: vec![],
+            pr_mode: Default::default(),
         };
         s.upsert_feature(&f).unwrap();
         assert_eq!(s.feature_by_slug("p1", "checkout-v2").unwrap().unwrap().id, "f1");
@@ -1851,6 +1861,7 @@ mod tests {
             ended_at_ms: None,
             pr_number: None,
             pr: None,
+            prs: vec![],
         };
         s.upsert_run(&run).unwrap();
         assert_eq!(s.run("r1").unwrap().unwrap(), run, "no PR yet: None");
@@ -2109,6 +2120,8 @@ mod tests {
             allocation: None,
             created_at_ms: 1,
             archived: false,
+            issues: vec![],
+            pr_mode: Default::default(),
         })
         .unwrap();
         s.delete_project("p1").unwrap();

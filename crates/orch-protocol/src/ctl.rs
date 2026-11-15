@@ -478,6 +478,20 @@ pub enum CtlRequest {
         brief: Option<String>,
         #[serde(default)]
         base: Option<String>,
+        /// The feature's issues as typed (`#12`, `ENG-7`…).
+        #[serde(default)]
+        issues: Vec<String>,
+        /// `single` / `per_issue`.
+        #[serde(default)]
+        pr_mode: Option<String>,
+    },
+    /// Sets a feature's issues (the full list when given) and/or PR mode.
+    FeaturePrs {
+        feature: String,
+        #[serde(default)]
+        issues: Option<Vec<String>>,
+        #[serde(default)]
+        pr_mode: Option<String>,
     },
     Runs,
     Run {

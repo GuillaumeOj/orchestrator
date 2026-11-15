@@ -142,7 +142,18 @@ impl Runtime {
     }
 
     fn commit_args(&self, rec: &AgentRecord, args: &Value, actor: &str) -> Result<CommitResult> {
-        let req: CommitRequest = serde_json::from_value(args.clone()).map_err(|e| anyhow!("invalid arguments: {e}"))?;
+        let mut req: CommitRequest =
+            serde_json::from_value(args.clone()).map_err(|e| anyhow!("invalid arguments: {e}"))?;
+        // The lead tags its own work with an issue (allow-multiple-prs §3.2).
+        if let Some(issue) = args.get("issue").and_then(Value::as_str).filter(|i| !i.trim().is_empty()) {
+            let seat = rec.team.as_ref().ok_or_else(|| anyhow!("`issue` is for the lead of a team"))?;
+            let cx = self.run_ctx(&seat.run_id)?;
+            if !cx.team.node(&seat.node).is_some_and(|n| n.is_lead) {
+                bail!("only the lead tags its commits with an issue; your task carries its issue");
+            }
+            let r = self.feature_issue(&cx, issue)?;
+            req.message = crate::issues::with_trailer(&req.message, "Orch-Issue", &r);
+        }
         self.commit_for(&rec.id, &req, actor)
     }
 

@@ -82,14 +82,16 @@ pub fn tools() -> Value {
             "Commit changes in your worktree. Use this instead of `git commit`: the sandbox blocks git from writing the repository. Stages the given paths (or every change when `paths` is omitted, like `git add -A`) and commits them on your branch. Hooks do not run. It never pushes. During a merge started by sync_integration, it concludes the merge. During a rebase started by rebase_base, it stages every change and continues the rebase (the message is not used), and returns the next outcome: another conflict or done.",
             json!({
                 "message": s("The commit message (first line = summary)."),
-                "paths": {"type": "array", "items": {"type": "string"}, "description": "Paths relative to the worktree root. Omit to commit everything."}
+                "paths": {"type": "array", "items": {"type": "string"}, "description": "Paths relative to the worktree root. Omit to commit everything."},
+                "issue": s("Lead only: the feature issue this commit is for (e.g. #12); adds the trailer `Orch-Issue: <ref>`. Untagged commits go into every PR when the feature has one PR per issue.")
             }),
             &["message"],
         ),
         tool(
             "request_pr",
             "Ask the user to push your branch and open a pull request. You cannot push yourself. This creates an approval item for the user and returns at once; you are told the result later.",
-            json!({"title": {"type": "string"}, "body": {"type": "string"}, "draft": {"type": "boolean"}}),
+            json!({"title": {"type": "string"}, "body": {"type": "string"}, "draft": {"type": "boolean"},
+                   "issue": s("The feature issue this PR is for, when the feature has one PR per issue. Omit when it has one PR. The body gets a `Closes <ref>` line for each feature issue it does not already close.")}),
             &["title"],
         ),
         tool(
@@ -178,14 +180,15 @@ pub fn tools() -> Value {
                 "depends_on": {"type": "array", "items": {"type": "integer"}, "description": "Ids of tasks that must be done first."},
                 "status": s("ready (default) or backlog."),
                 "plan_first": {"type": "boolean", "description": "The owner sends you a plan (submit_plan) and may not edit until you approve it (decide_plan). For large or unclear tasks, or ones that touch a shared contract."},
-                "model": {"type": "string", "description": "Run this task on this model (alias `opus`, `sonnet`, `haiku`, `fable`, or a model id) instead of the node's. For a hard task, or one that failed a review round."}
+                "model": {"type": "string", "description": "Run this task on this model (alias `opus`, `sonnet`, `haiku`, `fable`, or a model id) instead of the node's. For a hard task, or one that failed a review round."},
+                "issue": s("The feature issue this task is for (e.g. #12 or ENG-7; one of the feature's issues).")
             }),
             &["title", "node"],
         ),
         tool(
             "update_task",
             "Change a task's status (backlog, ready, in_progress, review, done) or add a note. Specialists only update their own tasks.",
-            json!({"id": {"type": "integer"}, "status": s("New status."), "notes": s("A note added to the task."), "node": s("Reassign to this node (lead only)."), "plan_first": {"type": "boolean", "description": "Ask for a plan before any edit (lead only)."}, "model": s("Run this task on this model instead of the node's (lead only; \"\" clears it). Takes effect at the owner's next task boundary: a task already running keeps its model.")}),
+            json!({"id": {"type": "integer"}, "status": s("New status."), "notes": s("A note added to the task."), "node": s("Reassign to this node (lead only)."), "plan_first": {"type": "boolean", "description": "Ask for a plan before any edit (lead only)."}, "model": s("Run this task on this model instead of the node's (lead only; \"\" clears it). Takes effect at the owner's next task boundary: a task already running keeps its model."), "issue": s("The feature issue this task is for (lead only; \"\" clears it).")}),
             &["id"],
         ),
         tool(
@@ -196,7 +199,7 @@ pub fn tools() -> Value {
         ),
         tool(
             "merge",
-            "Merge a branch of this feature (e.g. orch/<feature>/back-1) into the integration branch, in your worktree. On a conflict nothing is merged and the branch's owner is told to sync and fix.",
+            "Merge a branch of this feature (e.g. orch/<feature>/back-1) into the integration branch, in your worktree. On a conflict nothing is merged and the branch's owner is told to sync and fix. With `task`, the merge commit gets the trailer `Orch-Task: <id>`. When the feature has one PR per issue, `task` is required and the commit its owner reported is merged, not the branch tip.",
             json!({"branch": s("The branch to merge."), "task": {"type": "integer", "description": "The task it completes (set to done)."}}),
             &["branch"],
         ),
@@ -225,7 +228,7 @@ pub fn tools() -> Value {
         ),
         tool(
             "team_status",
-            "The state of every member of your team: running, idle, waiting for the user, suspended or queued (and why), with its task.",
+            "The state of every member of your team: running, idle, waiting for the user, suspended or queued (and why), with its task. Also the feature's issues, its PR mode, and per issue its tasks and PR.",
             json!({}),
             &[],
         ),

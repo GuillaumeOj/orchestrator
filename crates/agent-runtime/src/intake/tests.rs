@@ -746,6 +746,8 @@ impl Fx {
                 allocation: None,
                 created_at_ms: 1,
                 archived: false,
+                issues: vec![],
+                pr_mode: Default::default(),
             })
             .unwrap();
     }

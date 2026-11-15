@@ -327,18 +327,25 @@ pub fn ctl(rt: &Runtime, req: CtlRequest) -> CtlReply {
         CtlRequest::TeamExport { team_id, project_id } => {
             ok_or(rt.export_team(&team_id, project_id.as_deref()).map(|s| json!(s)))
         }
-        CtlRequest::Launch { project_id, team_id, slug, title, brief, base } => ok_or(
-            rt.launch(&crate::team::LaunchSpec {
-                project_id,
-                team_id,
-                slug,
-                title: title.unwrap_or_default(),
-                brief: brief.unwrap_or_default(),
-                base,
-                off_hours: false,
-                intake: None,
-            })
-            .map(|r| json!(r)),
+        CtlRequest::Launch { project_id, team_id, slug, title, brief, base, issues, pr_mode } => {
+            ok_or(crate::feature_prs::pr_mode_arg(pr_mode.as_deref()).and_then(|pr_mode| {
+                rt.launch(&crate::team::LaunchSpec {
+                    project_id,
+                    team_id,
+                    slug,
+                    title: title.unwrap_or_default(),
+                    brief: brief.unwrap_or_default(),
+                    base,
+                    off_hours: false,
+                    intake: None,
+                    issues,
+                    pr_mode,
+                })
+                .map(|r| json!(r))
+            }))
+        }
+        CtlRequest::FeaturePrs { feature, issues, pr_mode } => ok_or(
+            crate::feature_prs::pr_mode_arg(pr_mode.as_deref()).and_then(|m| rt.feature_set_prs(&feature, issues, m)),
         ),
         CtlRequest::Runs => CtlReply::ok(rt.runs_json()),
         CtlRequest::Run { run_id } => ok_or(rt.run_json(&run_id)),

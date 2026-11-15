@@ -150,7 +150,7 @@ impl Runtime {
         let wt = cx.feature.integration_worktree.clone();
         let docs = wt.as_deref().map(|w| feature_docs(w, &cx.feature.slug)).unwrap_or_default();
         Ok(json!({
-            "run": cx.run, "feature": cx.feature, "team": cx.team, "project": {"id": cx.project.id, "name": cx.project.name, "backend": cx.project.backend().kind()},
+            "run": self.run_value(&cx.run, &cx.feature), "feature": cx.feature, "team": cx.team, "project": {"id": cx.project.id, "name": cx.project.name, "backend": cx.project.backend().kind()},
             "rules": rules::rules_text(&cx.team), "agents": agents, "tasks": tasks, "docs": docs,
             "artifacts": self.artifacts_json(&cx.feature)?,
             "timeline": self.timeline_json(run_id)?,

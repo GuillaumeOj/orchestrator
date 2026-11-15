@@ -195,6 +195,22 @@ pub fn merge_into_worktree(
     gitconfig: Option<&Path>,
     abort_on_conflict: bool,
 ) -> Result<MergeOutcome> {
+    merge_into_worktree_at(worktree_path, branch, None, message, gitconfig, abort_on_conflict)
+}
+
+/// [`merge_into_worktree`] of the commit `at` of `branch` rather than its tip
+/// (a task's reported head): refused when `at` is not on `branch`.
+pub fn merge_into_worktree_at(
+    worktree_path: &Path,
+    branch: &str,
+    at: Option<&str>,
+    message: &str,
+    gitconfig: Option<&Path>,
+    abort_on_conflict: bool,
+) -> Result<MergeOutcome> {
+    if at.is_some_and(|a| a.len() < 7 || !a.chars().all(|c| c.is_ascii_hexdigit())) {
+        bail!("invalid commit {at:?}");
+    }
     if branch.is_empty() || branch.starts_with('-') || branch.contains("..") || branch.contains('\0') {
         bail!("invalid branch {branch:?}");
     }
@@ -219,6 +235,19 @@ pub fn merge_into_worktree(
             .with_context(|| format!("no branch {branch}"))?
             .trim()
             .to_string();
+    let target = match at {
+        None => target,
+        Some(a) => {
+            let c = g(&["rev-parse", "--verify", "--quiet", "--end-of-options", &format!("{a}^{{commit}}")])
+                .with_context(|| format!("no commit {a}"))?
+                .trim()
+                .to_string();
+            if g(&["merge-base", "--is-ancestor", &c, &target]).is_err() {
+                bail!("commit {a} is not on {branch}");
+            }
+            c
+        }
+    };
     let head = g(&["rev-parse", "HEAD"])?.trim().to_string();
     if let Err(e) = g(&["merge", "--no-ff", "--no-verify", "--no-edit", "-m", message, &target]) {
         let files = conflicted_files(&wt, gitconfig);
@@ -477,6 +506,24 @@ mod tests {
                 .contains("uncommitted")
         );
     }
+    #[test]
+    fn merges_a_commit_of_a_branch_not_its_tip() {
+        let (_d, _repo, integ, back, gc) = feature();
+        edit(&back, "a.rs", "a", &gc);
+        let reported = head(&back);
+        edit(&back, "b.rs", "b", &gc);
+        let r = merge_into_worktree_at(&integ, "orch/f/back-1", Some(&reported), "Merge a", Some(&gc), true).unwrap();
+        assert!(matches!(r, MergeOutcome::Merged { .. }), "{r:?}");
+        assert!(integ.join("a.rs").is_file() && !integ.join("b.rs").exists(), "only the reported work");
+        // A commit that is not on the branch, or no commit at all, is refused.
+        edit(&integ, "c.rs", "c", &gc);
+        let other = head(&integ);
+        let e = merge_into_worktree_at(&integ, "orch/f/back-1", Some(&other), "m", Some(&gc), true).unwrap_err();
+        assert!(e.to_string().contains("is not on orch/f/back-1"), "{e:#}");
+        assert!(merge_into_worktree_at(&integ, "orch/f/back-1", Some("--x"), "m", Some(&gc), true).is_err());
+        assert!(merge_into_worktree_at(&integ, "orch/f/back-1", Some("deadbeef00"), "m", Some(&gc), true).is_err());
+    }
+
     use orch_protocol::WorktreeKindSpec;
 
     /// The repo, an integration worktree and a specialist one of feature `f`, and a gitconfig.

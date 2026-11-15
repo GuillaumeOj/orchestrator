@@ -998,6 +998,7 @@ mod tests {
                 ended_at_ms: None,
                 pr_number: None,
                 pr: None,
+                prs: vec![],
             })
             .unwrap();
         let mut t = orch_store::Task::new("p1", "local", "x", 1);

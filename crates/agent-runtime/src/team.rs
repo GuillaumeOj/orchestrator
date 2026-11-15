@@ -90,6 +90,8 @@ impl RunCtx {
             slug: self.feature.slug.clone(),
             title: self.feature.title.clone(),
             base: self.feature.base.clone(),
+            issues: self.feature.issue_refs(),
+            per_issue: self.feature.pr_mode == orch_store::PrMode::PerIssue,
         }
     }
 }
@@ -1734,6 +1736,7 @@ impl Runtime {
                     },
                 };
                 let model = model_arg(args)?.flatten();
+                let issue = str_arg(args, "issue").map(|i| self.feature_issue(&cx, i)).transpose()?;
                 let mut t = Task::new(&cx.project.id, "", title, now_ms());
                 t.title = cut(title, 200);
                 // Stored whole (F7): a body too long to keep is refused, never cut.
@@ -1747,6 +1750,7 @@ impl Runtime {
                 t.team_run_id = Some(cx.run.id.clone());
                 t.flow.plan_first = args.get("plan_first").and_then(Value::as_bool).unwrap_or(false);
                 t.flow.model = model;
+                t.issue = issue;
                 let out = self.tasks_of(&cx).create(t)?;
                 let t = out.value;
                 // Written back as a sub-issue of the item the run came from (contract §5).
@@ -1775,6 +1779,12 @@ impl Runtime {
                 }
                 // Validated before any change (a reassignment below is written at once).
                 let model = model_arg(args)?;
+                let issue = match str_arg(args, "issue") {
+                    None => None,
+                    Some(_) if !is_lead => bail!("only the lead sets a task's issue"),
+                    Some(i) if i.trim().is_empty() => Some(None),
+                    Some(i) => Some(Some(self.feature_issue(&cx, i)?)),
+                };
                 if let Some(node) = str_arg(args, "node") {
                     if !is_lead {
                         bail!("only the lead reassigns tasks");
@@ -1792,6 +1802,9 @@ impl Runtime {
                         bail!("only the lead sets a task's model");
                     }
                     t.flow.model = m;
+                }
+                if let Some(i) = issue {
+                    t.issue = i;
                 }
                 if let Some(s) = str_arg(args, "status") {
                     let s: TaskStatus = s.parse().map_err(|e: String| anyhow!(e))?;
@@ -1826,6 +1839,9 @@ impl Runtime {
                 if !st.trim().is_empty() {
                     bail!("you have uncommitted changes: commit them with mcp__orch__commit first");
                 }
+                // The head the lead merges in per_issue mode: the branch may
+                // move on with the owner's next task before the merge.
+                t.reported_sha = Some(orch_git::git(&rec.worktree, &["rev-parse", "HEAD"])?.trim().to_string());
                 if let Some(text) = self.review_first(&cx, rec, me, &mut t, args)? {
                     return Ok((text, Value::Null));
                 }
@@ -1891,8 +1907,18 @@ impl Runtime {
                 }
                 let branch = str_arg(args, "branch").ok_or_else(|| anyhow!("`branch` is required"))?;
                 let prefix = format!("orch/{}/", cx.feature.slug);
-                if !branch.starts_with(&prefix) || branch == cx.feature.integration_branch() {
+                if !branch.starts_with(&prefix)
+                    || branch == cx.feature.integration_branch()
+                    || branch.starts_with(&format!("{prefix}issue/"))
+                {
                     bail!("only branches of this feature ({prefix}<node>-<n>) can be merged here");
+                }
+                let per_issue = cx.feature.pr_mode == orch_store::PrMode::PerIssue;
+                let task_id = args.get("task").and_then(Value::as_u64);
+                if per_issue && task_id.is_none() {
+                    bail!(
+                        "`task` is required: with one PR per issue, each merge belongs to the PR of its task's issue"
+                    );
                 }
                 // The review gate holds without `task` too: a branch whose task
                 // is under review is not merged.
@@ -1908,10 +1934,31 @@ impl Runtime {
                 if let Some(why) = gated.iter().find_map(|t| self.review_missing(&cx, t)) {
                     bail!("{why}");
                 }
-                let r = orch_git::commit::merge_into_worktree(
+                // per_issue: one merge = one task, its reported head (spec §3.2).
+                let at = match task_id.filter(|_| per_issue) {
+                    None => None,
+                    Some(id) => {
+                        let t = self.run_task(&cx, id)?;
+                        if t.branch.as_deref().is_some_and(|b| b != branch) {
+                            bail!("task {} is on {}, not {branch}", t.handle(), t.branch.unwrap_or_default());
+                        }
+                        let handle = t.handle();
+                        Some(t.reported_sha.ok_or_else(|| {
+                            anyhow!(
+                                "task {handle} has not been reported yet: merge it once its owner calls report_done"
+                            )
+                        })?)
+                    }
+                };
+                let message = match task_id {
+                    Some(id) => crate::issues::with_trailer(&format!("Merge {branch}"), "Orch-Task", &id.to_string()),
+                    None => format!("Merge {branch}"),
+                };
+                let r = orch_git::commit::merge_into_worktree_at(
                     &rec.worktree,
                     branch,
-                    &format!("Merge {branch}"),
+                    at.as_deref(),
+                    &message,
                     self.agent_gitconfig(&rec.id).as_deref(),
                     true,
                 );
@@ -2104,7 +2151,10 @@ impl Runtime {
                 .into_iter()
                 .map(|a| json!({"id": a.id, "node": a.team.as_ref().map(|s| s.node.clone()), "state": a.tracker.state, "task": a.team.as_ref().and_then(|s| s.task)}))
                 .collect();
-            by_feature.entry(r.feature_id.clone()).or_default().push(json!({"run": r, "agents": agents}));
+            by_feature
+                .entry(r.feature_id.clone())
+                .or_default()
+                .push(json!({"run": self.run_value_of(r), "agents": agents}));
         }
         json!(by_feature)
     }
@@ -2700,6 +2750,8 @@ pub(crate) mod tests {
                 base: None,
                 off_hours: false,
                 intake: None,
+                issues: vec![],
+                pr_mode: Default::default(),
             })
             .unwrap();
         write_commit(rt, "fx-lead-1", ".orchestrator/features/fx/spec.md", "# Fix X\n");
@@ -2858,6 +2910,8 @@ pub(crate) mod tests {
                 base: None,
                 off_hours: false,
                 intake: None,
+                issues: vec![],
+                pr_mode: Default::default(),
             })
             .unwrap();
         assert_eq!(run.status, RunState::Spec);
@@ -3101,6 +3155,8 @@ pub(crate) mod tests {
                 base: None,
                 off_hours: false,
                 intake: None,
+                issues: vec![],
+                pr_mode: Default::default(),
             })
             .unwrap();
         let lead = "fx-lead-1";
@@ -3147,6 +3203,8 @@ pub(crate) mod tests {
                 base: None,
                 off_hours: false,
                 intake: None,
+                issues: vec![],
+                pr_mode: Default::default(),
             })
             .unwrap();
         // The feature archived under its active run (an older relaunch).

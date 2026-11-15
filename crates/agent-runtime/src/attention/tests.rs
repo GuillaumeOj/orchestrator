@@ -121,6 +121,7 @@ impl Fx {
                     pr: None,
                     started_at_ms: NOW - 120 * MIN,
                     ended_at_ms: None,
+                    prs: vec![],
                 },
                 project: "shop".into(),
                 feature: "checkout".into(),

@@ -1683,6 +1683,8 @@ pub(crate) mod tests {
                 base: None,
                 off_hours: false,
                 intake: None,
+                issues: vec![],
+                pr_mode: Default::default(),
             })
             .unwrap();
         let s = core.state();
@@ -2229,6 +2231,8 @@ pub(crate) mod tests {
             base: None,
             off_hours: false,
             intake: None,
+            issues: vec![],
+            pr_mode: Default::default(),
         })
         .unwrap();
         let team = rt.store.read(|s| s.agents["fx-lead-1"].allocation.clone());
