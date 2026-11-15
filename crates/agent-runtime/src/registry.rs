@@ -307,23 +307,24 @@ pub fn probe_stdio(s: &McpServer, env: &[(String, String)], deadline: Duration) 
 /// A stdio server as Claude Code starts it: `(command, args)`.
 type StdioSpec = (String, Vec<String>);
 
-/// The stdio servers of an `mcpServers` object, by name (an entry without
-/// `type` is stdio). Only the command and args are kept: `env` may hold tokens.
-fn stdio_specs(v: &Value) -> std::collections::BTreeMap<String, StdioSpec> {
+/// The servers of an `mcpServers` object, by name: `Some` for a stdio one (an
+/// entry without `type` is stdio), `None` for any other (it still shadows a
+/// user server of the same name). Only the command and args are kept: `env`
+/// may hold tokens.
+fn stdio_specs(v: &Value) -> std::collections::BTreeMap<String, Option<StdioSpec>> {
     let Some(m) = v.as_object() else { return Default::default() };
-    m.iter()
-        .filter_map(|(name, e)| {
-            if e.get("type").and_then(Value::as_str).is_some_and(|t| t != "stdio") {
-                return None;
-            }
-            let cmd = e.get("command")?.as_str()?.to_string();
-            let args = match e.get("args") {
-                None | Some(Value::Null) => vec![],
-                Some(a) => a.as_array()?.iter().map(|x| x.as_str().map(str::to_string)).collect::<Option<_>>()?,
-            };
-            Some((name.clone(), (cmd, args)))
-        })
-        .collect()
+    let spec = |e: &Value| -> Option<StdioSpec> {
+        if e.get("type").and_then(Value::as_str).is_some_and(|t| t != "stdio") {
+            return None;
+        }
+        let cmd = e.get("command")?.as_str()?.to_string();
+        let args = match e.get("args") {
+            None | Some(Value::Null) => vec![],
+            Some(a) => a.as_array()?.iter().map(|x| x.as_str().map(str::to_string)).collect::<Option<_>>()?,
+        };
+        Some((cmd, args))
+    };
+    m.iter().map(|(name, e)| (name.clone(), spec(e))).collect()
 }
 
 /// Claude Code's stdio servers, from `<home>/.claude.json` (FR-604): its
@@ -332,8 +333,8 @@ fn stdio_specs(v: &Value) -> std::collections::BTreeMap<String, StdioSpec> {
 #[derive(Debug, Default)]
 pub(crate) struct ClaudeServers {
     stamp: Option<(u64, Option<std::time::SystemTime>)>,
-    user: std::collections::BTreeMap<String, StdioSpec>,
-    projects: std::collections::BTreeMap<String, std::collections::BTreeMap<String, StdioSpec>>,
+    user: std::collections::BTreeMap<String, Option<StdioSpec>>,
+    projects: std::collections::BTreeMap<String, std::collections::BTreeMap<String, Option<StdioSpec>>>,
 }
 
 impl ClaudeServers {
@@ -357,11 +358,12 @@ impl ClaudeServers {
     }
 
     /// The server `name` as a session in one of `dirs` sees it (a project's
-    /// own first, as Claude Code does).
+    /// own first, as Claude Code does, even when it isn't stdio).
     fn get(&self, name: &str, dirs: &[&std::path::Path]) -> Option<&StdioSpec> {
         dirs.iter()
             .find_map(|d| self.projects.get(d.to_string_lossy().as_ref())?.get(name))
-            .or_else(|| self.user.get(name))
+            .or_else(|| self.user.get(name))?
+            .as_ref()
     }
 }
 
@@ -573,9 +575,25 @@ impl Runtime {
             return;
         }
         std::thread::spawn(move || {
+            // The entry's definition, its status left out.
+            let def = |id: &str| {
+                let reg = me.db.mcp_registry(project.as_deref()).ok()?;
+                let s = reg.get(id)?;
+                Some(McpServer { status: McpStatus::Unknown, detail: None, checked_at_ms: None, ..s.clone() })
+            };
             for id in todo {
-                let _ = me.probe_server(&id, project.as_deref());
-                me.probing.lock().unwrap_or_else(|e| e.into_inner()).remove(&(project.clone(), id));
+                loop {
+                    let probed = def(&id);
+                    let _ = me.probe_server(&id, project.as_deref());
+                    // A save during the probe found it busy and skipped its own:
+                    // probe the new definition (checked under the lock, so a later
+                    // save finds it free).
+                    let mut busy = me.probing.lock().unwrap_or_else(|e| e.into_inner());
+                    if def(&id) == probed {
+                        busy.remove(&(project.clone(), id));
+                        break;
+                    }
+                }
             }
         });
     }
@@ -701,6 +719,11 @@ impl Runtime {
         let all = reg.effective();
         // By id first; else a stdio entry Claude Code runs under the name `server`.
         let found = all.iter().find(|s| s.owns_tool_server(server)).or_else(|| {
+            // Claude Code's config is read only when a stdio entry's status could change.
+            let settled = |s: &McpServer| status == McpStatus::Connected && s.status == status;
+            if !all.iter().any(|s| s.kind == McpKind::Stdio && !settled(s)) {
+                return None;
+            }
             let (cmd, args) = self.claude_code_stdio(server, &[&rec.worktree, &rec.repo])?;
             all.iter()
                 .find(|s| s.kind == McpKind::Stdio && s.command.as_deref() == Some(cmd.as_str()) && s.args == args)
@@ -1116,12 +1139,19 @@ pub(crate) mod tests {
         rt.db.set_mcp_status(&Scope::Global, "figcraft-cli", McpStatus::Unknown, None, 2).unwrap();
         let repo = d.path().to_string_lossy().to_string();
         write(
-            json!({"projects": {repo: {"mcpServers": {"fc": cli(&["mcp"])}}, "/elsewhere": {"mcpServers": {"fc2": cli(&["mcp"])}}}}),
+            json!({"projects": {repo.clone(): {"mcpServers": {"fc": cli(&["mcp"])}}, "/elsewhere": {"mcpServers": {"fc2": cli(&["mcp"])}}}}),
         );
         call("mcp__fc2__export");
         assert_eq!(get().status, McpStatus::Unknown, "another project's server");
         call("mcp__fc__export");
         assert_eq!((get().status, get().detail.as_deref()), (McpStatus::Connected, Some("a1 used export")));
+
+        // A project's server that isn't stdio shadows the user's of the same name.
+        rt.db.set_mcp_status(&Scope::Global, "figcraft-cli", McpStatus::Unknown, None, 2).unwrap();
+        write(json!({"mcpServers": {"figcraft": cli(&["mcp"])},
+                     "projects": {repo.clone(): {"mcpServers": {"figcraft": {"type": "http", "url": "https://x"}}}}}));
+        call("mcp__figcraft__screenshot");
+        assert_eq!(get().status, McpStatus::Unknown, "the project's http server");
 
         // The id match comes first: a registry entry `fc` takes the call.
         rt.db.set_mcp_status(&Scope::Global, "figcraft-cli", McpStatus::Unknown, None, 3).unwrap();

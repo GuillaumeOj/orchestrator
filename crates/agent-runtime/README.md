@@ -665,13 +665,20 @@ new place, the known worktrees are repaired (targeted) and re-locked.
   (non `[A-Za-z0-9_-]` → `_`). An entry's `connector_name` matches that prefix and longer names
   ("claude.ai Penpot" matches "claude.ai Penpot Perso"), so the seeded `penpot` entry works with a
   personal connector name.
+- **Claude Code's names**: a call to `mcp__<server>__…` that no entry owns by id is credited to a
+  stdio entry with the same `command` and `args` as Claude Code's stdio server `<server>` in
+  `~/.claude.json` (the agent's project's `mcpServers` first, then the top-level ones; read only,
+  again only when its size or mtime changes; only command and args are kept).
 - `claude mcp list` health-checks the user's own servers (and prints their URLs, tokens in query
   strings included): not used, it would read the user's config and is slow.
 - **stdio**: spawned with its env (Keychain values only with the opt-in), `initialize`, then
   `notifications/initialized` + `tools/list`, all within 10 s, then killed. An auth-looking error
   or stderr line → `needs_auth`.
 - **When**: on `mcp_server_test` / `integration_test` (Settings, Test), at each agent spawn (a thread,
-  the refs of that agent, connectors skipped), and every 30 min for the servers of running agents.
+  the refs of that agent, connectors skipped), and every 30 min (the first time at the first
+  housekeeping after the core starts) for the servers of running agents. A design-tool entry that
+  isn't a connector (FigCraft, an http Figma) is probed on its own, used by a role or not: in that
+  sweep, in every scope, and in the background after `mcp_server_save` (the save reset it).
   The background probes skip a server probed in the last 60 s (`PROBE_FRESH_MS`: the agents of a
   team spawn together) or being probed now; Test always probes.
 - **Inbox**: `needs_auth` raises one alert per server (`{"alert":"mcp_needs_auth","server","name",
