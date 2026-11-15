@@ -60,6 +60,9 @@ pub struct RuntimeConfig {
     pub version_range: VersionRange,
     /// `~/.claude/projects` (read only).
     pub projects_root: PathBuf,
+    /// The user's home: Claude Code's `.claude.json` is read there (never
+    /// written) to credit the agents' MCP calls (tests: a temp dir).
+    pub home: PathBuf,
     /// Local OTLP receiver; `None` = telemetry off.
     pub otel_endpoint: Option<String>,
     /// FR-812: log governor decisions without enforcing them.
@@ -135,6 +138,7 @@ impl RuntimeConfig {
             claude: home.join(".local/bin/claude"),
             version_range: preflight::SUPPORTED_CLAUDE,
             projects_root: crate::transcript::projects_root(&home),
+            home: home.clone(),
             otel_endpoint: None,
             shadow: true,
             base_cap: None,
@@ -251,6 +255,8 @@ pub struct Runtime {
     pub(crate) intake: crate::intake::Refresher,
     /// FR-604: (project, server) probes running in the background.
     pub(crate) probing: Mutex<std::collections::BTreeSet<(Option<String>, String)>>,
+    /// Claude Code's stdio servers, read from `<home>/.claude.json` ([`crate::registry::ClaudeServers`]).
+    pub(crate) claude_servers: Mutex<crate::registry::ClaudeServers>,
     /// Told of every Inbox outcome ([`Runtime::set_outcome_sink`]).
     pub(crate) outcome_sink: Mutex<Option<crate::inbox::OutcomeSink>>,
     /// The `now` publisher (P4.1): last world sent, rev, sinks.
@@ -582,6 +588,7 @@ impl Runtime {
             linear_token: Default::default(),
             intake: Default::default(),
             probing: Default::default(),
+            claude_servers: Default::default(),
             pr_watch: Default::default(),
             outcome_sink: Mutex::new(None),
             now: Default::default(),
@@ -3387,6 +3394,7 @@ pub(crate) mod tests {
         cfg.idle_suspend = None;
         cfg.memory = Arc::new(crate::resources::FixedMemory::new(crate::resources::PressureLevel::Normal));
         cfg.projects_root = d.join("projects");
+        cfg.home = d.to_path_buf();
         cfg.default_plan = test_plan;
         cfg.power = Arc::new(crate::power::FakePower::default());
         cfg

@@ -304,6 +304,73 @@ pub fn probe_stdio(s: &McpServer, env: &[(String, String)], deadline: Duration) 
     }
 }
 
+/// A stdio server as Claude Code starts it: `(command, args)`.
+type StdioSpec = (String, Vec<String>);
+
+/// The stdio servers of an `mcpServers` object, by name (an entry without
+/// `type` is stdio). Only the command and args are kept: `env` may hold tokens.
+fn stdio_specs(v: &Value) -> std::collections::BTreeMap<String, StdioSpec> {
+    let Some(m) = v.as_object() else { return Default::default() };
+    m.iter()
+        .filter_map(|(name, e)| {
+            if e.get("type").and_then(Value::as_str).is_some_and(|t| t != "stdio") {
+                return None;
+            }
+            let cmd = e.get("command")?.as_str()?.to_string();
+            let args = match e.get("args") {
+                None | Some(Value::Null) => vec![],
+                Some(a) => a.as_array()?.iter().map(|x| x.as_str().map(str::to_string)).collect::<Option<_>>()?,
+            };
+            Some((name.clone(), (cmd, args)))
+        })
+        .collect()
+}
+
+/// Claude Code's stdio servers, from `<home>/.claude.json` (FR-604): its
+/// top-level `mcpServers` and each project's. Read only (FR-1206), again only
+/// when the file's size or mtime changes.
+#[derive(Debug, Default)]
+pub(crate) struct ClaudeServers {
+    stamp: Option<(u64, Option<std::time::SystemTime>)>,
+    user: std::collections::BTreeMap<String, StdioSpec>,
+    projects: std::collections::BTreeMap<String, std::collections::BTreeMap<String, StdioSpec>>,
+}
+
+impl ClaudeServers {
+    /// Re-reads `file` if it changed (a missing or unreadable file has none).
+    fn refresh(&mut self, file: &std::path::Path) {
+        let stamp = std::fs::metadata(file).ok().map(|m| (m.len(), m.modified().ok()));
+        if stamp == self.stamp {
+            return;
+        }
+        let v: Value = std::fs::read(file).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or(Value::Null);
+        let projects = v["projects"]
+            .as_object()
+            .map(|m| {
+                m.iter()
+                    .map(|(k, p)| (k.clone(), stdio_specs(&p["mcpServers"])))
+                    .filter(|(_, s)| !s.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default();
+        *self = ClaudeServers { stamp, user: stdio_specs(&v["mcpServers"]), projects };
+    }
+
+    /// The server `name` as a session in one of `dirs` sees it (a project's
+    /// own first, as Claude Code does).
+    fn get(&self, name: &str, dirs: &[&std::path::Path]) -> Option<&StdioSpec> {
+        dirs.iter()
+            .find_map(|d| self.projects.get(d.to_string_lossy().as_ref())?.get(name))
+            .or_else(|| self.user.get(name))
+    }
+}
+
+/// Probed on their own, used by a role or not: the sessions may get a design
+/// tool from Claude Code's config rather than the registry.
+fn probed_alone(s: &McpServer) -> bool {
+    s.design_tool.is_some() && s.kind != McpKind::Connector
+}
+
 /// Where an entry seen from `project` lives.
 fn scope_in(reg: &Registry, project: Option<&str>, id: &str) -> Scope {
     match project {
@@ -432,7 +499,12 @@ impl Runtime {
             bail!("no project {p}");
         }
         self.db.save_mcp_server(scope, &server, now_ms())?;
-        self.server_json(scope, &server.id)
+        let out = self.server_json(scope, &server.id)?;
+        // The save reset its status: a design tool doesn't wait for a role to use it.
+        if probed_alone(&server) {
+            self.probe_in_background(scope.project().map(str::to_string), vec![server.id.clone()]);
+        }
+        Ok(out)
     }
 
     /// Deletes an entry unless a role would lose it (a project override
@@ -508,7 +580,9 @@ impl Runtime {
         });
     }
 
-    /// FR-604 every 30 min: the servers the running agents use.
+    /// FR-604 every 30 min (and at the first housekeeping after the core
+    /// starts): the servers the running agents use, and every design-tool
+    /// entry that isn't a connector, in each scope, used or not.
     pub(crate) fn probe_used_servers(&self) {
         let mut by_project: std::collections::BTreeMap<Option<String>, Vec<String>> = Default::default();
         for id in self.live_ids() {
@@ -518,6 +592,11 @@ impl Runtime {
             }
             let v = by_project.entry(self.agent_project(&rec)).or_default();
             v.extend(rec.role.mcp_refs.iter().cloned());
+        }
+        for (scope, s) in self.db.mcp_servers_all().unwrap_or_default() {
+            if probed_alone(&s) {
+                by_project.entry(scope.project().map(str::to_string)).or_default().push(s.id);
+            }
         }
         for (p, mut refs) in by_project {
             refs.sort();
@@ -599,6 +678,13 @@ impl Runtime {
         });
     }
 
+    /// Claude Code's stdio server `name` (command and args) for a session in `dirs`.
+    fn claude_code_stdio(&self, name: &str, dirs: &[&std::path::Path]) -> Option<StdioSpec> {
+        let mut c = self.claude_servers.lock().unwrap_or_else(|e| e.into_inner());
+        c.refresh(&self.cfg.home.join(".claude.json"));
+        c.get(name, dirs).cloned()
+    }
+
     /// FR-604 at runtime: an agent's call to a registry server's tool.
     pub(crate) fn observe_mcp_call(&self, rec: &AgentRecord, event: &HookEvent, p: &HookPayload) {
         let Some((server, tool)) = p.tool_name.as_deref().and_then(mcp_tool) else { return };
@@ -612,7 +698,14 @@ impl Runtime {
         };
         let project = self.agent_project(rec);
         let Ok(reg) = self.db.mcp_registry(project.as_deref()) else { return };
-        let Some(s) = reg.effective().into_iter().find(|s| s.owns_tool_server(server)).cloned() else { return };
+        let all = reg.effective();
+        // By id first; else a stdio entry Claude Code runs under the name `server`.
+        let found = all.iter().find(|s| s.owns_tool_server(server)).or_else(|| {
+            let (cmd, args) = self.claude_code_stdio(server, &[&rec.worktree, &rec.repo])?;
+            all.iter()
+                .find(|s| s.kind == McpKind::Stdio && s.command.as_deref() == Some(cmd.as_str()) && s.args == args)
+        });
+        let Some(s) = found.map(|s| (*s).clone()) else { return };
         if s.status == status && status == McpStatus::Connected {
             return; // the common case: nothing to write
         }
@@ -909,6 +1002,137 @@ pub(crate) mod tests {
         rt.set_mcp_status(&Scope::Global, &g, McpStatus::Connected, None).unwrap();
         let left: Vec<_> = rt.inbox().into_iter().filter(|i| i.payload["server"] == "penpot").collect();
         assert_eq!((left.len(), left[0].payload["project"].clone()), (1, json!(p.id)));
+    }
+
+    /// A FigCraft stdio entry whose fake server answers with one tool.
+    fn figcraft(id: &str) -> McpServer {
+        let mut s = fake_stdio(
+            r#"read l; echo '{"jsonrpc":"2.0","id":1,"result":{}}'; read l; read l; echo '{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"a"}]}}'; sleep 5"#,
+        );
+        s.id = id.into();
+        s.design_tool = Some(orch_team::mcp::DesignTool::Figcraft);
+        s
+    }
+
+    /// Waits (up to 10 s) for a background probe to give `id` `status`.
+    pub(crate) fn wait_status(rt: &Runtime, scope: &Scope, id: &str, status: McpStatus) -> McpServer {
+        let end = Instant::now() + Duration::from_secs(10);
+        loop {
+            let s = rt.db.mcp_server(scope, id).unwrap().unwrap();
+            if s.status == status && s.checked_at_ms.is_some() {
+                return s;
+            }
+            assert!(Instant::now() < end, "{id} is still {:?} ({:?})", s.status, s.detail);
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// No probe of the runtime is running.
+    fn idle(rt: &Runtime) {
+        let end = Instant::now() + Duration::from_secs(10);
+        while !rt.probing.lock().unwrap().is_empty() {
+            assert!(Instant::now() < end, "probes still running");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    #[test]
+    fn design_tool_entries_are_probed_though_no_role_uses_them() {
+        let (_d, rt, fake) = test_runtime_net();
+        let (_r, repo) = orch_git::fixtures::scratch_repo();
+        let p = orch_git::project::register(&rt.db, &repo).unwrap();
+        let project = Scope::Project(p.id.clone());
+        // Stored as the core finds them at start (no save probe), no role refs them.
+        rt.db.save_mcp_server(&Scope::Global, &figcraft("figcraft"), 1).unwrap();
+        rt.db.save_mcp_server(&project, &figcraft("figcraft"), 1).unwrap();
+        // Probed a moment ago: left alone.
+        rt.db.save_mcp_server(&Scope::Global, &figcraft("fresh"), 1).unwrap();
+        rt.db.set_mcp_status(&Scope::Global, "fresh", McpStatus::Connected, Some("just now"), now_ms()).unwrap();
+        // Not a design tool: not probed.
+        rt.db.save_mcp_server(&Scope::Global, &McpServer { design_tool: None, ..figcraft("plain") }, 1).unwrap();
+        // The seeded Penpot connector is a design tool, but nothing to probe.
+        let mut penpot = McpServer::new("penpot", "Penpot", McpKind::Http);
+        penpot.url = Some("https://penpot.example/mcp".into());
+        rt.db.save_mcp_server(&project, &penpot, 1).unwrap();
+
+        rt.probe_used_servers();
+        let g = wait_status(&rt, &Scope::Global, "figcraft", McpStatus::Connected);
+        assert_eq!(g.detail.as_deref(), Some("1 tool(s)"));
+        wait_status(&rt, &project, "figcraft", McpStatus::Connected);
+        idle(&rt);
+        let get = |scope: &Scope, id: &str| rt.db.mcp_server(scope, id).unwrap().unwrap();
+        assert_eq!(get(&Scope::Global, "fresh").detail.as_deref(), Some("just now"));
+        assert_eq!(get(&Scope::Global, "plain").checked_at_ms, None);
+        assert_eq!(get(&Scope::Global, "penpot").checked_at_ms, None, "a connector is never probed");
+        assert_eq!(get(&project, "penpot").checked_at_ms, None, "an http entry without a design tool");
+        assert!(fake.seen.lock().unwrap().is_empty());
+        assert_eq!(rt.integration_json("figcraft")["status"], "connected");
+
+        // The next sweep within PROBE_FRESH_MS probes nothing again.
+        let before = get(&Scope::Global, "figcraft").checked_at_ms;
+        rt.probe_used_servers();
+        assert!(rt.probing.lock().unwrap().is_empty());
+        assert_eq!(get(&Scope::Global, "figcraft").checked_at_ms, before);
+    }
+
+    #[test]
+    fn saving_a_design_tool_entry_probes_it() {
+        let (_d, rt, _fake) = test_runtime_net();
+        let s = rt.mcp_server_save(figcraft("figcraft"), &Scope::Global).unwrap();
+        assert_eq!(s.status, McpStatus::Unknown, "the save answers at once");
+        wait_status(&rt, &Scope::Global, "figcraft", McpStatus::Connected);
+        let broken = McpServer { command: Some("/nonexistent/figcraft".into()), ..figcraft("figcraft") };
+        rt.mcp_server_save(broken, &Scope::Global).unwrap();
+        let e = wait_status(&rt, &Scope::Global, "figcraft", McpStatus::Error);
+        assert!(e.detail.unwrap().contains("can't start"));
+    }
+
+    #[test]
+    fn calls_are_credited_by_claude_codes_server_name() {
+        let (d, rt) = test_runtime(true);
+        let cli = |args: &[&str]| json!({"type": "stdio", "command": "/opt/figcraft", "args": args});
+        let write = |v: Value| std::fs::write(d.path().join(".claude.json"), v.to_string()).unwrap();
+        let mut entry = McpServer::new("figcraft-cli", "FigCraft", McpKind::Stdio);
+        entry.command = Some("/opt/figcraft".into());
+        entry.args = vec!["mcp".into()];
+        rt.db.save_mcp_server(&Scope::Global, &entry, 1).unwrap();
+        let get = || rt.db.mcp_server(&Scope::Global, "figcraft-cli").unwrap().unwrap();
+        let call = |tool: &str| {
+            rt.on_hook(&hook("PostToolUse", json!({"tool_name": tool, "tool_use_id": "t1", "tool_input": {}})), None);
+        };
+
+        // Claude Code's top-level servers: same command and args, under another name.
+        write(json!({"mcpServers": {"figcraft": cli(&["mcp"]), "figcraft-app": cli(&["mcp", "--attach", "7979"])},
+                     "oauthAccount": {"emailAddress": "x@y"}}));
+        call("mcp__figcraft-app__screenshot");
+        call("mcp__other__screenshot");
+        assert_eq!(get().status, McpStatus::Unknown, "other args, or not in the config");
+        call("mcp__figcraft__screenshot");
+        let s = get();
+        assert_eq!((s.status, s.detail.as_deref()), (McpStatus::Connected, Some("a1 used screenshot")));
+
+        // A project's own servers (the agent's repo), the file re-read once changed.
+        rt.db.save_mcp_server(&Scope::Global, &entry, 2).unwrap();
+        rt.db.set_mcp_status(&Scope::Global, "figcraft-cli", McpStatus::Unknown, None, 2).unwrap();
+        let repo = d.path().to_string_lossy().to_string();
+        write(
+            json!({"projects": {repo: {"mcpServers": {"fc": cli(&["mcp"])}}, "/elsewhere": {"mcpServers": {"fc2": cli(&["mcp"])}}}}),
+        );
+        call("mcp__fc2__export");
+        assert_eq!(get().status, McpStatus::Unknown, "another project's server");
+        call("mcp__fc__export");
+        assert_eq!((get().status, get().detail.as_deref()), (McpStatus::Connected, Some("a1 used export")));
+
+        // The id match comes first: a registry entry `fc` takes the call.
+        rt.db.set_mcp_status(&Scope::Global, "figcraft-cli", McpStatus::Unknown, None, 3).unwrap();
+        let mut fc = McpServer::new("fc", "Other", McpKind::Stdio);
+        fc.command = Some("/opt/other".into());
+        rt.db.save_mcp_server(&Scope::Global, &fc, 3).unwrap();
+        call("mcp__fc__export");
+        assert_eq!(rt.db.mcp_server(&Scope::Global, "fc").unwrap().unwrap().status, McpStatus::Connected);
+        assert_eq!(get().status, McpStatus::Unknown);
+        // Only command and args are kept from the file.
+        assert!(!format!("{:?}", rt.claude_servers.lock().unwrap()).contains("x@y"));
     }
 
     /// A test runtime whose network is a [`FakeNet`].
