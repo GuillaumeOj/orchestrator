@@ -2,6 +2,7 @@
 # Builds Orchestrator.app (release) and installs it into ~/Applications.
 #   scripts/app.sh build     # target/release/bundle/macos/Orchestrator.app
 #   scripts/app.sh install   # build, then copy to ~/Applications (refused while it runs)
+#   scripts/app.sh icon      # only compile the icon (needs Xcode 26+ on macOS 26+)
 #   scripts/app.sh pack      # tar.gz of the built bundle, unsigned (CI builds of PR code)
 #   scripts/app.sh package   # pack, then sign it: tar.gz + .sig (CI: needs ORCH_UPDATE_KEY)
 # Build env (CI sets these; a local build leaves them out):
@@ -47,7 +48,45 @@ core_release() {
   return 1
 }
 
+# Compiles the Liquid Glass icon (icons/Orchestrator.icon) into bundle/icons/Assets.car, which
+# tauri.bundle.json adds to the bundle. Fails loudly: no icon, no build. ICON_SRC can be
+# overridden (tests).
+icon() {
+  src="${ICON_SRC:-$ROOT/crates/orch-app/icons/Orchestrator.icon}"
+  out="$ROOT/crates/orch-app/bundle/icons"
+  rm -rf "$out"
+  mkdir -p "$out"
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/orch-icon.XXXXXX")
+  trap 'rm -rf "$tmp"' EXIT
+  mkdir "$tmp/out"
+  # The .icon is copied as Icon.icon so the icon name is Icon (CFBundleIconName in Info.plist).
+  if cp -R "$src" "$tmp/Icon.icon" &&
+    xcrun actool "$tmp/Icon.icon" --compile "$tmp/out" --output-format human-readable-text \
+      --notices --warnings --output-partial-info-plist "$tmp/out/a.plist" --app-icon Icon \
+      --include-all-app-icons --enable-on-demand-resources NO --development-region en \
+      --target-device mac --minimum-deployment-target 26.0 --platform macosx \
+      >"$tmp/actool.log" 2>&1 &&
+    [ -s "$tmp/out/Assets.car" ]; then
+    cp "$tmp/out/Assets.car" "$out/Assets.car"
+  else
+    cat "$tmp/actool.log" 2>/dev/null >&2 || true
+    echo "icon compile failed: needs Xcode 26+ on macOS 26+ (see crates/orch-app/icons/README.md)" >&2
+    exit 1
+  fi
+}
+
+# The bundle must carry the compiled icon and name it, or the Dock shows the classic one.
+check_icon() {
+  [ -s "$APP/Contents/Resources/Assets.car" ] ||
+    { echo "$APP has no Contents/Resources/Assets.car" >&2; exit 1; }
+  name=$(plutil -extract CFBundleIconName raw "$APP/Contents/Info.plist" 2>/dev/null || true)
+  [ "$name" = "Icon" ] ||
+    { echo "$APP Info.plist: CFBundleIconName is '$name', expected 'Icon'" >&2; exit 1; }
+}
+
 build() {
+  echo "==> icon"
+  icon
   echo "==> helpers (release)"
   cargo build --release -p orch-hook -p orch-status -p orch-mcp
   mkdir -p crates/orch-app/bundle/bin crates/orch-app/bundle/fonts
@@ -75,6 +114,7 @@ build() {
     set -- "$@" --config "{\"version\":\"$ORCH_VERSION\"}"
   fi
   (cd ui && bun run tauri build "$@")
+  check_icon
   echo "built $APP"
 }
 
@@ -123,11 +163,12 @@ install_app() {
 
 case "${1:-install}" in
   build) build ;;
+  icon) icon ;;
   # Not `build && install_app`: set -e is off on the left of &&, so a failed
   # build would fall through and install the previous bundle.
   install) build; install_app ;;
   install-only) install_app ;;
   pack) pack ;;
   package) package ;;
-  *) echo "usage: $0 [build|install|install-only|pack|package]" >&2; exit 2 ;;
+  *) echo "usage: $0 [build|install|install-only|icon|pack|package]" >&2; exit 2 ;;
 esac

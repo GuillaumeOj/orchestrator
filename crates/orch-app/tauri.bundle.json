@@ -6,7 +6,7 @@
     "macOS": {
       "minimumSystemVersion": "13.0",
       "signingIdentity": "-",
-      "files": { "Resources/Assets.car": "icons/Assets.car" }
+      "files": { "Resources/Assets.car": "bundle/icons/Assets.car" }
     }
   }
 }

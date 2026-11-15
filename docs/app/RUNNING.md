@@ -14,15 +14,15 @@ make install
 `Orchestrator.app` to `~/Applications` (refused while the app runs: quit it with ⌘Q first).
 `make app` only builds (`target/release/bundle/macos/Orchestrator.app`).
 
-Needs: Rust (rustup), bun, Xcode command line tools, git ≥ 2.48, and FiraCode Nerd Font
-Mono in `~/Library/Fonts` (the build bundles four of its weights into the app; `ORCH_FONT_DIR`
-points elsewhere). `gh` (logged in) for PRs and CI. The app is ad-hoc signed, not notarized: it is
-built on this Mac, so Gatekeeper does not quarantine it.
+Needs: Rust (rustup), bun, Xcode 26+ (full Xcode, for `actool`, which compiles the app icon) on
+macOS 26+, git ≥ 2.48, and FiraCode Nerd Font Mono in `~/Library/Fonts` (the build bundles four of
+its weights into the app; `ORCH_FONT_DIR` points elsewhere). `gh` (logged in) for PRs and CI.
+The app is ad-hoc signed, not notarized: it is built on this Mac, so Gatekeeper does not quarantine it.
 
 ## Updates
 
 Every commit that lands on `main` with green CI becomes a build. The `app` job in
-`.github/workflows/ci.yml` (macOS runner, about 15 to 25 minutes) runs `scripts/app.sh build`
+`.github/workflows/ci.yml` (`macos-26` runner, about 15 to 25 minutes) runs `scripts/app.sh build`
 with `ORCH_VERSION=0.1.<run number>`, packs `Orchestrator_0.1.<n>_aarch64.app.tar.gz`, signs it
 (`scripts/app.sh package`), publishes the GitHub release `v0.1.<n>` and keeps the 10 newest. PR
 runs never build it. The bundle is ad-hoc code signed, not notarized.
