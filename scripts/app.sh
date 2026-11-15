@@ -57,6 +57,7 @@ icon() {
   rm -rf "$out"
   mkdir -p "$out"
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/orch-icon.XXXXXX")
+  trap 'rm -rf "$tmp"' EXIT
   mkdir "$tmp/out"
   # The .icon is copied as Icon.icon so the icon name is Icon (CFBundleIconName in Info.plist).
   if cp -R "$src" "$tmp/Icon.icon" &&
@@ -65,20 +66,18 @@ icon() {
       --include-all-app-icons --enable-on-demand-resources NO --development-region en \
       --target-device mac --minimum-deployment-target 26.0 --platform macosx \
       >"$tmp/actool.log" 2>&1 &&
-    [ -f "$tmp/out/Assets.car" ]; then
+    [ -s "$tmp/out/Assets.car" ]; then
     cp "$tmp/out/Assets.car" "$out/Assets.car"
-    rm -rf "$tmp"
   else
-    cat "$tmp/actool.log" 2>/dev/null || true
+    cat "$tmp/actool.log" 2>/dev/null >&2 || true
     echo "icon compile failed: needs Xcode 26+ on macOS 26+ (see crates/orch-app/icons/README.md)" >&2
-    rm -rf "$tmp"
     exit 1
   fi
 }
 
 # The bundle must carry the compiled icon and name it, or the Dock shows the classic one.
 check_icon() {
-  [ -f "$APP/Contents/Resources/Assets.car" ] ||
+  [ -s "$APP/Contents/Resources/Assets.car" ] ||
     { echo "$APP has no Contents/Resources/Assets.car" >&2; exit 1; }
   name=$(plutil -extract CFBundleIconName raw "$APP/Contents/Info.plist" 2>/dev/null || true)
   [ "$name" = "Icon" ] ||

@@ -14,10 +14,10 @@ make install
 `Orchestrator.app` to `~/Applications` (refused while the app runs: quit it with ⌘Q first).
 `make app` only builds (`target/release/bundle/macos/Orchestrator.app`).
 
-Needs: Rust (rustup), bun, Xcode 26+ (full Xcode, for `actool`, which compiles the app icon) on macOS 26+, git ≥ 2.48, and FiraCode Nerd Font
-Mono in `~/Library/Fonts` (the build bundles four of its weights into the app; `ORCH_FONT_DIR`
-points elsewhere). `gh` (logged in) for PRs and CI. The app is ad-hoc signed, not notarized: it is
-built on this Mac, so Gatekeeper does not quarantine it.
+Needs: Rust (rustup), bun, Xcode 26+ (full Xcode, for `actool`, which compiles the app icon) on
+macOS 26+, git ≥ 2.48, and FiraCode Nerd Font Mono in `~/Library/Fonts` (the build bundles four of
+its weights into the app; `ORCH_FONT_DIR` points elsewhere). `gh` (logged in) for PRs and CI.
+The app is ad-hoc signed, not notarized: it is built on this Mac, so Gatekeeper does not quarantine it.
 
 ## Updates
 
