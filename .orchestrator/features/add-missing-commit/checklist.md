@@ -70,7 +70,7 @@ Checks (from `ui/`):
 cd ui
 bun run lint                      # biome ci .
 bun run check                     # svelte-check --tsgo --tsconfig ./jsconfig.json --fail-on-warnings
-bun run test -- TaskIssueChip     # vitest run TaskIssueChip
+bun run test -- issues-ui         # vitest run issues-ui (covers TaskIssueChip; no file is named after it)
 bun run test                      # full suite, once, before reporting
 ```
 
@@ -79,5 +79,5 @@ bun run test                      # full suite, once, before reporting
 ```sh
 git diff origin/main HEAD --stat   # only the files listed above (plus .orchestrator/ docs)
 cargo fmt --check
-cargo clippy --workspace -- -D warnings
+make clippy                        # cargo clippy --workspace --all-targets --locked -- -D warnings, as CI runs it
 ```

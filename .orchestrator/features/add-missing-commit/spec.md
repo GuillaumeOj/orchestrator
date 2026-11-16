@@ -40,8 +40,9 @@ Why each one was missed:
 3. **`44143ed7`** was committed on front-1 after the T-420 head that was merged (`7f3a040c`,
    rebased to `818a2412`). Only its comment changed, and front-1 was never merged again.
 
-Main's tree equals `36cb78a1`, the parent of every commit above, so each one applies to
-`main` without conflict.
+Main's tree equals `36cb78a1`, the parent of commits 1 and 2 (commit 3's parent is the
+pre-rebase `7f3a040c`, whose tree differs from `main` in many files, but the patch is one
+comment line that `main` has unchanged), so each one applies to `main` without conflict.
 
 ## What changes
 - Port the three commits, in the order above, onto the integration branch once it is
@@ -50,13 +51,13 @@ Main's tree equals `36cb78a1`, the parent of every commit above, so each one app
 
 ## Acceptance
 - `git diff main <PR head>` equals the union of the three patches above.
-- `cargo fmt --check` and `cargo clippy --workspace -- -D warnings` are clean.
+- `cargo fmt --check` and `make clippy` (`--workspace --all-targets`) are clean.
 - `cargo test -p orch-store` and `cargo test -p agent-runtime` pass, in particular
   `migrations` (the stale-copy check), `pr_issue_tests` and `feature_prs_tests`. The
   pty/socket/FSEvent tests the local sandbox can't run are named in the report, and CI
   judges them.
-- UI: `biome check` and `svelte-check` are clean, and the vitest suite for `TaskIssueChip`
-  passes.
+- UI: `biome check` and `svelte-check` are clean, and the vitest suite that covers `TaskIssueChip`
+  (`ui/test/issues-ui.test.js`) passes.
 - The PR description lists each recovered commit and why it was missed.
 
 ## Out of scope
