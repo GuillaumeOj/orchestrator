@@ -35,6 +35,19 @@ pub fn git_bytes(dir: &Path, args: &[&str]) -> Result<Vec<u8>> {
     Ok(out.stdout)
 }
 
+/// Like [`git`], the raw output (the caller reads the exit status: `merge-tree`'s 1 = conflicts).
+pub fn git_output(dir: &Path, args: &[&str]) -> Result<Output> {
+    git_cmd(dir, args).output().with_context(|| format!("git {args:?}"))
+}
+
+/// Like [`git`], with environment variables set (`commit-tree`'s author and committer).
+pub fn git_env(dir: &Path, args: &[&str], env: &[(&str, &str)]) -> Result<String> {
+    let mut c = git_cmd(dir, args);
+    c.envs(env.iter().copied());
+    let out = c.output().with_context(|| format!("git {args:?}"))?;
+    check(dir, args, out)
+}
+
 /// Like [`git`], true/false on the exit status (for `--verify`, `merge-base --is-ancestor`…).
 pub fn git_ok(dir: &Path, args: &[&str]) -> bool {
     git_cmd(dir, args).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success())
