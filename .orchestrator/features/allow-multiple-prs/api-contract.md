@@ -53,7 +53,7 @@ Ctl / `orchd`: `launch … --issue <ref> (repeat) --pr-mode <m>`, `feature prs <
 
 ## 5. Timeline events
 
-Existing PR events gain `issue` (`null` in single mode): `pr.opened {number, url, issue}`, `pr.status {…, issue}`, `pr.pushed {number, commits, force, issue}`, `pr.merged {number, issue}`, `pr.closed {number, issue}`.
+Existing PR events gain `issue` in per_issue mode (the key is **absent** in single mode, so their JSON stays as today): `pr.opened {number, url, issue}`, `pr.status {…, issue}`, `pr.pushed {number, commits, force, issue}`, `pr.merged {number, issue}`, `pr.closed {number, issue}`.
 New:
 
 | kind | detail |
