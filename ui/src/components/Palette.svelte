@@ -100,17 +100,30 @@
   }
   li {
     display: flex;
-    align-items: center;
+    /* Baseline: a single line stays level with its hint; a wrapped row keeps
+       the hint on the first line. */
+    align-items: baseline;
     gap: var(--space-sm);
-    height: var(--size-row);
-    padding: 0 var(--space-sm);
+    min-height: var(--size-row);
+    padding: var(--space-xs) var(--space-sm);
     border-radius: var(--radius-sm);
+  }
+  li > :global(.kbd) {
+    flex-shrink: 0;
   }
   li.on {
     background: var(--color-surface-selected);
   }
+  /* The label and the muted parts share the row: each starts at its natural
+     width and shrinks (wraps) in proportion, so a long path can't squeeze the
+     label to nothing nor push the row wider than the palette. */
   .label {
-    flex: 1;
+    flex: 1 1 auto;
+  }
+  .label,
+  li > .muted {
+    min-width: 0;
+    overflow-wrap: anywhere;
   }
   li.off .label {
     color: var(--color-text-disabled);
