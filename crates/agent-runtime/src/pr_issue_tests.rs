@@ -249,7 +249,10 @@ fn open_both(fx: &Fx) {
     let rt = &fx.rt;
     ok(rt, LEAD, "request_pr", json!({"issue": "#1", "title": "One", "body": "First."}));
     ok(rt, LEAD, "request_pr", json!({"issue": "2", "title": "Two"}));
+    // One after the other: each approval opens its PR on its own thread, and
+    // the hub numbers them in the order they arrive.
     approve(rt, "#1");
+    wait("PR 1 open", || run(fx).prs.iter().any(|p| p.issue == "#1"));
     approve(rt, "#2");
     wait("both PRs open and checked", || {
         let r = run(fx);
@@ -293,7 +296,10 @@ fn two_issues_get_their_own_prs_updates_and_the_run_ends_when_both_merge() {
     assert_eq!((view[0]["state"].clone(), view[0]["gate"].clone()), (json!("pending"), json!(g1.id)));
 
     // Approved: two PRs from the issue branches, each with only its work.
+    // One after the other: each approval opens its PR on its own thread, and
+    // the hub numbers them in the order they arrive.
     approve(rt, "#1");
+    wait("PR 1 open", || run(&fx).prs.iter().any(|p| p.issue == "#1"));
     approve(rt, "#2");
     wait("both PRs open and checked", || {
         let r = run(&fx);
