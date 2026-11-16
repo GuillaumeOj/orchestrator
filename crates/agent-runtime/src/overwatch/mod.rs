@@ -18,6 +18,7 @@ pub mod rules;
 pub mod session;
 pub mod stuck;
 pub mod tools;
+pub mod trust;
 pub mod undo;
 
 #[cfg(test)]
@@ -128,6 +129,8 @@ pub mod why {
     pub const STOPPED: &str = "stopped unexpectedly";
     pub const LOGIN: &str = "login expired";
     pub const TOO_SLOW: &str = "too slow, 2 turns over 10 min";
+    /// Its trust dialog outlived the auto-answer (`paused`).
+    pub const TRUST: &str = "waiting for folder trust";
 }
 
 /// `now.overwatch`.

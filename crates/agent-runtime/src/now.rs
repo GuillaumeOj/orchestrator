@@ -522,7 +522,7 @@ impl Runtime {
         // an agent that is still there (`now_snapshot` keeps them 10 min);
         // older ones (P4.0's decided rows, up to KEEP_FINISHED) never show.
         let recent = now.saturating_sub(decision::RECENT_MS);
-        let (agents, items): (_, Vec<_>) = self.store.read(|s| {
+        let (agents, items, ow_trust): (_, Vec<_>, _) = self.store.read(|s| {
             let delivering = |i: &orch_store::InboxItem| {
                 i.status == orch_store::InboxStatus::Sent
                     && i.agent_id
@@ -541,18 +541,28 @@ impl Runtime {
             (
                 agents.map(|(k, v)| (k.clone(), v.clone())).collect::<BTreeMap<_, _>>(),
                 s.inbox.iter().filter(keep).cloned().collect(),
+                // Its trust card, once its own answer failed (fix-overwatch-trust-folder §3.4).
+                s.agents.get(crate::overwatch::ID).filter(|a| a.is_overwatch() && a.trust_dialog).cloned(),
             )
         });
+        let card_agents = match ow_trust {
+            Some(ow) => {
+                let mut all = agents.clone();
+                all.insert(ow.id.clone(), ow);
+                std::borrow::Cow::Owned(all)
+            }
+            None => std::borrow::Cow::Borrowed(&agents),
+        };
         let (queue, ask, gov) = self.governor_facts();
         // The PTY tail of a synthesized card (trust dialog, a prompt in the pane, an error).
-        let tails: BTreeMap<String, String> = agents
+        let tails: BTreeMap<String, String> = card_agents
             .values()
             .filter(|a| a.trust_dialog || matches!(a.tracker.state, AgentState::WaitingForYou | AgentState::Error))
             .filter_map(|a| Some((a.id.clone(), self.live(&a.id)?.pty.output.tail_text())))
             .collect();
         let mut decisions = decision::build(&decision::Ctx {
             items: &items,
-            agents: &agents,
+            agents: &card_agents,
             tails: &tails,
             ask: ask.as_ref(),
             runs: &st.team.runs,

@@ -284,6 +284,17 @@ ignored · `SessionEnd` ignored (the process exit and the core's intent decide).
   kept while it was away, the `now` snapshot and open decisions, the week, projects and running
   features with their docs, policy files; ≤ 32 000 chars). The next day's first wake kills the old
   session (never mid-turn) and starts a new one; usage stays on the same id.
+- **Folder trust** (`overwatch/trust.rs`, fix-overwatch-trust-folder): the day folder is new every
+  day, so Claude Code shows its trust dialog at the day's first spawn. When the record
+  `is_overwatch()` and its worktree, canonicalised, is `<root>/overwatch/<YYYY-MM-DD>`, the pump
+  answers it itself, keys straight to the PTY (not a turn): Enter only once `❯` is on "Yes, I trust
+  this folder" in the latest render, else Up and up to 1 s for the re-render, at most 3 arrows;
+  never Esc; an unknown layout gets no key. During the 10 s window the record's `trust_dialog`
+  stays down (no Inbox card, no `trust-overwatch` decision, no notification) and delivery waits on
+  the PTY flag. Events `overwatch.trust_answered {dir}`, `overwatch.trust_failed {dir, why}`.
+  **Fallback** (window over or gave up): the flag goes up, the `trust-overwatch` card ("Claude Code
+  asks to trust today's Overwatch folder") and `paused` / `waiting for folder trust`, all cleared
+  by SessionStart. Every other agent keeps J0: the app never answers their dialog.
 - **Events** (`overwatch_enqueue`, api-contract §2.1): ids `ev-<n>`, the counter kept in the day
   folder (`events.seq`) so ids never repeat within a day across restarts. Producers: `add_item`
   (deciding permission and question: blocking; gates, user-only permissions, budget, startup:
@@ -309,7 +320,8 @@ ignored · `SessionEnd` ignored (the process exit and the core's intent decide).
   `overwatch_deciding(item)` says `stale` / `not_allowed` / `too_late`; `decide_as(…, "overwatch")`
   decides as it.
 - **Status** (`now.overwatch {status, events, why, since_ms, agent, has_session}`, topic
-  `overwatch`): off · asleep · waking · working · paused (`Pause all`, `limit reached`) · down
+  `overwatch`): off · asleep · waking · working · paused (`Pause all`, `limit reached`, `waiting for folder
+  trust`) · down
   (`could not start`, `stopped unexpectedly`, `login expired`, `limit reached`, `too slow, 2 turns
   over 10 min`). `down` raises no card; `overwatch_restart` starts a fresh session. Settings
   `overwatch` `{enabled, model, batch_secs 30, permission_secs 60, idle_secs 120, rule_threshold 3}`

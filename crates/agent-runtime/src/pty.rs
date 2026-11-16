@@ -21,7 +21,8 @@ pub const DETACHED_KEEP: usize = 256 * 1024;
 /// Plain-text tail kept for screen checks (trust dialog).
 const TAIL_TEXT: usize = 8 * 1024;
 
-/// The CLI's workspace trust dialog (J0): the app never answers it.
+/// The CLI's workspace trust dialog (J0): the app never answers it, but in
+/// the Overwatch's own day folder ([`crate::overwatch::trust`]).
 pub const TRUST_DIALOG_TEXT: &str = "Quick safety check";
 
 #[derive(Default)]

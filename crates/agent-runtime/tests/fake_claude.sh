@@ -21,6 +21,41 @@ if [ -f .fake-no-session-start ]; then
   echo "FAKE CLAUDE: a dialog nobody answers"
   while true; do sleep 1; done
 fi
+# FAKE_TRUST (env, off by default): Claude Code's workspace trust dialog
+# before SessionStart, "No, exit" selected. Up selects "Yes", Enter on "Yes"
+# starts, Enter on "No" exits; any other key is shown as "TRUST KEY <hex>".
+# FAKE_TRUST=stuck: the dialog takes no key at all, until the file
+# .fake-trust-accept appears in the worktree (the user answered).
+if [ -n "$FAKE_TRUST" ]; then
+  sel=2
+  draw() {
+    a="  "; b="  "
+    if [ "$sel" = 1 ]; then a="\342\235\257 "; else b="\342\235\257 "; fi
+    printf "\033[2J\033[H Quick safety check: Is this a project you created or one you trust?\r\n\r\n ${a}1. Yes, I trust this folder\r\n ${b}2. No, exit\r\n\r\n Enter to confirm\r\n"
+  }
+  draw
+  stty -echo -icanon min 0 time 2
+  key() { dd bs=1 count=1 2>/dev/null | od -An -tx1 | tr -d ' \n'; }
+  while :; do
+    k=$(key)
+    if [ "$FAKE_TRUST" = stuck ]; then
+      [ -f .fake-trust-accept ] && break
+      continue
+    fi
+    case "$k" in
+      "") ;;
+      1b)
+        k2=$(key); k3=$(key)
+        if [ "$k2$k3" = 5b41 ]; then sel=1; draw; else echo "TRUST KEY 1b$k2$k3"; fi ;;
+      0a|0d)
+        [ "$sel" = 1 ] && break
+        echo "FAKE CLAUDE: not trusted, exit"; stty sane; exit 1 ;;
+      *) echo "TRUST KEY $k" ;;
+    esac
+  done
+  stty sane
+  printf '\033[2J\033[H'
+fi
 ROOT=$(dirname "$ORCH_SOCK")
 HOOK="$ROOT/bin/orch-hook"
 STATUS="$ROOT/bin/orch-status"
