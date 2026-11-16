@@ -350,6 +350,7 @@ impl Runtime {
                         base: Some(f.base.clone()).filter(|b| !b.is_empty()),
                         off_hours: false,
                         intake: Some(link),
+                        ..Default::default()
                     })
                     .map(|run| ("run", run.id)),
                 None => Err(anyhow::anyhow!("no team for {}", f.slug)),
