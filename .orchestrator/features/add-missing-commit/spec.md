@@ -12,9 +12,10 @@ nothing else, in one follow-up PR.
   `orch/allow-multiple-prs/{back-1,front-1,ui-1,ux-1,integration}`, then each branch's tree
   was diffed against `main` (`git diff main <branch>`), because the rebase rewrote the SHAs.
 - `ui-1` and `ux-1` have nothing missing: their tips are `36cb78a1`.
-- `front-1` lists 40 commits that are not cherry-equivalent to `main`. These are the copies
-  from before `rebase_base`, and `main` holds all of them in rebased form. Its tree differs
-  from `main` by one line only, which is the commit below. So all of those 40 are dropped.
+- `front-1` lists 41 commits that are not cherry-equivalent to `main`. One of them is
+  `44143ed7` (below). The other 40 are the copies from before `rebase_base`, and `main` holds
+  all of them in rebased form: front-1's tree differs from `main` by `44143ed7`'s one line
+  only. Those 40 are dropped.
 - None of the commits involved carries an `Orch-Task` or `Orch-Issue` trailer. The feature
   ran in one-PR mode, and the merge commits were rewritten by the rebase, so there are no
   trailers to keep.
@@ -40,8 +41,9 @@ Why each one was missed:
 3. **`44143ed7`** was committed on front-1 after the T-420 head that was merged (`7f3a040c`,
    rebased to `818a2412`). Only its comment changed, and front-1 was never merged again.
 
-Main's tree equals `36cb78a1`, the parent of every commit above, so each one applies to
-`main` without conflict.
+Main's tree equals `36cb78a1`. Commits 1 and 2 are children of `36cb78a1`, so they apply to
+`main` as they are. Commit 3's parent is the pre-rebase `7f3a040c`, but its patch is a single
+comment line that `main` has unchanged, so it applies cleanly too.
 
 ## What changes
 - Port the three commits, in the order above, onto the integration branch once it is
@@ -50,13 +52,14 @@ Main's tree equals `36cb78a1`, the parent of every commit above, so each one app
 
 ## Acceptance
 - `git diff main <PR head>` equals the union of the three patches above.
-- `cargo fmt --check` and `cargo clippy --workspace -- -D warnings` are clean.
+- `cargo fmt --check` and `make clippy` (CI's `--all-targets --locked -D warnings`) are clean.
 - `cargo test -p orch-store` and `cargo test -p agent-runtime` pass, in particular
   `migrations` (the stale-copy check), `pr_issue_tests` and `feature_prs_tests`. The
   pty/socket/FSEvent tests the local sandbox can't run are named in the report, and CI
   judges them.
-- UI: `biome check` and `svelte-check` are clean, and the vitest suite for `TaskIssueChip`
-  passes.
+- UI: `biome check` and `svelte-check` are clean, and `ui/test/issues-ui.test.js` (which
+  covers `TaskIssueChip`) passes.
+- Commands per commit: `checklist.md`.
 - The PR description lists each recovered commit and why it was missed.
 
 ## Out of scope
