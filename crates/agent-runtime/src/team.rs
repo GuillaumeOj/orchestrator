@@ -278,11 +278,31 @@ impl Runtime {
 
     /// Moves a run to `to` (checked against §6.2) and logs it on its timeline.
     pub fn set_run_state(&self, run_id: &str, to: RunState, why: &str) -> Result<TeamRun> {
+        self.move_run(run_id, to, why, true)
+    }
+
+    /// A `per_issue` run's state is derived from its PRs (§3.5), not
+    /// stepped through §6.2's flow: any move between its PR states, or to
+    /// done, is allowed (a pause still holds, except for done).
+    pub(crate) fn derive_run_state(&self, run_id: &str, to: RunState, why: &str) -> Result<TeamRun> {
+        let run = self.db.run(run_id)?.ok_or_else(|| anyhow!("no team run {run_id}"))?;
+        let pr_state = |s: RunState| matches!(s, RunState::Integrating | RunState::PrGate | RunState::PrOpen);
+        if !pr_state(effective(&run)) || !(pr_state(to) || to == RunState::Done) {
+            bail!("a {} run can't go to {to}", effective(&run));
+        }
+        // A merge is not held back by a pause: done at once.
+        if to == RunState::Done {
+            return self.move_run(run_id, to, why, false);
+        }
+        self.advance_inner(run_id, to, why, false)
+    }
+
+    fn move_run(&self, run_id: &str, to: RunState, why: &str, checked: bool) -> Result<TeamRun> {
         let mut run = self.db.run(run_id)?.ok_or_else(|| anyhow!("no team run {run_id}"))?;
         if run.status == to {
             return Ok(run);
         }
-        if !run.status.can_go(to) {
+        if checked && !run.status.can_go(to) {
             bail!("a {} run can't go to {}", run.status, to);
         }
         let from = run.status;
@@ -305,15 +325,19 @@ impl Runtime {
     /// opened). On a paused or deferred run it becomes the state the run
     /// resumes into, so the pause holds (its agents stay paused).
     pub(crate) fn advance_run(&self, run_id: &str, to: RunState, why: &str) -> Result<TeamRun> {
+        self.advance_inner(run_id, to, why, true)
+    }
+
+    fn advance_inner(&self, run_id: &str, to: RunState, why: &str, checked: bool) -> Result<TeamRun> {
         let mut run = self.db.run(run_id)?.ok_or_else(|| anyhow!("no team run {run_id}"))?;
         if !run.status.held() || to.held() || to == RunState::Failed {
-            return self.set_run_state(run_id, to, why);
+            return self.move_run(run_id, to, why, checked);
         }
         let from = effective(&run);
         if from == to {
             return Ok(run);
         }
-        if !from.can_go(to) {
+        if checked && !from.can_go(to) {
             bail!("a {from} run can't go to {to}");
         }
         run.resume_status = Some(to);
@@ -400,7 +424,8 @@ impl Runtime {
         // A feature launched again keeps its issues unless the launch names
         // them, and its mode unless the launch gives one.
         let feature = if set_prs {
-            Feature { issues: links, pr_mode: spec.pr_mode.unwrap_or(feature.pr_mode), ..feature }
+            let issues = if issues.is_empty() { feature.issues.clone() } else { links };
+            Feature { issues, pr_mode: spec.pr_mode.unwrap_or(feature.pr_mode), ..feature }
         } else {
             feature
         };
@@ -1952,11 +1977,29 @@ impl Runtime {
                             bail!("task {} is on {}, not {branch}", t.handle(), t.branch.unwrap_or_default());
                         }
                         let handle = t.handle();
-                        Some(t.reported_sha.ok_or_else(|| {
+                        let sha = t.reported_sha.clone().ok_or_else(|| {
                             anyhow!(
                                 "task {handle} has not been reported yet: merge it once its owner calls report_done"
                             )
-                        })?)
+                        })?;
+                        // An earlier task of the branch, not merged yet, would come in
+                        // with this one: its work would be attributed to this task.
+                        let earlier = self.db.tasks(None, None, Some(&cx.run.id))?.into_iter().find(|o| {
+                            o.id != t.id
+                                && o.branch.as_deref() == Some(branch)
+                                && o.reported_sha.as_deref().is_some_and(|s| {
+                                    s != sha
+                                        && orch_git::cleanup::is_merged(&rec.worktree, s, &sha)
+                                        && !orch_git::cleanup::is_merged(&rec.worktree, s, "HEAD")
+                                })
+                        });
+                        if let Some(o) = earlier {
+                            bail!(
+                                "merge {} first: its reported work is under {handle}'s and is not merged yet",
+                                o.handle()
+                            );
+                        }
+                        Some(sha)
                     }
                 };
                 let message = match task_id {
@@ -2144,8 +2187,13 @@ impl Runtime {
     }
 
     /// A team lead's PR gate was declined.
-    pub(crate) fn pr_declined(&self, agent: &str) {
-        if let Some(seat) = self.store.read(|s| s.agents.get(agent).and_then(|a| a.team.clone())) {
+    /// In `per_issue` mode the run follows its other PRs and gates.
+    pub(crate) fn pr_declined(&self, agent: &str, gate: u64) {
+        let Some(seat) = self.store.read(|s| s.agents.get(agent).and_then(|a| a.team.clone())) else { return };
+        let per_issue = self.run_ctx(&seat.run_id).is_ok_and(|cx| cx.feature.pr_mode == orch_store::PrMode::PerIssue);
+        if per_issue {
+            let _ = self.reevaluate_run_prs(&seat.run_id, Some(gate));
+        } else {
             let _ = self.advance_run(&seat.run_id, RunState::Integrating, "pull request declined");
         }
     }

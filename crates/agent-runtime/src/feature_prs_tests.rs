@@ -191,12 +191,14 @@ fn request_pr_in_single_mode_closes_the_issues_and_locks_the_mode() {
 }
 
 #[test]
-fn request_pr_per_issue_is_refused_until_per_issue_prs_exist() {
+fn request_pr_per_issue_needs_an_issue_of_the_feature() {
     let (_d, rt, _rd, _repo, pid) = setup();
     let run = approved(&rt, &pid, &["#1", "#2"], PrMode::PerIssue);
     rt.set_run_state(&run.id, RunState::Integrating, "test").unwrap();
-    let (err, text) = call(&rt, LEAD, "request_pr", json!({"title": "T", "issue": "#1"}));
-    assert!(err && text.contains("cannot open per-issue PRs yet"), "{text}");
+    let (err, text) = call(&rt, LEAD, "request_pr", json!({"title": "T"}));
+    assert!(err && text.contains("`issue` is required") && text.contains("#1, #2"), "{text}");
+    let (err, text) = call(&rt, LEAD, "request_pr", json!({"title": "T", "issue": "#3"}));
+    assert!(err && text.contains("#3 is not an issue of this feature"), "{text}");
     assert!(rt.store.read(|s| !s.inbox.iter().any(|i| i.pending() && i.kind == "gate")));
 }
 
@@ -256,4 +258,28 @@ fn per_issue_refuses_a_task_never_reported_and_single_mode_tags_its_merge() {
     let wt = rt.store.read(|s| s.agents[LEAD].worktree.clone());
     assert!(wt.join("a.rs").is_file() && wt.join("b.rs").is_file());
     assert!(trailers(&head_message(&rt, LEAD)).contains(&format!("Orch-Task: {}", t.id)));
+}
+
+#[test]
+fn per_issue_merges_an_earlier_reported_task_of_the_branch_first() {
+    let (_d, rt, _rd, _repo, pid) = setup();
+    approved(&rt, &pid, &["#1", "#2"], PrMode::PerIssue);
+    let t1 = create(&rt, json!({"title": "API", "node": "back", "issue": "#1"}));
+    rt.team_tick();
+    report(&rt, "a.rs");
+    // A second task of the same branch, reported on top of the first.
+    let t2 = create(&rt, json!({"title": "UI", "node": "back", "issue": "#2"}));
+    write_commit(&rt, "fx-back-1", "b.rs", "b");
+    let bwt = rt.store.read(|s| s.agents["fx-back-1"].worktree.clone());
+    let mut row = rt.db.task(t2.id).unwrap().unwrap();
+    row.branch = Some("orch/fx/back-1".into());
+    row.reported_sha = Some(orch_git::git(&bwt, &["rev-parse", "HEAD"]).unwrap().trim().to_string());
+    row.status = orch_team::TaskStatus::Review;
+    rt.db.upsert_task(&row).unwrap();
+    let e = call(&rt, LEAD, "merge", json!({"branch": "orch/fx/back-1", "task": t2.id})).1;
+    assert!(e.contains(&format!("merge {} first", t1.handle())), "{e}");
+    ok(&rt, LEAD, "merge", json!({"branch": "orch/fx/back-1", "task": t1.id}));
+    ok(&rt, LEAD, "merge", json!({"branch": "orch/fx/back-1", "task": t2.id}));
+    let wt = rt.store.read(|s| s.agents[LEAD].worktree.clone());
+    assert!(wt.join("a.rs").is_file() && wt.join("b.rs").is_file());
 }

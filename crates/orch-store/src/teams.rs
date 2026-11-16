@@ -126,6 +126,39 @@ pub struct RunPr {
     /// The head last built and pushed.
     #[serde(default)]
     pub built_sha: String,
+    /// The integration head its last pushed build was made from.
+    #[serde(default)]
+    pub integration_sha: String,
+}
+
+impl RunPr {
+    /// Open, or not checked yet (just opened).
+    pub fn is_open(&self) -> bool {
+        self.pr.as_ref().is_none_or(|s| s.state == "open")
+    }
+
+    pub fn is_merged(&self) -> bool {
+        self.pr.as_ref().is_some_and(|s| s.state == "merged")
+    }
+}
+
+impl TeamRun {
+    /// The latest PR of each issue (`prs` holds a closed one replaced), in first-seen order.
+    pub fn latest_prs(&self) -> Vec<&RunPr> {
+        let mut out: Vec<&RunPr> = vec![];
+        for p in &self.prs {
+            match out.iter_mut().find(|o| o.issue == p.issue) {
+                Some(o) => *o = p,
+                None => out.push(p),
+            }
+        }
+        out
+    }
+
+    /// The latest PR of `issue`.
+    pub fn latest_pr(&self, issue: &str) -> Option<&RunPr> {
+        self.prs.iter().rev().find(|p| p.issue == issue)
+    }
 }
 
 /// A team launched on a feature (SPEC §7 TeamRun). The team graph and roles
@@ -1161,6 +1194,30 @@ impl Store {
                     |r| r.get::<_, String>(0),
                 )
                 .optional()?)
+        })?;
+        self.touch(feature.map(orch_protocol::Topic::Feature));
+        Ok(())
+    }
+
+    /// Changes a run's per-issue PRs (`prs`) in one write, nothing else of
+    /// the run: like [`Store::set_run_pr`], a check never undoes a move made
+    /// meanwhile. Raises the feature's topic.
+    pub fn update_run_prs<F>(&self, id: &str, f: F) -> Result<()>
+    where
+        F: FnOnce(&mut Vec<RunPr>) + Send + 'static,
+    {
+        let id = id.to_string();
+        let feature = self.write(move |tx| {
+            let row = tx
+                .query_row("SELECT feature_id, prs FROM team_runs WHERE id=?1", [&id], |r| {
+                    Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
+                })
+                .optional()?;
+            let Some((feature, prs)) = row else { return Ok(None) };
+            let mut prs: Vec<RunPr> = prs.map(|s| from_js(&s)).transpose()?.unwrap_or_default();
+            f(&mut prs);
+            tx.execute("UPDATE team_runs SET prs=?2 WHERE id=?1", params![id, js(&prs)])?;
+            Ok(Some(feature))
         })?;
         self.touch(feature.map(orch_protocol::Topic::Feature));
         Ok(())

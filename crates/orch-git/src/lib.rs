@@ -8,6 +8,7 @@ pub mod gh;
 pub mod git;
 pub mod project;
 pub mod repair;
+pub mod replay;
 pub mod status;
 pub mod worktree;
 
