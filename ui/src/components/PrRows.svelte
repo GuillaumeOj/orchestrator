@@ -4,19 +4,19 @@
   // (ref bold, title muted, cut first) then the state: none · pending (link to
   // the gate card) · open (PrLine's content, bare) · merged · closed. The refresh
   // and `checked` text are the card head's (one for every PR). Used by the
-  // feature pane and, compact, by the run inspector.
+  // feature pane and by the run inspector.
   import { focusCard, openUrl } from '../lib/app.svelte.js';
   import { issueOf } from '../lib/issues.js';
   import { prRowState, runOfPr } from '../lib/pr.js';
   import { tooltip } from '../lib/tooltip.js';
   import PrLine from './PrLine.svelte';
 
-  /** @type {{ run: any, feature: any, taskCounts?: Record<string, number>, compact?: boolean, onrun?: (r: any) => void }} */
-  let { run, feature, taskCounts = {}, compact = false, onrun = () => {} } = $props();
+  /** @type {{ run: any, feature: any, taskCounts?: Record<string, number>, onrun?: (r: any) => void }} */
+  let { run, feature, taskCounts = {}, onrun = () => {} } = $props();
   const rows = $derived(run?.prs_view ?? []);
 </script>
 
-<div class="rows" class:compact>
+<div class="rows">
   {#each rows as p (p.issue ?? 'feature')}
     {@const issue = issueOf(feature, p.issue)}
     {@const st = prRowState(p, taskCounts[p.issue])}
