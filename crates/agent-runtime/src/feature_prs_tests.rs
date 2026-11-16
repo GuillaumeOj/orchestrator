@@ -202,3 +202,61 @@ fn request_pr_per_issue_is_refused_until_per_issue_prs_exist() {
     assert!(err && text.contains("cannot open per-issue PRs yet"), "{text}");
     assert!(rt.store.read(|s| !s.inbox.iter().any(|i| i.pending() && i.kind == "gate")));
 }
+
+/// `back` does task `t` (one file), reports it (with its self-review).
+fn report(rt: &Runtime, file: &str) {
+    let back = "fx-back-1";
+    write_commit(rt, back, file, file);
+    ok(rt, back, "report_done", json!({"summary": "s"}));
+    ok(rt, back, "report_done", json!({"summary": "s", "review": {"fixed": [], "unfixed": []}}));
+}
+
+#[test]
+fn per_issue_merges_take_the_reported_head_with_a_task_trailer() {
+    let (_d, rt, _rd, _repo, pid) = setup();
+    approved(&rt, &pid, &["#1", "#2"], PrMode::PerIssue);
+    let t = create(&rt, json!({"title": "API", "node": "back", "issue": "#1"}));
+    rt.team_tick();
+    report(&rt, "a.rs");
+    let reported = rt.db.task(t.id).unwrap().unwrap().reported_sha.unwrap();
+    let bwt = rt.store.read(|s| s.agents["fx-back-1"].worktree.clone());
+    assert_eq!(orch_git::git(&bwt, &["rev-parse", "HEAD"]).unwrap().trim(), reported);
+    // The owner moves on before the merge.
+    write_commit(&rt, "fx-back-1", "b.rs", "b");
+    let e = call(&rt, LEAD, "merge", json!({"branch": "orch/fx/back-1"})).1;
+    assert!(e.contains("`task` is required"), "{e}");
+    let e = call(&rt, LEAD, "merge", json!({"branch": "orch/fx/issue/1", "task": t.id})).1;
+    assert!(e.contains("only branches of this feature"), "{e}");
+    ok(&rt, LEAD, "merge", json!({"branch": "orch/fx/back-1", "task": t.id}));
+    let wt = rt.store.read(|s| s.agents[LEAD].worktree.clone());
+    assert!(wt.join("a.rs").is_file() && !wt.join("b.rs").exists(), "only the reported work");
+    let msg = head_message(&rt, LEAD);
+    assert!(msg.starts_with("Merge orch/fx/back-1\n\n"), "{msg:?}");
+    assert!(trailers(&msg).lines().any(|l| l == format!("Orch-Task: {}", t.id)), "{msg:?}");
+}
+
+#[test]
+fn per_issue_refuses_a_task_never_reported_and_single_mode_tags_its_merge() {
+    let (_d, rt, _rd, _repo, pid) = setup();
+    let run = approved(&rt, &pid, &["#1", "#2"], PrMode::PerIssue);
+    let t = create(&rt, json!({"title": "API", "node": "back"}));
+    rt.team_tick();
+    write_commit(&rt, "fx-back-1", "a.rs", "a");
+    // In review with no reported head (reported before heads were recorded).
+    let mut old = rt.db.task(t.id).unwrap().unwrap();
+    old.status = orch_team::TaskStatus::Review;
+    rt.db.upsert_task(&old).unwrap();
+    let e = call(&rt, LEAD, "merge", json!({"branch": "orch/fx/back-1", "task": t.id})).1;
+    assert!(e.contains("has not been reported yet"), "{e}");
+    old.status = orch_team::TaskStatus::InProgress;
+    rt.db.upsert_task(&old).unwrap();
+    // Single mode: the tip, with the trailer.
+    let mut f = rt.db.feature(&run.feature_id).unwrap().unwrap();
+    f.pr_mode = PrMode::Single;
+    rt.db.upsert_feature(&f).unwrap();
+    report(&rt, "b.rs");
+    ok(&rt, LEAD, "merge", json!({"branch": "orch/fx/back-1", "task": t.id}));
+    let wt = rt.store.read(|s| s.agents[LEAD].worktree.clone());
+    assert!(wt.join("a.rs").is_file() && wt.join("b.rs").is_file());
+    assert!(trailers(&head_message(&rt, LEAD)).contains(&format!("Orch-Task: {}", t.id)));
+}
