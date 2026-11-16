@@ -38,6 +38,10 @@ fn the_parser_reads_the_latest_render() {
         next_key("Quick safety check\n   ❯   1.  Yes, I trust this folder  \n    2. No, exit\n"),
         Some(Key::Enter)
     );
+    // An escape stripped inside the header (detected squashed, pty.rs): still read.
+    let split =
+        crate::pty::strip_ansi("Quick \x1b[1msafety\x1b[0m check\n  1. Yes, I trust this folder\n❯ 2. No, exit\n");
+    assert_eq!(next_key(&split), Some(Key::Up), "{split:?}");
 }
 
 #[test]

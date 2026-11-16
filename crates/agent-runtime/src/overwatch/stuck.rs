@@ -177,7 +177,10 @@ impl Runtime {
             .in_flight
             .as_ref()
             .is_some_and(|t| now.saturating_sub(t.started_at_ms) > ceiling + NO_STOP_GRACE_MS);
-        if !over {
+        // Waiting for the user to trust its folder (fix-overwatch-trust-folder
+        // §3.4): the turn has not started, its clock restarts at TurnStarted.
+        let trust = self.store.read(|s| s.agents.get(ID).is_some_and(|a| a.is_overwatch() && a.trust_dialog));
+        if !over || trust {
             return;
         }
         self.event(ID, "overwatch.no_stop", json!({"after_ms": ceiling}));

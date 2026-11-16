@@ -51,14 +51,16 @@ impl Key {
 /// dialog, a partial render, no or several selections, an unknown layout):
 /// no key is sent then.
 pub fn next_key(tail: &str) -> Option<Key> {
+    // Squashed per line, like the detection (pty.rs): a stripped escape
+    // leaves a run of spaces, even inside the header.
+    let tail = tail.lines().map(|l| l.split_whitespace().collect::<Vec<_>>().join(" ")).collect::<Vec<_>>().join("\n");
     let render = &tail[tail.rfind(TRUST_DIALOG_TEXT)?..];
     let mut yes = None;
     let mut selected = vec![];
     for line in render.lines() {
-        let line = line.split_whitespace().collect::<Vec<_>>().join(" ");
         let (marked, rest) = match line.strip_prefix(SELECTED) {
             Some(r) => (true, r.trim_start()),
-            None => (false, line.as_str()),
+            None => (false, line),
         };
         let option = rest.split_once(". ").and_then(|(n, text)| Some((n.parse::<u32>().ok()?, text)));
         let Some((n, text)) = option else {
@@ -93,7 +95,10 @@ pub fn auto_trusted(root: &Path, worktree: &Path) -> bool {
         return false;
     };
     dir.parent() == Some(base.as_path())
-        && dir.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.parse::<jiff::civil::Date>().is_ok())
+        && dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.parse::<jiff::civil::Date>().is_ok_and(|d| d.to_string() == n))
 }
 
 /// What the pump does on this tick.
@@ -125,9 +130,14 @@ impl Answer {
         Answer { detected_ms, eligible, arrows: 0, sent: None, answered: false, failed: false }
     }
 
+    /// Settled: every later step is [`Step::Raise`], whatever the screen.
+    fn raised(&self) -> bool {
+        !self.eligible || self.failed
+    }
+
     /// `tail` and `total` are the PTY's plain-text tail and byte count now.
     pub fn step(&mut self, now: u64, tail: &str, total: u64) -> Step {
-        if !self.eligible || self.failed {
+        if self.raised() {
             return Step::Raise;
         }
         let why = if now.saturating_sub(self.detected_ms) >= WINDOW_MS {
@@ -168,8 +178,12 @@ impl Runtime {
     /// or at once when it is not auto-answered. Delivery stays blocked on
     /// the PTY flag meanwhile.
     pub(crate) fn overwatch_trust(&self, l: &Live, now: u64) -> bool {
-        let dir = self.store.read(|s| s.agents.get(ID).filter(|a| a.is_overwatch()).map(|a| a.worktree.clone()));
         let mut answer = l.trust.lock().unwrap_or_else(|e| e.into_inner());
+        // Settled (often for long, in the fallback): no store read, no tail copy.
+        if answer.as_ref().is_some_and(Answer::raised) {
+            return true;
+        }
+        let dir = self.store.read(|s| s.agents.get(ID).filter(|a| a.is_overwatch()).map(|a| a.worktree.clone()));
         let answer = answer.get_or_insert_with(|| {
             Answer::new(now, dir.as_deref().is_some_and(|d| auto_trusted(&self.cfg.paths.root, d)))
         });
