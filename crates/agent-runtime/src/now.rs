@@ -795,6 +795,7 @@ impl Runtime {
             }
         }
         let mut c = TeamCache { changes: Some(changes), ..Default::default() };
+        let gates = self.pr_gates(true);
         for run in runs {
             let feature = self.db.feature(&run.feature_id).ok().flatten();
             let phase_since_ms = self
@@ -841,7 +842,7 @@ impl Runtime {
             };
             let prs_view = feature
                 .as_ref()
-                .map(|f| crate::issues::prs_view(&run, f, &self.run_pr_gates(&run.id)))
+                .map(|f| crate::issues::prs_view(&run, f, gates.get(&run.id).map_or(&[], Vec::as_slice)))
                 .unwrap_or_default();
             c.runs.push(RunFacts {
                 held_in,

@@ -3,6 +3,7 @@ use orch_store::{PrMode, PrStatus, RunPr, Task};
 use orch_team::RunState;
 use serde_json::{Value, json};
 
+use crate::issues::tests::{code, trailers};
 use crate::runtime::Runtime;
 use crate::team::LaunchSpec;
 use crate::team::tests::{call, ok, queued, setup, write_commit};
@@ -23,18 +24,7 @@ fn spec(pid: &str, issues: &[&str], mode: PrMode) -> LaunchSpec {
 
 /// A launched run whose spec is approved.
 fn approved(rt: &Runtime, pid: &str, issues: &[&str], mode: PrMode) -> orch_store::TeamRun {
-    let run = rt.launch(&spec(pid, issues, mode)).unwrap();
-    write_commit(rt, LEAD, ".orchestrator/features/fx/spec.md", "# Fix X\n");
-    ok(rt, LEAD, "request_spec_approval", json!({"summary": "s"}));
-    let gate = rt.store.read(|s| s.inbox.iter().find(|i| i.pending() && i.kind == "gate").cloned().unwrap());
-    rt.decide(gate.id, InboxDecision::Approve, None, None).unwrap();
-    run
-}
-
-fn code(e: anyhow::Error) -> String {
-    serde_json::from_str::<Value>(&e.to_string())
-        .map(|v| v["code"].as_str().unwrap_or("").to_string())
-        .unwrap_or_else(|_| e.to_string())
+    crate::team::tests::approved_spec(rt, &spec(pid, issues, mode))
 }
 
 fn create(rt: &Runtime, args: Value) -> Task {
@@ -125,19 +115,6 @@ fn issue_suggest_reads_the_intake_cache() {
 fn head_message(rt: &Runtime, agent: &str) -> String {
     let wt = rt.store.read(|s| s.agents[agent].worktree.clone());
     orch_git::git(&wt, &["log", "-1", "--format=%B"]).unwrap()
-}
-
-/// `git interpret-trailers --parse` of a message.
-fn trailers(msg: &str) -> String {
-    use std::io::Write;
-    let mut c = std::process::Command::new("git")
-        .args(["interpret-trailers", "--parse"])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .spawn()
-        .unwrap();
-    c.stdin.take().unwrap().write_all(msg.as_bytes()).unwrap();
-    String::from_utf8(c.wait_with_output().unwrap().stdout).unwrap()
 }
 
 #[test]

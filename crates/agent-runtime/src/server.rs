@@ -288,7 +288,7 @@ pub fn ctl(rt: &Runtime, req: CtlRequest) -> CtlReply {
         CtlRequest::Fetch { project_id } => {
             ok_or(rt.fetch_project(&project_id, &rt.cfg.fetch, rt.cfg.conditions.as_ref()).map(|o| json!(o)))
         }
-        CtlRequest::PrRefresh { feature } => ok_or(rt.pr_refresh(&feature).map(|r| json!(r))),
+        CtlRequest::PrRefresh { feature } => ok_or(rt.pr_refresh(&feature).map(|r| rt.run_value_of(&r))),
         CtlRequest::Diff { worktree, against } => {
             ok_or(rt.diff(&PathBuf::from(worktree), against.as_deref()).map(|d| json!(d)))
         }
@@ -341,7 +341,7 @@ pub fn ctl(rt: &Runtime, req: CtlRequest) -> CtlReply {
                     issues,
                     pr_mode,
                 })
-                .map(|r| json!(r))
+                .map(|r| rt.run_value_of(&r))
             }))
         }
         CtlRequest::FeaturePrs { feature, issues, pr_mode } => ok_or(

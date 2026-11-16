@@ -15,7 +15,7 @@ use are protected ([agent-runtime `projects`](../agent-runtime/README.md)).
 | `diff` | `diff(worktree, against, max_bytes) -> Diff`: from the merge base to the working tree, untracked included, per-file status and counts, patch (bounded) | FR-107 |
 | `gh` | `prs(repo)` with CI rollup, `runs(repo, branch)`, `available`; one PR: `pr_view`, `summarize_jobs` (CI jobs, `done/total`, the dot), `position`, `pr_lookup`, `fetch_branches`, `commits_since`; **gated** `push`, `push_rev`, `push_with_lease` (never a bare `--force`), `create_pr` | FR-106, ADR-009 |
 | `repair` | `check_links(wt)`, `plan_relocation(old, new, rows)`, `repair(repo, worktrees)` (targeted `git worktree repair` + re-lock) | J10, ADR-003 |
-| `commit` | `commit_in_worktree(wt, CommitRequest, gitconfig) -> CommitResult`, `validate`; `merge_into_worktree`; `rebase_worktree(wt, onto)` → `Rebased` / `UpToDate` / `Conflict {files, step, of}`, `rebase_continue`, `rebase_abort` (no editor, hooks off; anything but a conflict stop is aborted), `reset_worktree` | FR-702 gap, R10 |
+| `commit` | `commit_in_worktree(wt, CommitRequest, gitconfig) -> CommitResult`, `validate`; `merge_into_worktree(wt, branch, at, …)` (`at`: a commit of the branch instead of its tip); `rebase_worktree(wt, onto)` → `Rebased` / `UpToDate` / `Conflict {files, step, of}`, `rebase_continue`, `rebase_abort` (no editor, hooks off; anything but a conflict stop is aborted), `reset_worktree` | FR-702 gap, R10 |
 | `fixtures` | (feature `fixtures`) `scratch_repo`, `commit_file`, `MemLedger`, `git` | tests |
 
 ## Safety rules

@@ -1146,7 +1146,7 @@ impl Runtime {
         self.store.read(|s| {
             s.inbox.iter().any(|i| {
                 i.pending()
-                    && matches!(i.payload.get("action").and_then(Value::as_str), Some("push_pr" | "push_pr_update"))
+                    && crate::feature_prs::is_pr_gate(&i.payload)
                     && (i.agent_id.as_deref() == Some(agent)
                         || run.is_some_and(|r| i.payload.get("run").and_then(Value::as_str) == Some(r)))
             })

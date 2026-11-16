@@ -216,6 +216,25 @@ fn pr_state(pr: Option<&PrStatus>) -> String {
     }
 }
 
+fn is_closed(pr: Option<&PrStatus>) -> bool {
+    pr.is_some_and(|p| p.state == "closed")
+}
+
+impl PrView {
+    /// A line with no PR yet: `none`, or `pending` on its gate.
+    fn waiting(issue: Option<&str>, branch: String, gate: Option<u64>) -> PrView {
+        PrView {
+            issue: issue.map(str::to_string),
+            branch,
+            state: if gate.is_some() { "pending" } else { "none" }.into(),
+            number: None,
+            url: None,
+            pr: None,
+            gate,
+        }
+    }
+}
+
 /// The run's PRs for the UI, both modes: single → `[]` or the feature's one
 /// PR (`issue: null`); per_issue → one line per feature issue, in order.
 /// `gates` are the run's pending `push_pr` / `push_pr_update` gates.
@@ -227,17 +246,9 @@ pub fn prs_view(run: &TeamRun, feature: &Feature, gates: &[GateRef]) -> Vec<PrVi
         PrMode::Single => {
             let branch = feature.integration_branch();
             // A new PR asked for replaces a closed one.
-            let closed = run.pr.as_ref().is_some_and(|p| p.state == "closed");
-            if let Some(id) = gate("push_pr", None).filter(|_| run.pr_number.is_none() || closed) {
-                return vec![PrView {
-                    issue: None,
-                    branch,
-                    state: "pending".into(),
-                    number: None,
-                    url: None,
-                    pr: None,
-                    gate: Some(id),
-                }];
+            let replaced = run.pr_number.is_none() || is_closed(run.pr.as_ref());
+            if let Some(id) = gate("push_pr", None).filter(|_| replaced) {
+                return vec![PrView::waiting(None, branch, Some(id))];
             }
             if run.pr_number.is_none() && run.pr_url.is_none() {
                 return vec![];
@@ -258,18 +269,9 @@ pub fn prs_view(run: &TeamRun, feature: &Feature, gates: &[GateRef]) -> Vec<PrVi
             .map(|i| {
                 let r = i.reference.as_str();
                 let pr = run.prs.iter().rev().find(|p| p.issue == r);
-                let replaced = pr.is_none_or(|p| p.pr.as_ref().is_some_and(|s| s.state == "closed"));
-                match (gate("push_pr", Some(r)).filter(|_| replaced), pr) {
-                    (Some(id), _) => PrView {
-                        issue: Some(r.into()),
-                        branch: feature.issue_branch(r),
-                        state: "pending".into(),
-                        number: None,
-                        url: None,
-                        pr: None,
-                        gate: Some(id),
-                    },
-                    (None, Some(p)) => PrView {
+                let replaced = pr.is_none_or(|p| is_closed(p.pr.as_ref()));
+                match (pr, gate("push_pr", Some(r)).filter(|_| replaced)) {
+                    (Some(p), None) => PrView {
                         issue: Some(r.into()),
                         branch: p.branch.clone(),
                         state: pr_state(p.pr.as_ref()),
@@ -278,15 +280,7 @@ pub fn prs_view(run: &TeamRun, feature: &Feature, gates: &[GateRef]) -> Vec<PrVi
                         pr: p.pr.clone(),
                         gate: gate("push_pr_update", Some(r)),
                     },
-                    (None, None) => PrView {
-                        issue: Some(r.into()),
-                        branch: feature.issue_branch(r),
-                        state: "none".into(),
-                        number: None,
-                        url: None,
-                        pr: None,
-                        gate: None,
-                    },
+                    (_, pending) => PrView::waiting(Some(r), feature.issue_branch(r), pending),
                 }
             })
             .collect(),
@@ -294,15 +288,31 @@ pub fn prs_view(run: &TeamRun, feature: &Feature, gates: &[GateRef]) -> Vec<PrVi
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use orch_store::RunPr;
     use orch_team::RunState;
 
     const REPO: Option<&str> = Some("o/r");
 
-    fn code(e: anyhow::Error) -> String {
-        serde_json::from_str::<serde_json::Value>(&e.to_string()).unwrap()["code"].as_str().unwrap().to_string()
+    /// The `code` of a coded error (its text when it is not one).
+    pub(crate) fn code(e: anyhow::Error) -> String {
+        serde_json::from_str::<serde_json::Value>(&e.to_string())
+            .map(|v| v["code"].as_str().unwrap_or("").to_string())
+            .unwrap_or_else(|_| e.to_string())
+    }
+
+    /// `git interpret-trailers --parse` of a commit message.
+    pub(crate) fn trailers(msg: &str) -> String {
+        use std::io::Write;
+        let mut c = std::process::Command::new("git")
+            .args(["interpret-trailers", "--parse"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        c.stdin.take().unwrap().write_all(msg.as_bytes()).unwrap();
+        String::from_utf8(c.wait_with_output().unwrap().stdout).unwrap()
     }
 
     #[test]
@@ -429,18 +439,7 @@ mod tests {
         for (m, want) in cases {
             let got = with_trailer(m, "Orch-Task", "7");
             assert_eq!(got, want);
-            let out = std::process::Command::new("git")
-                .args(["interpret-trailers", "--parse"])
-                .stdin(std::process::Stdio::piped())
-                .stdout(std::process::Stdio::piped())
-                .spawn()
-                .and_then(|mut c| {
-                    use std::io::Write;
-                    c.stdin.take().unwrap().write_all(got.as_bytes())?;
-                    c.wait_with_output()
-                })
-                .unwrap();
-            let parsed = String::from_utf8(out.stdout).unwrap();
+            let parsed = trailers(&got);
             assert!(parsed.lines().any(|l| l == "Orch-Task: 7"), "{m:?} → {parsed:?}");
         }
     }

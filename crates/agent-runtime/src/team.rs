@@ -364,11 +364,8 @@ impl Runtime {
         let repo = crate::github_issue::known_repo(&project);
         let issues = crate::issues::normalize(&spec.issues, repo.as_deref())?;
         let set_prs = !issues.is_empty() || spec.pr_mode.is_some();
-        let links = crate::issues::links(
-            &issues,
-            &self.db.intake_items(Some(&project.id)).unwrap_or_default(),
-            repo.as_deref(),
-        );
+        let rows = if issues.is_empty() { vec![] } else { self.db.intake_items(Some(&project.id)).unwrap_or_default() };
+        let links = crate::issues::links(&issues, &rows, repo.as_deref());
         let now = now_ms();
         let feature = match self.db.feature_by_slug(&project.id, &spec.slug)? {
             Some(f) => {
@@ -1850,7 +1847,7 @@ impl Runtime {
                 }
                 // The head the lead merges in per_issue mode: the branch may
                 // move on with the owner's next task before the merge.
-                t.reported_sha = Some(orch_git::git(&rec.worktree, &["rev-parse", "HEAD"])?.trim().to_string());
+                t.reported_sha = orch_git::gh::rev_sha(&rec.worktree, "HEAD");
                 if let Some(text) = self.review_first(&cx, rec, me, &mut t, args)? {
                     return Ok((text, Value::Null));
                 }
@@ -1884,6 +1881,7 @@ impl Runtime {
                 let r = orch_git::commit::merge_into_worktree(
                     &rec.worktree,
                     &integ,
+                    None,
                     &format!("Merge {integ} into {}", rec.id),
                     self.agent_gitconfig(&rec.id).as_deref(),
                     false,
@@ -1965,7 +1963,7 @@ impl Runtime {
                     Some(id) => crate::issues::with_trailer(&format!("Merge {branch}"), "Orch-Task", &id.to_string()),
                     None => format!("Merge {branch}"),
                 };
-                let r = orch_git::commit::merge_into_worktree_at(
+                let r = orch_git::commit::merge_into_worktree(
                     &rec.worktree,
                     branch,
                     at.as_deref(),
@@ -2158,6 +2156,7 @@ impl Runtime {
         // One read for the features of every run (their `prs_view`).
         let features: BTreeMap<String, Feature> =
             self.db.features(None).unwrap_or_default().into_iter().map(|f| (f.id.clone(), f)).collect();
+        let gates = self.pr_gates(true);
         let mut by_feature: BTreeMap<String, Vec<Value>> = BTreeMap::new();
         for r in runs.iter().take(50) {
             let agents: Vec<Value> = self
@@ -2166,7 +2165,7 @@ impl Runtime {
                 .map(|a| json!({"id": a.id, "node": a.team.as_ref().map(|s| s.node.clone()), "state": a.tracker.state, "task": a.team.as_ref().and_then(|s| s.task)}))
                 .collect();
             by_feature.entry(r.feature_id.clone()).or_default().push(json!({"run": match features.get(&r.feature_id) {
-                    Some(f) => self.run_value(r, f),
+                    Some(f) => Self::run_value(r, f, gates.get(&r.id).map_or(&[], Vec::as_slice)),
                     None => self.run_value_of(r),
                 }, "agents": agents}));
         }
@@ -2754,20 +2753,22 @@ pub(crate) mod tests {
     }
 
     fn approved_with(rt: &Runtime, pid: &str, team: &str) -> TeamRun {
-        let run = rt
-            .launch(&LaunchSpec {
+        approved_spec(
+            rt,
+            &LaunchSpec {
                 project_id: pid.into(),
                 team_id: team.into(),
                 slug: "fx".into(),
                 title: "Fix X".into(),
                 brief: "Fix the X bug.".into(),
-                base: None,
-                off_hours: false,
-                intake: None,
-                issues: vec![],
-                pr_mode: Default::default(),
-            })
-            .unwrap();
+                ..Default::default()
+            },
+        )
+    }
+
+    /// `spec` launched (feature `fx`), its spec committed and approved.
+    pub(crate) fn approved_spec(rt: &Runtime, spec: &LaunchSpec) -> TeamRun {
+        let run = rt.launch(spec).unwrap();
         write_commit(rt, "fx-lead-1", ".orchestrator/features/fx/spec.md", "# Fix X\n");
         ok(rt, "fx-lead-1", "request_spec_approval", json!({"summary": "s"}));
         let gate = rt.store.read(|s| s.inbox.iter().find(|i| i.pending() && i.kind == "gate").cloned().unwrap());

@@ -187,20 +187,10 @@ pub enum MergeOutcome {
 /// worktree), outside the sandbox with the same safety as
 /// [`commit_in_worktree`]: hooks off, the agent's identity, a cleared
 /// environment. The lead's `merge` aborts on a conflict; a specialist's
-/// `sync_integration` leaves it for the agent.
+/// `sync_integration` leaves it for the agent. With `at`, the commit `at`
+/// of `branch` is merged rather than its tip (a task's reported head):
+/// refused when it is not on `branch`.
 pub fn merge_into_worktree(
-    worktree_path: &Path,
-    branch: &str,
-    message: &str,
-    gitconfig: Option<&Path>,
-    abort_on_conflict: bool,
-) -> Result<MergeOutcome> {
-    merge_into_worktree_at(worktree_path, branch, None, message, gitconfig, abort_on_conflict)
-}
-
-/// [`merge_into_worktree`] of the commit `at` of `branch` rather than its tip
-/// (a task's reported head): refused when `at` is not on `branch`.
-pub fn merge_into_worktree_at(
     worktree_path: &Path,
     branch: &str,
     at: Option<&str>,
@@ -208,10 +198,12 @@ pub fn merge_into_worktree_at(
     gitconfig: Option<&Path>,
     abort_on_conflict: bool,
 ) -> Result<MergeOutcome> {
-    if at.is_some_and(|a| a.len() < 7 || !a.chars().all(|c| c.is_ascii_hexdigit())) {
-        bail!("invalid commit {at:?}");
-    }
-    if branch.is_empty() || branch.starts_with('-') || branch.contains("..") || branch.contains('\0') {
+    if branch.is_empty()
+        || branch.starts_with('-')
+        || branch.contains("..")
+        || branch.contains('\0')
+        || at.is_some_and(|a| a.starts_with('-'))
+    {
         bail!("invalid branch {branch:?}");
     }
     if message.trim().is_empty() || message.len() > MAX_MESSAGE {
@@ -470,37 +462,37 @@ mod tests {
             commit_in_worktree(wt, &CommitRequest { message: format!("edit {f}"), paths: None }, Some(&gc)).unwrap();
         };
         commit(&back, "api.rs", "fn api() {}");
-        let r = merge_into_worktree(&integ, "orch/f/back-1", "Merge back-1", Some(&gc), true).unwrap();
+        let r = merge_into_worktree(&integ, "orch/f/back-1", None, "Merge back-1", Some(&gc), true).unwrap();
         assert!(matches!(r, MergeOutcome::Merged { .. }), "{r:?}");
         assert!(integ.join("api.rs").is_file());
         assert_eq!(
-            merge_into_worktree(&integ, "orch/f/back-1", "again", Some(&gc), true).unwrap(),
+            merge_into_worktree(&integ, "orch/f/back-1", None, "again", Some(&gc), true).unwrap(),
             MergeOutcome::UpToDate
         );
         // Both sides change the same file: the lead's merge aborts…
         commit(&integ, "shared.txt", "lead");
         commit(&back, "shared.txt", "back");
-        let r = merge_into_worktree(&integ, "orch/f/back-1", "Merge", Some(&gc), true).unwrap();
+        let r = merge_into_worktree(&integ, "orch/f/back-1", None, "Merge", Some(&gc), true).unwrap();
         assert_eq!(r, MergeOutcome::Conflict { files: vec!["shared.txt".into()], aborted: true });
         assert!(worktree::inspect(&integ).in_progress.is_empty());
         // …a sync leaves it for the agent, whose commit concludes it.
-        let r = merge_into_worktree(&back, "orch/f/integration", "Sync", Some(&gc), false).unwrap();
+        let r = merge_into_worktree(&back, "orch/f/integration", None, "Sync", Some(&gc), false).unwrap();
         assert_eq!(r, MergeOutcome::Conflict { files: vec!["shared.txt".into()], aborted: false });
         assert_eq!(worktree::inspect(&back).in_progress, vec!["MERGE_HEAD"]);
         std::fs::write(back.join("shared.txt"), "both").unwrap();
         commit_in_worktree(&back, &CommitRequest { message: "resolve".into(), paths: None }, Some(&gc)).unwrap();
         assert!(worktree::inspect(&back).in_progress.is_empty());
         assert!(matches!(
-            merge_into_worktree(&integ, "orch/f/back-1", "Merge", Some(&gc), true).unwrap(),
+            merge_into_worktree(&integ, "orch/f/back-1", None, "Merge", Some(&gc), true).unwrap(),
             MergeOutcome::Merged { .. }
         ));
         // Refusals.
-        assert!(merge_into_worktree(&integ, "--upload-pack=x", "m", Some(&gc), true).is_err());
-        assert!(merge_into_worktree(&integ, "orch/f/nope", "m", Some(&gc), true).is_err());
-        assert!(merge_into_worktree(&repo, "orch/f/back-1", "m", Some(&gc), true).is_err());
+        assert!(merge_into_worktree(&integ, "--upload-pack=x", None, "m", Some(&gc), true).is_err());
+        assert!(merge_into_worktree(&integ, "orch/f/nope", None, "m", Some(&gc), true).is_err());
+        assert!(merge_into_worktree(&repo, "orch/f/back-1", None, "m", Some(&gc), true).is_err());
         std::fs::write(integ.join("dirty.txt"), "x").unwrap();
         assert!(
-            merge_into_worktree(&integ, "orch/f/back-1", "m", Some(&gc), true)
+            merge_into_worktree(&integ, "orch/f/back-1", None, "m", Some(&gc), true)
                 .unwrap_err()
                 .to_string()
                 .contains("uncommitted")
@@ -512,16 +504,16 @@ mod tests {
         edit(&back, "a.rs", "a", &gc);
         let reported = head(&back);
         edit(&back, "b.rs", "b", &gc);
-        let r = merge_into_worktree_at(&integ, "orch/f/back-1", Some(&reported), "Merge a", Some(&gc), true).unwrap();
+        let r = merge_into_worktree(&integ, "orch/f/back-1", Some(&reported), "Merge a", Some(&gc), true).unwrap();
         assert!(matches!(r, MergeOutcome::Merged { .. }), "{r:?}");
         assert!(integ.join("a.rs").is_file() && !integ.join("b.rs").exists(), "only the reported work");
         // A commit that is not on the branch, or no commit at all, is refused.
         edit(&integ, "c.rs", "c", &gc);
         let other = head(&integ);
-        let e = merge_into_worktree_at(&integ, "orch/f/back-1", Some(&other), "m", Some(&gc), true).unwrap_err();
+        let e = merge_into_worktree(&integ, "orch/f/back-1", Some(&other), "m", Some(&gc), true).unwrap_err();
         assert!(e.to_string().contains("is not on orch/f/back-1"), "{e:#}");
-        assert!(merge_into_worktree_at(&integ, "orch/f/back-1", Some("--x"), "m", Some(&gc), true).is_err());
-        assert!(merge_into_worktree_at(&integ, "orch/f/back-1", Some("deadbeef00"), "m", Some(&gc), true).is_err());
+        assert!(merge_into_worktree(&integ, "orch/f/back-1", Some("--x"), "m", Some(&gc), true).is_err());
+        assert!(merge_into_worktree(&integ, "orch/f/back-1", Some("deadbeef00"), "m", Some(&gc), true).is_err());
     }
 
     use orch_protocol::WorktreeKindSpec;
@@ -561,7 +553,7 @@ mod tests {
         let (_d, repo, integ, back, gc) = feature();
         edit(&integ, "spec.md", "spec", &gc);
         edit(&back, "api.rs", "fn api() {}", &gc);
-        merge_into_worktree(&integ, "orch/f/back-1", "Merge back-1", Some(&gc), true).unwrap();
+        merge_into_worktree(&integ, "orch/f/back-1", None, "Merge back-1", Some(&gc), true).unwrap();
         crate::fixtures::commit_file(&repo, "m.txt", "m", "main moves");
         let before = head(&integ);
         let r = rebase_worktree(&integ, "main", Some(&gc)).unwrap();

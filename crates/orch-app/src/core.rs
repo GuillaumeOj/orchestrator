@@ -1199,7 +1199,8 @@ impl Core {
 
     /// Checks the PR of a feature's latest team run now; the updated run.
     pub fn pr_refresh(&self, feature: &str) -> Result<Value> {
-        Ok(json!(self.runtime()?.pr_refresh(feature)?))
+        let rt = self.runtime()?;
+        Ok(rt.run_value_of(&rt.pr_refresh(feature)?))
     }
 
     /// FR-104: one worktree of the project, the app's or the user's own (the

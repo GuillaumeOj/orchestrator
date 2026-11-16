@@ -2,6 +2,8 @@
 //! (`feature_set_prs`, spec §3.1), finds issues to add (`issue_suggest`),
 //! and every run JSON carries its PRs (`prs_view`, api-contract §2).
 
+use std::collections::HashMap;
+
 use anyhow::{Result, anyhow};
 use governor::TurnKind;
 use orch_store::{Feature, PrMode, TeamRun};
@@ -20,7 +22,8 @@ pub fn pr_mode_arg(m: Option<&str>) -> Result<Option<PrMode>> {
     .transpose()
 }
 
-fn is_pr_gate(p: &Value) -> bool {
+/// A `push_pr` or `push_pr_update` gate's payload.
+pub(crate) fn is_pr_gate(p: &Value) -> bool {
     matches!(p.get("action").and_then(Value::as_str), Some("push_pr" | "push_pr_update"))
 }
 
@@ -37,37 +40,38 @@ impl Runtime {
             .ok_or_else(|| anyhow!("no feature {feature}"))
     }
 
-    /// The PR gates of a run (`pending_only`: still waiting for the user).
-    /// A gate names its run; an older one is the run's through its agent.
-    fn run_pr_gate_items(&self, run_id: &str, pending_only: bool) -> Vec<(u64, Value)> {
+    /// Every run's PR gates (`pending_only`: still waiting for the user), in
+    /// one pass over the inbox. A gate names its run; an older one is the
+    /// run's through its agent.
+    pub fn pr_gates(&self, pending_only: bool) -> HashMap<String, Vec<GateRef>> {
         self.store.read(|s| {
-            s.inbox
-                .iter()
-                .filter(|i| i.kind == "gate" && is_pr_gate(&i.payload) && (!pending_only || i.pending()))
-                .filter(|i| match i.payload.get("run").and_then(Value::as_str) {
-                    Some(r) => r == run_id,
+            let mut out: HashMap<String, Vec<GateRef>> = HashMap::new();
+            let gates = s.inbox.iter().filter(|i| i.kind == "gate" && (!pending_only || i.pending()));
+            for i in gates.filter(|i| is_pr_gate(&i.payload)) {
+                let run = match i.payload.get("run").and_then(Value::as_str) {
+                    Some(r) => Some(r.to_string()),
                     None => i
                         .agent_id
                         .as_ref()
                         .and_then(|a| s.agents.get(a))
                         .and_then(|a| a.team.as_ref())
-                        .is_some_and(|t| t.run_id == run_id),
-                })
-                .map(|i| (i.id, i.payload.clone()))
-                .collect()
+                        .map(|t| t.run_id.clone()),
+                };
+                if let Some(run) = run {
+                    out.entry(run).or_default().push(GateRef {
+                        id: i.id,
+                        action: i.payload["action"].as_str().unwrap_or_default().to_string(),
+                        issue: i.payload.get("issue").and_then(Value::as_str).map(str::to_string),
+                    });
+                }
+            }
+            out
         })
     }
 
-    /// The run's pending PR gates, as `prs_view` reads them.
+    /// One run's pending PR gates, as `prs_view` reads them.
     pub(crate) fn run_pr_gates(&self, run_id: &str) -> Vec<GateRef> {
-        self.run_pr_gate_items(run_id, true)
-            .into_iter()
-            .map(|(id, p)| GateRef {
-                id,
-                action: p["action"].as_str().unwrap_or_default().to_string(),
-                issue: p.get("issue").and_then(Value::as_str).map(str::to_string),
-            })
-            .collect()
+        self.pr_gates(true).remove(run_id).unwrap_or_default()
     }
 
     /// The run has had a PR or a PR gate, in any state: its mode is chosen.
@@ -75,25 +79,21 @@ impl Runtime {
         run.pr_number.is_some()
             || run.pr_url.is_some()
             || !run.prs.is_empty()
-            || !self.run_pr_gate_items(&run.id, false).is_empty()
+            || self.pr_gates(false).contains_key(&run.id)
     }
 
-    /// The run's `prs_view` (api-contract §2) as JSON.
-    pub fn prs_view_value(&self, run: &TeamRun, feature: &Feature) -> Value {
-        json!(issues::prs_view(run, feature, &self.run_pr_gates(&run.id)))
-    }
-
-    /// A run as the UI reads it: the stored run plus `prs_view`.
-    pub fn run_value(&self, run: &TeamRun, feature: &Feature) -> Value {
+    /// A run as the UI reads it: the stored run plus `prs_view` (`gates`:
+    /// the run's pending PR gates).
+    pub fn run_value(run: &TeamRun, feature: &Feature, gates: &[GateRef]) -> Value {
         let mut v = json!(run);
-        v["prs_view"] = self.prs_view_value(run, feature);
+        v["prs_view"] = json!(issues::prs_view(run, feature, gates));
         v
     }
 
-    /// [`Runtime::run_value`] reading the run's feature.
+    /// [`Runtime::run_value`] of one run, reading its feature and gates.
     pub fn run_value_of(&self, run: &TeamRun) -> Value {
         match self.db.feature(&run.feature_id).ok().flatten() {
-            Some(f) => self.run_value(run, &f),
+            Some(f) => Self::run_value(run, &f, &self.run_pr_gates(&run.id)),
             None => json!(run),
         }
     }
@@ -148,17 +148,11 @@ impl Runtime {
         if let Some(r) = &run
             && f.pr_mode == PrMode::PerIssue
         {
-            let gates = self.run_pr_gates(&r.id);
+            let view = issues::prs_view(r, &f, &self.run_pr_gates(&r.id));
             for gone in f.issue_refs().iter().filter(|i| !refs.contains(i)) {
-                let pr = r
-                    .prs
-                    .iter()
-                    .rev()
-                    .find(|p| &p.issue == gone)
-                    .filter(|p| p.pr.as_ref().is_none_or(|s| s.state != "closed"));
-                let pending = gates.iter().any(|g| g.issue.as_deref() == Some(gone.as_str()));
-                if pending || pr.is_some() {
-                    let what = pr.map(|p| format!("PR #{}", p.number)).unwrap_or_else(|| "a PR waiting".into());
+                let held = view.iter().find(|v| v.issue.as_deref() == Some(gone.as_str()));
+                if let Some(v) = held.filter(|v| matches!(v.state.as_str(), "pending" | "open" | "merged")) {
+                    let what = v.number.map(|n| format!("PR #{n}")).unwrap_or_else(|| "a PR waiting".into());
                     return Err(coded("issue_has_pr", format!("{gone} has {what}: it cannot be removed"), Some(gone)));
                 }
             }

@@ -62,6 +62,8 @@ pub fn features(rt: &agent_runtime::runtime::Runtime) -> Result<Vec<Value>> {
         latest.entry(r.feature_id.clone()).or_insert(r); // newest first
     }
     let counts = rt.db.task_counts_by_run()?;
+    // One inbox pass for every run's PR gates (`prs_view`).
+    let gates = rt.pr_gates(true);
     let mut list = rt.db.features(None)?;
     let mut seated: std::collections::BTreeSet<String> = rt.store.read(|s| {
         s.agents
@@ -85,7 +87,7 @@ pub fn features(rt: &agent_runtime::runtime::Runtime) -> Result<Vec<Value>> {
                 "id": f.id, "project_id": f.project_id, "slug": f.slug, "title": f.title,
                 "branch": f.integration_branch(), "archived": f.archived, "issues": f.issues, "pr_mode": f.pr_mode,
                 "run": run.as_ref().map(|r| json!({"id": r.id, "status": r.status, "team_id": r.team_id, "pr_url": r.pr_url,
-                                                   "prs_view": rt.prs_view_value(r, &f)})),
+                                                   "prs_view": agent_runtime::issues::prs_view(r, &f, gates.get(&r.id).map_or(&[], Vec::as_slice))})),
                 "tasks": {"done": done, "total": total},
             })
         })
@@ -129,7 +131,8 @@ impl Core {
     }
 
     pub fn team_launch(&self, spec: agent_runtime::team::LaunchSpec) -> Result<Value> {
-        Ok(json!(self.runtime()?.launch(&spec)?))
+        let rt = self.runtime()?;
+        Ok(rt.run_value_of(&rt.launch(&spec)?))
     }
 
     /// The Feature pane: a feature's latest run with its agents, tasks, docs,
