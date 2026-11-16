@@ -1952,11 +1952,29 @@ impl Runtime {
                             bail!("task {} is on {}, not {branch}", t.handle(), t.branch.unwrap_or_default());
                         }
                         let handle = t.handle();
-                        Some(t.reported_sha.ok_or_else(|| {
+                        let sha = t.reported_sha.clone().ok_or_else(|| {
                             anyhow!(
                                 "task {handle} has not been reported yet: merge it once its owner calls report_done"
                             )
-                        })?)
+                        })?;
+                        // An earlier task of the branch, not merged yet, would come in
+                        // with this one: its work would be attributed to this task.
+                        let earlier = self.db.tasks(None, None, Some(&cx.run.id))?.into_iter().find(|o| {
+                            o.id != t.id
+                                && o.branch.as_deref() == Some(branch)
+                                && o.reported_sha.as_deref().is_some_and(|s| {
+                                    s != sha
+                                        && orch_git::cleanup::is_merged(&rec.worktree, s, &sha)
+                                        && !orch_git::cleanup::is_merged(&rec.worktree, s, "HEAD")
+                                })
+                        });
+                        if let Some(o) = earlier {
+                            bail!(
+                                "merge {} first: its reported work is under {handle}'s and is not merged yet",
+                                o.handle()
+                            );
+                        }
+                        Some(sha)
                     }
                 };
                 let message = match task_id {
