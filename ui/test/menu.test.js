@@ -257,12 +257,10 @@ describe('tooltip', () => {
     const line = document.querySelector('#orch-tooltip .tip-line');
     const label = line.querySelector('.tip-label');
     expect(label.textContent).toBe('A long label that wraps');
-    expect(label.querySelector('.tip-dot, .kbd')).toBeNull();
     expect([...line.children].map((c) => c.className)).toEqual(['tip-label', 'tip-dot', 'kbd']);
-    // Without a key the label is plain text in the line.
+    // Without a key the label is still in its own element, alone.
     t.update({ label: 'Solo' });
-    expect(line.isConnected).toBe(false);
-    expect(document.querySelector('#orch-tooltip .tip-line').textContent).toBe('Solo');
+    expect([...document.querySelector('#orch-tooltip .tip-line').children].map((c) => c.className)).toEqual(['tip-label']);
     b.dispatchEvent(new Event('pointerdown'));
     t.destroy();
   });
@@ -274,6 +272,8 @@ describe('tooltip', () => {
     expect(placeTip(r, 480, 60, 1280, 800)).toEqual({ top: 674, left: 4, above: true });
     expect(placeTip(r, 480, 24, 1280, 800).above).toBe(false);
     expect(placeTip({ ...r, top: 100, bottom: 122 }, 480, 60, 1280, 800).above).toBe(false);
+    // No room on either side (short window): clamped inside, not run off the bottom.
+    expect(placeTip({ ...r, top: 20, bottom: 42 }, 480, 60, 1280, 100)).toEqual({ top: 36, left: 4, above: false });
     expect(placeTip({ ...r, left: 1270 }, 480, 60, 1280, 800).left).toBe(796);
   });
 });

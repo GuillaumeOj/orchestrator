@@ -37,11 +37,11 @@ function fill(t, { label, key, detail }) {
   t.replaceChildren();
   const line = document.createElement('div');
   line.className = 'tip-line';
+  const l = document.createElement('span');
+  l.className = 'tip-label';
+  l.textContent = label;
+  line.append(l);
   if (key) {
-    const l = document.createElement('span');
-    l.className = 'tip-label';
-    l.textContent = label;
-    line.append(l);
     const dot = document.createElement('span');
     dot.className = 'tip-dot';
     dot.textContent = '·';
@@ -49,8 +49,6 @@ function fill(t, { label, key, detail }) {
     k.className = 'kbd';
     k.textContent = key;
     line.append(dot, k);
-  } else {
-    line.append(label);
   }
   t.append(line);
   if (detail) {
@@ -68,6 +66,9 @@ export function placeTip(r, w, h, vw, vh) {
   if (top + h > vh - EDGE && r.top - GAP - h >= EDGE) {
     top = r.top - GAP - h;
     above = true;
+  } else {
+    // Neither side has room: keep the tooltip inside the window (it may then cover the control).
+    top = Math.max(EDGE, Math.min(top, vh - EDGE - h));
   }
   const left = Math.max(EDGE, Math.min(r.left + r.width / 2 - w / 2, vw - EDGE - w));
   return { top, left, above };

@@ -136,7 +136,6 @@ textarea {
   font: var(--text-label);
   pointer-events: none;
   /* Long text wraps inside the box; a token with no space (a path) breaks anywhere. */
-  white-space: normal;
   overflow-wrap: anywhere;
 }
 .tooltip[hidden] {
