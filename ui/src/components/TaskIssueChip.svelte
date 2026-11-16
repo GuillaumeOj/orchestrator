@@ -1,6 +1,6 @@
 <script>
   // The issue a task is tagged with (allow-multiple-prs ux-brief §5): `#12`, mono,
-  // muted border, after the model chip; the title in the tooltip. Untagged tasks
+  // muted border, next to the card title; the title in the tooltip. Untagged tasks
   // show nothing.
   import { features } from '../lib/app.svelte.js';
   import { issueLabel } from '../lib/issues.js';
