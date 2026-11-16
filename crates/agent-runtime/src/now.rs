@@ -522,7 +522,7 @@ impl Runtime {
         // an agent that is still there (`now_snapshot` keeps them 10 min);
         // older ones (P4.0's decided rows, up to KEEP_FINISHED) never show.
         let recent = now.saturating_sub(decision::RECENT_MS);
-        let (agents, items): (_, Vec<_>) = self.store.read(|s| {
+        let (cards_of, items): (BTreeMap<_, _>, Vec<_>) = self.store.read(|s| {
             let delivering = |i: &orch_store::InboxItem| {
                 i.status == orch_store::InboxStatus::Sent
                     && i.agent_id
@@ -536,8 +536,9 @@ impl Runtime {
                     || [i.decided_at_ms, i.sent_at_ms, i.effect_at_ms].into_iter().flatten().max().unwrap_or(0)
                         >= recent
             };
-            // The Overwatch is not in Mission control's lanes (spec §3.3).
-            let agents = s.agents.iter().filter(|(_, a)| !a.is_overwatch());
+            // The Overwatch only for its trust card, once its own answer
+            // failed (fix-overwatch-trust-folder §3.4).
+            let agents = s.agents.iter().filter(|(_, a)| !a.is_overwatch() || a.trust_dialog);
             (
                 agents.map(|(k, v)| (k.clone(), v.clone())).collect::<BTreeMap<_, _>>(),
                 s.inbox.iter().filter(keep).cloned().collect(),
@@ -545,20 +546,23 @@ impl Runtime {
         });
         let (queue, ask, gov) = self.governor_facts();
         // The PTY tail of a synthesized card (trust dialog, a prompt in the pane, an error).
-        let tails: BTreeMap<String, String> = agents
+        let tails: BTreeMap<String, String> = cards_of
             .values()
             .filter(|a| a.trust_dialog || matches!(a.tracker.state, AgentState::WaitingForYou | AgentState::Error))
             .filter_map(|a| Some((a.id.clone(), self.live(&a.id)?.pty.output.tail_text())))
             .collect();
         let mut decisions = decision::build(&decision::Ctx {
             items: &items,
-            agents: &agents,
+            agents: &cards_of,
             tails: &tails,
             ask: ask.as_ref(),
             runs: &st.team.runs,
             projects: &st.team.projects,
             startup_timeout_ms: self.cfg.startup_timeout.as_millis() as u64,
         });
+        // The Overwatch is not in Mission control's lanes (spec §3.3).
+        let mut agents = cards_of;
+        agents.retain(|_, a| !a.is_overwatch());
         // Spec and PR decisions of a program's features carry the program (F29).
         let tags = self.program_of_starts();
         {

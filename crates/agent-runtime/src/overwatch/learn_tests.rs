@@ -743,3 +743,21 @@ fn the_status_is_rechecked_once_the_card_exists() {
     assert!(rt.store.read(|s| s.inbox.iter().find(|i| i.id == n).unwrap().payload.get("deciding_until_ms").is_none()));
     let _ = Value::Null;
 }
+
+#[test]
+fn the_watchdog_leaves_a_session_waiting_for_folder_trust() {
+    let (_d, rt) = manual();
+    let min = 60_000;
+    rt.overwatch_enqueue(blocking("slow"));
+    rt.overwatch_pump_at(t0());
+    // The auto-answer failed: the user has its trust dialog to answer.
+    rt.store.write(|s| s.agents.get_mut(ID).unwrap().trust_dialog = true).unwrap();
+    rt.overwatch_watchdog(t0() + 60 * min);
+    assert!(rt.ow().in_flight.is_some(), "the turn still waits");
+    assert_eq!(rt.ow().long_turns, 0);
+    // Answered: the turn starts, its clock with it.
+    rt.store.write(|s| s.agents.get_mut(ID).unwrap().trust_dialog = false).unwrap();
+    rt.overwatch_turn_started(t0() + 61 * min);
+    rt.overwatch_watchdog(t0() + 62 * min);
+    assert!(rt.ow().in_flight.is_some());
+}

@@ -32,5 +32,7 @@ tempfile = "3"
 toml_edit = "0.25"
 # Shell words of a Bash call (the core's hard-deny list).
 shlex = "2"
+# A screen model of the trust dialog (the Overwatch answers it, fix-overwatch-trust-folder).
+vt100 = "0.15"
 # Intake repo docs (P4.5): the backlog glob matched against `git ls-tree`.
 globset = { version = "0.4", default-features = false }

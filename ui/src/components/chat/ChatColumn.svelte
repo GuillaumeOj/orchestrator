@@ -160,6 +160,8 @@
   const reflabel = (ref) => refLabel(ref, viewEntries);
   const coreDown = $derived(app.data?.core?.ok === false);
   const downStrip = $derived(stripText(ow));
+  // Only the Restart strip shows a failed restart; the folder-trust strip has no Restart.
+  const stripError = $derived(downStrip?.action ? '' : restartError);
   // Your last message and what became of it (notes §2.2).
   const texts = $derived(t.items.filter((i) => i.type === 'text').map((i) => i.entry));
   const waitingOn = $derived(awaiting(texts));
@@ -933,8 +935,12 @@
   {#if downStrip}
     <div class="strip down" data-ow-strip>
       <span class="l1">{downStrip.title}</span>
-      <span class="l2" class:bad={restartError}>{restartError ? `Could not restart: ${restartError}` : downStrip.detail}</span>
+      <span class="l2" class:bad={!!stripError}>{stripError ? `Could not restart: ${stripError}` : downStrip.detail}</span>
+      {#if downStrip.action === 'open-session'}
+        <button class="btn" data-ow-strip-open disabled={!canOpenSession(ow)} onclick={openOverwatch}>Open session</button>
+      {:else}
       <button class="btn" disabled={restarting || coreDown} use:tooltip={coreDown ? { label: 'Restart', detail: 'The core is not reachable' } : null} onclick={restart}>{restarting ? 'Restarting…' : 'Restart'}</button>
+      {/if}
     </div>
   {/if}
   {#if daysPop}

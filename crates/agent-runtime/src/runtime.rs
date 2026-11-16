@@ -143,8 +143,8 @@ impl RuntimeConfig {
             shadow: true,
             base_cap: None,
             hold: Duration::from_secs(5),
-            rows: 50,
-            cols: 160,
+            rows: crate::pty::DEFAULT_ROWS,
+            cols: crate::pty::DEFAULT_COLS,
             permission_hold: Duration::from_secs(300),
             idle_suspend: Some(Duration::from_secs(10 * 60)),
             memory: Arc::new(SystemMemory),
@@ -185,6 +185,8 @@ pub struct Live {
     /// The sandbox allowances its settings had at the spawn (a rewrite of
     /// `settings.json` reaches it only at its next start).
     pub sandbox: crate::policy::sandbox::Allowances,
+    /// The Overwatch's answer to its trust dialog, for this spawn.
+    pub trust: Mutex<Option<crate::overwatch::trust::Answer>>,
 }
 
 pub struct Runtime {
@@ -1056,6 +1058,7 @@ impl Runtime {
                 pasted_at_ms: AtomicU64::new(0),
                 resumed,
                 sandbox,
+                trust: Mutex::new(None),
             }),
         );
         self.store.write(|s| {
@@ -2692,9 +2695,20 @@ impl Runtime {
     /// each agent with queued work, admission and FR-206 delivery.
     pub fn pump(&self) {
         let now = now_ms();
+        self.pump_trust(now);
+        self.pump_turns(now);
+    }
+
+    /// The record's `trust_dialog` follows the PTY's. The Overwatch's waits
+    /// while it answers the dialog itself (fix-overwatch-trust-folder §3.3):
+    /// delivery is blocked on the PTY flag meanwhile.
+    pub(crate) fn pump_trust(&self, now: u64) {
         let live = self.live.lock().unwrap_or_else(|e| e.into_inner()).clone();
         for (id, l) in live {
-            let seen = l.pty.output.trust_dialog.load(Ordering::Relaxed);
+            let mut seen = l.pty.output.trust_dialog.load(Ordering::Relaxed);
+            if seen && id == crate::overwatch::ID {
+                seen = self.overwatch_trust(&l, now);
+            }
             let changed = self.store.read(|s| s.agents.get(&id).is_some_and(|a| a.trust_dialog != seen));
             if changed {
                 let _ = self.store.write(|s| {
@@ -2704,8 +2718,14 @@ impl Runtime {
                 });
                 // The Inbox card is synthesized from `trust_dialog` (D6): nothing stored.
                 self.event(&id, "trust_dialog", json!({"seen": seen}));
+                if id == crate::overwatch::ID {
+                    self.overwatch_touch();
+                }
             }
         }
+    }
+
+    fn pump_turns(&self, now: u64) {
         // Every agent's queued turns, in queue order.
         let queued: Vec<(AgentRecord, Vec<TurnRow>)> = self.store.read(|s| {
             let mut out: BTreeMap<String, Vec<TurnRow>> = BTreeMap::new();
@@ -2889,7 +2909,7 @@ impl Runtime {
         let gate = GateInputs {
             live: !l.pty.has_exited(),
             idle: rec.tracker.state == AgentState::Idle,
-            trust_dialog: rec.trust_dialog,
+            trust_dialog: rec.trust_dialog || l.pty.output.trust_dialog.load(Ordering::Relaxed),
             background_tasks: rec.tracker.background_tasks,
             waits_on_background: delivery::waits_on_background(turn.kind),
             ready_at_ms: Some(l.ready_at_ms.load(Ordering::SeqCst)).filter(|t| *t > 0),
@@ -3442,6 +3462,7 @@ pub(crate) mod tests {
             pasted_at_ms: AtomicU64::new(0),
             resumed: false,
             sandbox: Default::default(),
+            trust: Mutex::new(None),
         };
         rt.live.lock().unwrap().insert(id.into(), Arc::new(live));
     }
