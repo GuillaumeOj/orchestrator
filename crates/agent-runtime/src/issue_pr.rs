@@ -388,3 +388,7 @@ mod tests {
         assert_eq!(per_issue_run_state(&issues[..1], &[pr("#1", Some("merged"))], &[]).0, Done);
     }
 }
+
+#[cfg(test)]
+#[path = "pr_issue_tests.rs"]
+mod e2e;
