@@ -66,7 +66,7 @@ fn the_screen_model_reads_a_diff_render() {
     out.push(&diff_frame(2));
     assert!(out.trust_dialog.load(std::sync::atomic::Ordering::Relaxed), "detected");
     let screen = out.screen_text().unwrap();
-    assert_eq!(read_dialog(&screen), Some(Dialog { selected: 2, on_yes: false, yes: 1 }), "{screen}");
+    assert_eq!(read_dialog(&screen), Some(Dialog { selected: 2, yes: 1 }), "{screen}");
     assert_eq!(next_key(&screen), Some(Key::Up));
     // Only the mark cells redrawn: the screen shows Yes selected.
     out.push(UP_CELLS);
@@ -143,7 +143,7 @@ fn the_answer_moves_up_then_enters_within_its_budget() {
     assert_eq!(a.step(0, &yes), Step::Send(Key::Enter));
     assert_eq!(a.step(500, &gone), Step::Wait, "the re-render's time first");
     assert_eq!(a.step(RERENDER_MS, &gone), Step::Took, "gone since 500");
-    assert_eq!(a.step(WINDOW_MS, &gone), Step::Wait, "never NOT_TAKEN");
+    assert_eq!(a.step(WINDOW_MS, &gone), Step::Took, "never NOT_TAKEN");
 
     // An Enter late in the window still gets its re-render's time.
     let mut a = Answer::new(0, true);

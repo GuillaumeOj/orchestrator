@@ -46,14 +46,14 @@ pub struct Output {
 }
 
 impl Output {
-    /// The screen model starts at the PTY's default size (`RuntimeConfig`'s 50 × 160).
+    /// The screen model starts at the PTY's default size.
     pub(crate) fn new() -> Self {
-        Self::with_size(50, 160)
+        Self::with_size(DEFAULT_ROWS, DEFAULT_COLS)
     }
 
     pub(crate) fn with_size(rows: u16, cols: u16) -> Self {
-        // The screen model panics on an empty grid: one cell at least.
-        let screen = vt100::Parser::new(rows.max(1), cols.max(1), 0);
+        let (rows, cols) = grid(rows, cols);
+        let screen = vt100::Parser::new(rows, cols, 0);
         Output {
             buf: Mutex::new(Buf { screen: Some(screen), ..Default::default() }),
             cv: Condvar::new(),
@@ -93,7 +93,10 @@ impl Output {
                 p.process(data);
             }
             let seen = squash(&b.tail_text).contains(TRUST_DIALOG_TEXT)
-                || b.screen.as_ref().is_some_and(|p| squash(&p.screen().contents()).contains(TRUST_DIALOG_TEXT));
+                || b.screen.as_ref().is_some_and(|p| {
+                    let s = p.screen();
+                    s.rows(0, s.size().1).any(|r| shows_trust_header(&r))
+                });
             self.trust_dialog.store(seen, Ordering::Relaxed);
         }
         self.cv.notify_all();
@@ -161,12 +164,14 @@ impl Output {
     /// The PTY was resized: so is the screen model.
     pub(crate) fn set_size(&self, rows: u16, cols: u16) {
         if let Some(p) = self.lock().screen.as_mut() {
-            p.set_size(rows.max(1), cols.max(1));
+            let (rows, cols) = grid(rows, cols);
+            p.set_size(rows, cols);
         }
     }
 
-    /// SessionStart fired, so the trust dialog is gone (no hook fires before
-    /// it is answered): forget the screen text that showed it.
+    /// The trust watch ends: SessionStart fired (no hook fires before the
+    /// dialog is answered), or the Overwatch's own answer took. Forgets the
+    /// screen text that showed it.
     pub fn clear_trust_dialog(&self) {
         self.watch_trust.store(false, Ordering::Relaxed);
         let mut b = self.lock();
@@ -180,6 +185,20 @@ impl Output {
         self.lock().closed = true;
         self.cv.notify_all();
     }
+}
+
+/// The PTY's default size (`RuntimeConfig::new`).
+pub const DEFAULT_ROWS: u16 = 50;
+pub const DEFAULT_COLS: u16 = 160;
+
+/// The screen model panics on an empty grid: one cell at least.
+fn grid(rows: u16, cols: u16) -> (u16, u16) {
+    (rows.max(1), cols.max(1))
+}
+
+/// One screen row (or line) holds the trust dialog's header.
+pub(crate) fn shows_trust_header(row: &str) -> bool {
+    squash(row).contains(TRUST_DIALOG_TEXT)
 }
 
 /// Runs of whitespace as one space: a stripped escape leaves a run of them,

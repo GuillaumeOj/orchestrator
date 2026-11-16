@@ -8,7 +8,7 @@ use std::path::Path;
 use serde_json::json;
 
 use super::ID;
-use crate::pty::{TRUST_DIALOG_TEXT, squash};
+use crate::pty::{TRUST_DIALOG_TEXT, shows_trust_header, squash};
 use crate::runtime::{Live, Runtime};
 
 /// The auto-answer window, from the dialog's detection (spec §3.3).
@@ -48,11 +48,10 @@ impl Key {
 }
 
 /// The dialog as the screen shows it: the selected option's number and
-/// whether it is "Yes, I trust this folder", and Yes's number.
+/// that of "Yes, I trust this folder" (there is one).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Dialog {
     pub selected: u32,
-    pub on_yes: bool,
     pub yes: u32,
 }
 
@@ -83,24 +82,27 @@ pub fn read_dialog(screen: &str) -> Option<Dialog> {
             continue;
         };
         let is_yes = text.starts_with(YES);
-        if (is_yes && yes.replace(n).is_some()) || (marked && selected.replace((n, is_yes)).is_some()) {
+        if (is_yes && yes.replace(n).is_some()) || (marked && selected.replace(n).is_some()) {
             return None;
         }
     }
-    let ((selected, on_yes), yes) = (selected?, yes?);
-    Some(Dialog { selected, on_yes, yes })
+    Some(Dialog { selected: selected?, yes: yes? })
 }
 
 /// Whether the dialog's header is on `screen`.
 pub fn on_screen(screen: &str) -> bool {
-    screen.lines().any(|l| squash(l).contains(TRUST_DIALOG_TEXT))
+    screen.lines().any(shows_trust_header)
 }
 
 impl Dialog {
     /// The key that moves it towards trusting: Enter when "Yes, I trust this
     /// folder" is selected, Up when an option below it is, else none.
     pub fn key(self) -> Option<Key> {
-        if self.on_yes { Some(Key::Enter) } else { (self.selected > self.yes).then_some(Key::Up) }
+        match self.selected.cmp(&self.yes) {
+            std::cmp::Ordering::Equal => Some(Key::Enter),
+            std::cmp::Ordering::Greater => Some(Key::Up),
+            std::cmp::Ordering::Less => None,
+        }
     }
 }
 
@@ -143,8 +145,6 @@ enum Phase {
         at: u64,
         gone: Option<u64>,
     },
-    /// The dialog left the screen after Enter.
-    Took,
     /// Not auto-answered, or given up: the flag is up.
     Raised,
 }
@@ -156,7 +156,7 @@ pub struct Answer {
     phase: Phase,
     arrows: u32,
     /// The last arrow: when, and the selection then (its re-render changes it).
-    sent: Option<(u64, Option<u32>)>,
+    sent: Option<(u64, u32)>,
     /// The Overwatch's folder, for the events.
     pub(crate) dir: String,
 }
@@ -174,36 +174,30 @@ impl Answer {
 
     /// `screen` is the screen model's rows now.
     pub fn step(&mut self, now: u64, screen: &str) -> Step {
+        let window_over = now.saturating_sub(self.detected_ms) >= WINDOW_MS;
         match self.phase {
             Phase::Raised => return Step::Raise,
-            Phase::Took => return Step::Wait,
             // Gone from the screen once the re-render had time, and still
             // gone a moment later (not a redraw's blank): it took, even if
             // SessionStart is slow.
             Phase::Answered { at, gone } => {
                 let gone = if on_screen(screen) { None } else { Some(gone.unwrap_or(now)) };
                 self.phase = Phase::Answered { at, gone };
-                if gone.is_some_and(|g| now.saturating_sub(g) >= GONE_MS) && now.saturating_sub(at) >= RERENDER_MS {
-                    self.phase = Phase::Took;
+                let since_enter = now.saturating_sub(at);
+                if gone.is_some_and(|g| now.saturating_sub(g) >= GONE_MS) && since_enter >= RERENDER_MS {
                     return Step::Took;
                 }
+                // An Enter late in the window still gets its re-render's time.
+                let settling = gone.is_some() || since_enter < RERENDER_MS;
+                return if window_over && !settling { self.fail(failed::NOT_TAKEN) } else { Step::Wait };
             }
+            Phase::Answering if window_over => return self.fail(failed::TIMEOUT),
             Phase::Answering => {}
         }
-        // An Enter late in the window still gets its re-render's time.
-        let settling = matches!(self.phase, Phase::Answered { at, gone } if gone.is_some() || now.saturating_sub(at) < RERENDER_MS);
-        if now.saturating_sub(self.detected_ms) >= WINDOW_MS && !settling {
-            let answered = matches!(self.phase, Phase::Answered { .. });
-            return self.fail(if answered { failed::NOT_TAKEN } else { failed::TIMEOUT });
-        }
-        if matches!(self.phase, Phase::Answered { .. }) {
-            return Step::Wait;
-        }
         let dialog = read_dialog(screen);
-        let selected = dialog.map(|d| d.selected);
         // A screen caught mid-redraw (no dialog read) is not the re-render.
         if let Some((at, before)) = self.sent
-            && (selected.is_none() || selected == before)
+            && dialog.is_none_or(|d| d.selected == before)
             && now.saturating_sub(at) < RERENDER_MS
         {
             return Step::Wait;
@@ -216,7 +210,7 @@ impl Answer {
             }
             Some(Key::Up) if self.arrows < MAX_ARROWS => {
                 self.arrows += 1;
-                self.sent = Some((now, selected));
+                self.sent = dialog.map(|d| (now, d.selected));
                 Step::Send(Key::Up)
             }
             Some(Key::Up) => self.fail(failed::ARROWS),
