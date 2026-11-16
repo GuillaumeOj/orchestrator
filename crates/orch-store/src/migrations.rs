@@ -875,10 +875,15 @@ mod tests {
         assert_eq!(s.feature("p-f").unwrap().unwrap(), f);
         assert_eq!(f.issues[1].key, "eng-7");
         assert_eq!(f.issue_branch("ENG-7"), "orch/f/issue/eng-7");
-        let mut r = s.run("r").unwrap().unwrap();
-        r.prs = vec![crate::RunPr { issue: "#12".into(), number: 3, fork_sha: "abc".into(), ..Default::default() }];
-        s.upsert_run(&r).unwrap();
-        assert_eq!(s.run("r").unwrap().unwrap().prs, r.prs);
+        let prs = vec![crate::RunPr { issue: "#12".into(), number: 3, fork_sha: "abc".into(), ..Default::default() }];
+        let set = prs.clone();
+        s.update_run_prs("r", move |p| *p = set).unwrap();
+        assert_eq!(s.run("r").unwrap().unwrap().prs, prs);
+        // A stale copy of the run written back does not drop them.
+        let mut stale = s.run("r").unwrap().unwrap();
+        stale.prs = vec![];
+        s.upsert_run(&stale).unwrap();
+        assert_eq!(s.run("r").unwrap().unwrap().prs, prs, "prs change through update_run_prs only");
         let t = crate::Task { issue: Some("#12".into()), reported_sha: Some("abc".into()), ..t };
         s.upsert_task(&t).unwrap();
         assert_eq!(s.task(1).unwrap().unwrap(), t);

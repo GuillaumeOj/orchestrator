@@ -81,8 +81,7 @@ fn feature_set_prs_follows_the_rules_and_tells_the_lead() {
     let e = ev.iter().find(|e| e.kind == "feature.prs").unwrap();
     assert_eq!(e.detail, json!({"issues": ["#1", "#2"], "pr_mode": "per_issue", "by": "user"}));
     // An issue with an open PR stays; the mode is locked once a PR exists.
-    let mut r = rt.db.run(&run.id).unwrap().unwrap();
-    r.prs = vec![RunPr {
+    let prs = vec![RunPr {
         issue: "#1".into(),
         branch: "orch/fx/issue/1".into(),
         number: 7,
@@ -90,7 +89,7 @@ fn feature_set_prs_follows_the_rules_and_tells_the_lead() {
         pr: Some(PrStatus { state: "open".into(), ..Default::default() }),
         ..Default::default()
     }];
-    rt.db.upsert_run(&r).unwrap();
+    rt.db.update_run_prs(&run.id, move |p| *p = prs).unwrap();
     let e = set(Some(&["#2"]), None).unwrap_err();
     assert!(e.to_string().contains("\"ref\":\"#1\""), "{e}");
     assert_eq!(code(e), "issue_has_pr");
