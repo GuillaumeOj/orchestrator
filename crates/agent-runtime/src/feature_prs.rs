@@ -231,3 +231,7 @@ impl Runtime {
         Ok(json!(out))
     }
 }
+
+#[cfg(test)]
+#[path = "feature_prs_tests.rs"]
+mod tests;

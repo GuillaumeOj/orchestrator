@@ -2627,7 +2627,7 @@ pub(crate) mod tests {
         assert_ne!(again[0].id, first.id);
     }
 
-    fn call(rt: &Runtime, agent: &str, tool: &str, args: Value) -> (bool, String) {
+    pub(crate) fn call(rt: &Runtime, agent: &str, tool: &str, args: Value) -> (bool, String) {
         let (err, text, _) = rt
             .on_mcp(&McpMsg { agent_id: agent.into(), tool: tool.into(), arguments: args, deadline_ms: 10_000 }, None);
         (err, text)
@@ -2639,7 +2639,7 @@ pub(crate) mod tests {
         text
     }
 
-    fn queued(rt: &Runtime, agent: &str) -> Vec<String> {
+    pub(crate) fn queued(rt: &Runtime, agent: &str) -> Vec<String> {
         rt.store.read(|s| {
             s.turns
                 .iter()
@@ -2653,7 +2653,7 @@ pub(crate) mod tests {
         rt.db.run(run).unwrap().unwrap().status
     }
 
-    fn setup() -> (tempfile::TempDir, Arc<Runtime>, tempfile::TempDir, std::path::PathBuf, String) {
+    pub(crate) fn setup() -> (tempfile::TempDir, Arc<Runtime>, tempfile::TempDir, std::path::PathBuf, String) {
         let (d, rt) = test_runtime(false);
         let (rd, repo) = scratch_repo();
         let p = orch_git::project::register(&rt.db, &repo).unwrap();
