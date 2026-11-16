@@ -2162,8 +2162,13 @@ impl Runtime {
     }
 
     /// A team lead's PR gate was declined.
-    pub(crate) fn pr_declined(&self, agent: &str) {
-        if let Some(seat) = self.store.read(|s| s.agents.get(agent).and_then(|a| a.team.clone())) {
+    /// In `per_issue` mode the run follows its other PRs and gates.
+    pub(crate) fn pr_declined(&self, agent: &str, gate: u64) {
+        let Some(seat) = self.store.read(|s| s.agents.get(agent).and_then(|a| a.team.clone())) else { return };
+        let per_issue = self.run_ctx(&seat.run_id).is_ok_and(|cx| cx.feature.pr_mode == orch_store::PrMode::PerIssue);
+        if per_issue {
+            let _ = self.reevaluate_run_prs(&seat.run_id, Some(gate));
+        } else {
             let _ = self.advance_run(&seat.run_id, RunState::Integrating, "pull request declined");
         }
     }

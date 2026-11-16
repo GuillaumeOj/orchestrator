@@ -191,12 +191,14 @@ fn request_pr_in_single_mode_closes_the_issues_and_locks_the_mode() {
 }
 
 #[test]
-fn request_pr_per_issue_is_refused_until_per_issue_prs_exist() {
+fn request_pr_per_issue_needs_an_issue_of_the_feature() {
     let (_d, rt, _rd, _repo, pid) = setup();
     let run = approved(&rt, &pid, &["#1", "#2"], PrMode::PerIssue);
     rt.set_run_state(&run.id, RunState::Integrating, "test").unwrap();
-    let (err, text) = call(&rt, LEAD, "request_pr", json!({"title": "T", "issue": "#1"}));
-    assert!(err && text.contains("cannot open per-issue PRs yet"), "{text}");
+    let (err, text) = call(&rt, LEAD, "request_pr", json!({"title": "T"}));
+    assert!(err && text.contains("`issue` is required") && text.contains("#1, #2"), "{text}");
+    let (err, text) = call(&rt, LEAD, "request_pr", json!({"title": "T", "issue": "#3"}));
+    assert!(err && text.contains("#3 is not an issue of this feature"), "{text}");
     assert!(rt.store.read(|s| !s.inbox.iter().any(|i| i.pending() && i.kind == "gate")));
 }
 

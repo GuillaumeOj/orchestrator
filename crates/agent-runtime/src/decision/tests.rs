@@ -187,6 +187,41 @@ fn gates_spec_pr_and_restart() {
     let d = f.one("gate-3");
     assert_eq!((d.gate, d.title.as_str()), (Some("restart"), "Still waiting after a restart · lead-1"));
     assert_eq!(action_ids(&d), ["approve", "reject", "open"]);
+    // An update of the open PR is a PR gate too (not "Approve spec").
+    f.item(
+        Some("lead-1"),
+        "gate",
+        "lead-1: push 1 commit(s) to PR #34",
+        json!({"action": "push_pr_update", "run": "run-12", "issue": null, "branch": "orch/checkout/integration",
+               "base": "main", "pr_number": 34, "force": false,
+               "commits": [{"sha": "0123456789ab", "subject": "fix CI"}]}),
+    );
+    let d = f.one("gate-4");
+    assert_eq!((d.kind, d.gate, d.title.as_str()), ("gate", Some("pr"), "Push to PR #34 · shop-checkout"));
+    assert_eq!(d.summary, "orch/checkout/integration → PR #34 · 1 commit(s)");
+    assert_eq!(d.context[0]["text"].as_str().map(|t| t.contains("`01234567` fix CI")), Some(true), "{:?}", d.context);
+    assert_eq!(action_ids(&d), ["approve", "reject", "reply", "open"]);
+    assert_eq!(d.actions[0].label, "Approve: push");
+    f.item(
+        Some("lead-1"),
+        "gate",
+        "lead-1: force-push PR #35",
+        json!({"action": "push_pr_update", "issue": "#12", "branch": "orch/checkout/issue/12", "base": "main",
+               "pr_number": 35, "force": true, "commits": []}),
+    );
+    let d = f.one("gate-5");
+    assert_eq!(d.title, "Force-push PR #35 · shop-checkout · issue #12");
+    assert_eq!(d.summary, "orch/checkout/issue/12 → PR #35 · 0 commit(s) · rebased onto main (force push with lease)");
+    f.item(
+        Some("lead-1"),
+        "gate",
+        "lead-1: open a PR for issue #12",
+        json!({"action": "push_pr", "issue": "#12", "branch": "orch/checkout/issue/12", "base": "main", "title": "T"}),
+    );
+    assert_eq!(f.one("gate-6").title, "PR gate · shop-checkout · issue #12");
+    let d = f.one("gate-3");
+    assert_eq!((d.gate, d.title.as_str()), (Some("restart"), "Still waiting after a restart · lead-1"));
+    assert_eq!(action_ids(&d), ["approve", "reject", "open"]);
 }
 
 #[test]

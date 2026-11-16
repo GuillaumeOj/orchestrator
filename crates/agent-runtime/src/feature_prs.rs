@@ -182,7 +182,7 @@ impl Runtime {
                 json!({"issues": nf.issue_refs(), "pr_mode": nf.pr_mode, "by": "user"}),
             );
             self.tell_lead_prs(&r, &nf, f.pr_mode);
-            self.reevaluate_run_prs(&r.id)?;
+            self.reevaluate_run_prs(&r.id, None)?;
         }
         Ok(json!(nf))
     }
@@ -221,10 +221,6 @@ impl Runtime {
     /// §3.5). The per-issue rules (every issue PR merged → done, no PR open
     /// → integrating) come with the per-issue PR watcher; until then a
     /// change leaves the state as it is.
-    fn reevaluate_run_prs(&self, _run_id: &str) -> Result<()> {
-        Ok(())
-    }
-
     /// `issue_suggest` (api-contract §3): the project's intake issues whose
     /// ref or title matches `text`, at most 8. No network.
     pub fn issue_suggest(&self, project: &str, text: &str) -> Result<Value> {
