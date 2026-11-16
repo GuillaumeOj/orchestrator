@@ -260,7 +260,9 @@ describe('tooltip', () => {
     expect([...line.children].map((c) => c.className)).toEqual(['tip-label', 'tip-dot', 'kbd']);
     // Without a key the label is still in its own element, alone.
     t.update({ label: 'Solo' });
-    expect([...document.querySelector('#orch-tooltip .tip-line').children].map((c) => c.className)).toEqual(['tip-label']);
+    expect([...document.querySelector('#orch-tooltip .tip-line').children].map((c) => c.className)).toEqual([
+      'tip-label',
+    ]);
     b.dispatchEvent(new Event('pointerdown'));
     t.destroy();
   });
