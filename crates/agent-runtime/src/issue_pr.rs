@@ -133,9 +133,8 @@ impl Runtime {
     pub(crate) fn request_pr_issue(&self, rec: &AgentRecord, cx: &RunCtx, args: &Value) -> Result<String> {
         let issue = args.get("issue").and_then(Value::as_str).map(str::trim).filter(|i| !i.is_empty());
         let refs = cx.feature.issue_refs();
-        let issue = issue.ok_or_else(|| {
-            anyhow!("`issue` is required: this feature has one PR per issue ({})", refs.join(", "))
-        })?;
+        let issue = issue
+            .ok_or_else(|| anyhow!("`issue` is required: this feature has one PR per issue ({})", refs.join(", ")))?;
         // As typed (`12`, `#12`, `eng-7`): the feature's canonical ref.
         let issue = refs
             .iter()
@@ -268,7 +267,11 @@ impl Runtime {
             }
             let now = gh::rev_sha(&wt, &branch).unwrap_or_default();
             if now != was {
-                return Some(format!("{branch} is at {} now, not {}", &now[..now.len().min(12)], &was[..was.len().min(12)]));
+                return Some(format!(
+                    "{branch} is at {} now, not {}",
+                    &now[..now.len().min(12)],
+                    &was[..was.len().min(12)]
+                ));
             }
         }
         None
@@ -378,9 +381,19 @@ mod tests {
             (vec![pr("#1", Some("closed")), pr("#2", Some("open"))], g(&[]), PrOpen, "pull request opened"),
             (vec![pr("#1", Some("closed"))], g(&[]), Integrating, "no PR open"),
             // A closed PR replaced by a new one that merged.
-            (vec![pr("#1", Some("closed")), pr("#2", Some("merged")), pr("#1", Some("merged"))], g(&[]), Done, "every issue PR merged"),
+            (
+                vec![pr("#1", Some("closed")), pr("#2", Some("merged")), pr("#1", Some("merged"))],
+                g(&[]),
+                Done,
+                "every issue PR merged",
+            ),
             // A PR of an issue no longer on the feature does not count.
-            (vec![pr("#3", Some("open")), pr("#1", Some("merged")), pr("#2", Some("merged"))], g(&[]), Done, "every issue PR merged"),
+            (
+                vec![pr("#3", Some("open")), pr("#1", Some("merged")), pr("#2", Some("merged"))],
+                g(&[]),
+                Done,
+                "every issue PR merged",
+            ),
         ];
         for (prs, gated, want, why) in cases {
             assert_eq!(per_issue_run_state(&issues, &prs, &gated), (want, why), "{prs:?} {gated:?}");

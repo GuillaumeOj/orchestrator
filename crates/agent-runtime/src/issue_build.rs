@@ -127,7 +127,9 @@ impl Runtime {
     ) -> Result<std::result::Result<Build, Conflict>> {
         let r = self.build_issue_inner(cx, wt, issue, pr);
         let detail = match &r {
-            Ok(Ok(b)) => json!({"issue": issue, "ok": true, "commits": b.commits, "shared": b.shared, "skipped": b.skipped}),
+            Ok(Ok(b)) => {
+                json!({"issue": issue, "ok": true, "commits": b.commits, "shared": b.shared, "skipped": b.skipped})
+            }
             Ok(Err(c)) => json!({"issue": issue, "ok": false, "commits": 0, "shared": 0, "skipped": 0,
                                  "conflict": {"task": c.task.as_ref().map(|t| &t.0), "commit": c.commit, "files": c.files}}),
             Err(e) => json!({"issue": issue, "ok": false, "error": format!("{e:#}")}),

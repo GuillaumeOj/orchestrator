@@ -94,9 +94,20 @@ pub fn pr_changes(old: Option<&PrStatus>, new: &PrStatus) -> Vec<PrChange> {
     out
 }
 
+/// A PR as [`Runtime::read_pr`] saw it: its status and URL, or (gh failed)
+/// the last good status marked stale.
+enum PrRead {
+    Seen(PrStatus, String),
+    Failed(PrStatus),
+}
+
 /// The issues whose latest PR is open (or not checked yet), in `prs` order.
 pub(crate) fn open_issue_prs(run: &TeamRun) -> Vec<String> {
-    latest_prs(run).into_iter().filter(|p| p.pr.as_ref().is_none_or(|s| s.state == "open")).map(|p| p.issue.clone()).collect()
+    latest_prs(run)
+        .into_iter()
+        .filter(|p| p.pr.as_ref().is_none_or(|s| s.state == "open"))
+        .map(|p| p.issue.clone())
+        .collect()
 }
 
 /// Every issue that had a PR (its latest one).
@@ -209,8 +220,8 @@ impl Runtime {
     }
 
     /// `gh pr view` and the fetch (when due under `key`, or `force_fetch`),
-    /// then the status as seen. `Err` is the last good status marked stale
-    /// (gh failed). `unpushed` / `rewritten` are left for the caller.
+    /// then the status as seen, or the last good one marked stale (gh
+    /// failed). `unpushed` / `rewritten` are left for the caller.
     #[allow(clippy::too_many_arguments)]
     fn read_pr(
         &self,
@@ -223,7 +234,7 @@ impl Runtime {
         force_fetch: bool,
         now: u64,
         pushed: Option<String>,
-    ) -> std::result::Result<(PrStatus, String), PrStatus> {
+    ) -> PrRead {
         let view = match self.gh_pr_view(wt, n) {
             Ok(v) => v,
             Err(e) => {
@@ -231,7 +242,7 @@ impl Runtime {
                 st.error = Some(format!("{e:#}"));
                 st.checked_at_ms = now;
                 st.pushed_sha = pushed.or(st.pushed_sha);
-                return Err(st);
+                return PrRead::Failed(st);
             }
         };
         if force_fetch || watch.get(key).is_none_or(|t| now.saturating_sub(*t) >= FETCH_BASE_EVERY_MS) {
@@ -262,7 +273,7 @@ impl Runtime {
         if st.state != "open" {
             watch.remove(key);
         }
-        Ok((st, view.url))
+        PrRead::Seen(st, view.url)
     }
 
     /// Checks a run's PR once: `gh pr view`, the base and PR head fetched
@@ -287,8 +298,8 @@ impl Runtime {
         let branch = feature.integration_branch();
         let (mut new, url) =
             match self.read_pr(&mut watch, run_id, &wt, n, &branch, old.as_ref(), force_fetch, now, pushed) {
-                Ok(v) => v,
-                Err(st) => {
+                PrRead::Seen(st, url) => (st, url),
+                PrRead::Failed(st) => {
                     // The last good status stays, marked stale; the run does not move.
                     self.db.set_run_pr(run_id, &st, None)?;
                     run.pr = Some(st);
@@ -337,11 +348,11 @@ impl Runtime {
         let key = format!("{run_id}#{issue}");
         let (n, old) = (p.number, p.pr.clone());
         let new = match self.read_pr(&mut watch, &key, &wt, n, &p.branch, old.as_ref(), force_fetch, now, pushed) {
-            Ok((mut st, _)) => {
+            PrRead::Seen(mut st, _) => {
                 (st.unpushed, st.rewritten) = self.issue_pr_drift(&cx, &wt, &p);
                 st
             }
-            Err(st) => st,
+            PrRead::Failed(st) => st,
         };
         let ok = new.error.is_none();
         let stored = new.clone();

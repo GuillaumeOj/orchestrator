@@ -466,11 +466,16 @@ fn stored(cx: &Ctx, i: &InboxItem) -> Decision {
             let feature = feature.as_deref().unwrap_or(s(p, "branch"));
             let n = p.get("pr_number").and_then(Value::as_u64).unwrap_or(0);
             let force = p.get("force").and_then(Value::as_bool).unwrap_or(false);
-            let issue = Some(s(p, "issue")).filter(|i| !i.is_empty()).map(|i| format!(" · issue {i}")).unwrap_or_default();
+            let issue =
+                Some(s(p, "issue")).filter(|i| !i.is_empty()).map(|i| format!(" · issue {i}")).unwrap_or_default();
             let verb = if force { "Force-push PR" } else { "Push to PR" };
             let title = format!("{verb} #{n} · {feature}{issue}");
             let commits = p.get("commits").and_then(Value::as_array).cloned().unwrap_or_default();
-            let how = if force { format!(" · rebased onto {} (force push with lease)", s(p, "base")) } else { String::new() };
+            let how = if force {
+                format!(" · rebased onto {} (force push with lease)", s(p, "base"))
+            } else {
+                String::new()
+            };
             let summary = format!("{} → PR #{n} · {} commit(s){how}", s(p, "branch"), commits.len());
             let list: Vec<String> = commits
                 .iter()

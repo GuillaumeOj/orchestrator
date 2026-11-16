@@ -105,7 +105,10 @@ fn refused(rt: &Runtime, args: Value) -> String {
 
 fn told(rt: &Runtime, needle: &str) -> usize {
     rt.store.read(|s| {
-        s.turns.iter().filter(|t| t.agent_id == LEAD && t.status == TurnStatus::Queued && t.body.contains(needle)).count()
+        s.turns
+            .iter()
+            .filter(|t| t.agent_id == LEAD && t.status == TurnStatus::Queued && t.body.contains(needle))
+            .count()
     })
 }
 
@@ -202,7 +205,8 @@ fn integrating() -> Fx {
 /// A task of `issue` on `node`: dispatched, `file` written, reported and merged.
 fn task(rt: &Runtime, node: &str, issue: &str, file: &str, body: &str) -> orch_store::Task {
     let agent = format!("fx-{node}-1");
-    let text = ok(rt, LEAD, "create_task", json!({"title": format!("{file} for {issue}"), "node": node, "issue": issue}));
+    let text =
+        ok(rt, LEAD, "create_task", json!({"title": format!("{file} for {issue}"), "node": node, "issue": issue}));
     rt.team_tick();
     let id = rt.store.read(|s| s.agents[&agent].team.as_ref().unwrap().task.unwrap());
     let wt = rt.store.read(|s| s.agents[&agent].worktree.clone());
@@ -249,7 +253,10 @@ fn two_issues_get_their_own_prs_updates_and_the_run_ends_when_both_merge() {
     assert!(refused(rt, json!({"issue": "#1", "title": "Again"})).contains("already waiting"));
     ok(rt, LEAD, "request_pr", json!({"issue": "2", "title": "Two"}));
     let (g1, g2) = (gate_of(rt, "#1"), gate_of(rt, "#2"));
-    assert_eq!((g1.payload["action"].clone(), g1.payload["branch"].clone()), (json!("push_pr"), json!("orch/fx/issue/1")));
+    assert_eq!(
+        (g1.payload["action"].clone(), g1.payload["branch"].clone()),
+        (json!("push_pr"), json!("orch/fx/issue/1"))
+    );
     assert_eq!(g1.payload["body"], "First.\n\nCloses #1");
     assert_eq!(g2.payload["body"], "Closes #2");
     let paths = |g: &InboxItem| -> Vec<String> {
@@ -325,7 +332,10 @@ fn two_issues_get_their_own_prs_updates_and_the_run_ends_when_both_merge() {
     assert_eq!(events(&fx, "pr.merged"), [json!({"number": 12, "issue": "#1"})]);
     let info = infos(rt);
     assert_eq!(info.len(), 1);
-    assert_eq!((info[0].payload["action"].clone(), info[0].payload["issue"].clone()), (json!("pr_merged"), json!("#1")));
+    assert_eq!(
+        (info[0].payload["action"].clone(), info[0].payload["issue"].clone()),
+        (json!("pr_merged"), json!("#1"))
+    );
     assert!(refused(rt, json!({"issue": "#1"})).contains("was merged"));
 
     // PR 2 merged: done, "Feature fx merged" once, even checked again.
@@ -359,7 +369,9 @@ fn a_task_built_on_another_issue_s_work_is_refused_with_its_task_and_files() {
     assert_eq!(ev[0]["conflict"]["files"], json!(["x.rs"]));
     assert_eq!(ev[0]["conflict"]["task"], json!(t2.handle()));
     assert!(
-        g(&rt.store.read(|s| s.agents[LEAD].worktree.clone()), &["branch", "--list", "orch/fx/issue/2"]).trim().is_empty(),
+        g(&rt.store.read(|s| s.agents[LEAD].worktree.clone()), &["branch", "--list", "orch/fx/issue/2"])
+            .trim()
+            .is_empty(),
         "nothing written"
     );
     // #1 alone builds; re-tagging the task to #1 makes #2's PR shared work only.
