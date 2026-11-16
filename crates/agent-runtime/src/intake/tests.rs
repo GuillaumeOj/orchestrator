@@ -2308,6 +2308,9 @@ fn the_pr_closes_the_items_on_github_and_names_the_identifier_on_linear_unless_t
         "team": {"key": "ENG"}, "project": null, "state": {"name": "Todo", "type": "unstarted"},
         "updatedAt": "2026-11-01T00:00:00Z", "labels": {"nodes": []}})]);
     l.refresh();
+    // The form of a Linear item lists its identifier as the feature's first issue.
+    l.with_team();
+    assert_eq!(l.rt.work_prefill("lin:ENG-42", Some("team")).unwrap()["launch"]["issues"], json!(["ENG-42"]));
     start_node(&l, "lin:ENG-42", "lin-solo");
     let rec = crate::runtime::tests::test_agent(l._d.path());
     l.rt.store

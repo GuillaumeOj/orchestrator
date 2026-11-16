@@ -296,7 +296,7 @@ pub fn prs_view(run: &TeamRun, feature: &Feature, gates: &[GateRef]) -> Vec<PrVi
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use orch_store::RunPr;
+    use orch_store::{IntakeState, RunPr};
     use orch_team::RunState;
 
     const REPO: Option<&str> = Some("o/r");
@@ -319,6 +319,42 @@ pub(crate) mod tests {
             .unwrap();
         c.stdin.take().unwrap().write_all(msg.as_bytes()).unwrap();
         String::from_utf8(c.wait_with_output().unwrap().stdout).unwrap()
+    }
+
+    #[test]
+    fn issue_rows_keep_the_issues_only() {
+        let row = |kind: &str, deleted: bool| IntakeRow {
+            id: 0,
+            project_id: "p".into(),
+            source: "github".into(),
+            reference: "#1".into(),
+            title: String::new(),
+            url: None,
+            body: String::new(),
+            meta: serde_json::Value::Null,
+            rev: String::new(),
+            fetched_at_ms: 0,
+            position: 0,
+            state: IntakeState::default(),
+            started_kind: None,
+            started_ref: None,
+            hidden_at_ms: None,
+            hidden_rev: None,
+            node_id: format!("n-{kind}-{deleted}"),
+            kind: kind.into(),
+            parent_id: None,
+            depth: 1,
+            deleted,
+        };
+        let rows = vec![
+            row("issue", false),
+            row("milestone", false),
+            row("linear_project", false),
+            row("brief", false),
+            row("issue", true),
+        ];
+        let kept: Vec<String> = issue_rows(rows).into_iter().map(|r| r.node_id).collect();
+        assert_eq!(kept, ["n-issue-false"]);
     }
 
     #[test]
