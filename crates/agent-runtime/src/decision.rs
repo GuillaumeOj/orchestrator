@@ -279,6 +279,11 @@ pub fn thread_of(subject: &Value) -> Option<String> {
     subject.get("run").or_else(|| subject.get("agent")).and_then(Value::as_str).map(str::to_string)
 }
 
+/// ` · issue #12` for a per-issue PR gate, else nothing.
+fn issue_suffix(p: &Value) -> String {
+    Some(s(p, "issue")).filter(|i| !i.is_empty()).map(|i| format!(" · issue {i}")).unwrap_or_default()
+}
+
 /// What a stored item is, as a Decision kind and gate.
 fn kind_of(i: &InboxItem) -> (&'static str, Option<&'static str>) {
     match i.kind.as_str() {
@@ -466,10 +471,8 @@ fn stored(cx: &Ctx, i: &InboxItem) -> Decision {
             let feature = feature.as_deref().unwrap_or(s(p, "branch"));
             let n = p.get("pr_number").and_then(Value::as_u64).unwrap_or(0);
             let force = p.get("force").and_then(Value::as_bool).unwrap_or(false);
-            let issue =
-                Some(s(p, "issue")).filter(|i| !i.is_empty()).map(|i| format!(" · issue {i}")).unwrap_or_default();
             let verb = if force { "Force-push PR" } else { "Push to PR" };
-            let title = format!("{verb} #{n} · {feature}{issue}");
+            let title = format!("{verb} #{n} · {feature}{}", issue_suffix(p));
             let commits = p.get("commits").and_then(Value::as_array).cloned().unwrap_or_default();
             let how = if force {
                 format!(" · rebased onto {} (force push with lease)", s(p, "base"))
@@ -480,7 +483,7 @@ fn stored(cx: &Ctx, i: &InboxItem) -> Decision {
             let list: Vec<String> = commits
                 .iter()
                 .take(30)
-                .map(|c| format!("- `{}` {}", &s(c, "sha")[..s(c, "sha").len().min(8)], s(c, "subject")))
+                .map(|c| format!("- `{}` {}", crate::inbox::short(s(c, "sha")), s(c, "subject")))
                 .collect();
             let ctx = vec![markdown(&list.join("\n"), None)];
             let actions = vec![
@@ -493,10 +496,8 @@ fn stored(cx: &Ctx, i: &InboxItem) -> Decision {
         }
         ("gate", Some("pr")) => {
             let feature = subject_of(cx, agent, None).get("feature").and_then(Value::as_str).map(str::to_string);
-            let mut title = crate::attention::copy::pr_gate(feature.as_deref().unwrap_or(s(p, "branch")));
-            if !s(p, "issue").is_empty() {
-                title.push_str(&format!(" · issue {}", s(p, "issue")));
-            }
+            let title =
+                crate::attention::copy::pr_gate(feature.as_deref().unwrap_or(s(p, "branch"))) + &issue_suffix(p);
             let diff = p.get("diff").cloned().unwrap_or(Value::Null);
             let files = diff.get("files").and_then(Value::as_array).map_or(0, Vec::len);
             let summary = format!(

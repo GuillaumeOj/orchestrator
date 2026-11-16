@@ -278,11 +278,31 @@ impl Runtime {
 
     /// Moves a run to `to` (checked against §6.2) and logs it on its timeline.
     pub fn set_run_state(&self, run_id: &str, to: RunState, why: &str) -> Result<TeamRun> {
+        self.move_run(run_id, to, why, true)
+    }
+
+    /// A `per_issue` run's state is derived from its PRs (§3.5), not
+    /// stepped through §6.2's flow: any move between its PR states, or to
+    /// done, is allowed (a pause still holds, except for done).
+    pub(crate) fn derive_run_state(&self, run_id: &str, to: RunState, why: &str) -> Result<TeamRun> {
+        let run = self.db.run(run_id)?.ok_or_else(|| anyhow!("no team run {run_id}"))?;
+        let pr_state = |s: RunState| matches!(s, RunState::Integrating | RunState::PrGate | RunState::PrOpen);
+        if !pr_state(effective(&run)) || !(pr_state(to) || to == RunState::Done) {
+            bail!("a {} run can't go to {to}", effective(&run));
+        }
+        // A merge is not held back by a pause: done at once.
+        if to == RunState::Done {
+            return self.move_run(run_id, to, why, false);
+        }
+        self.advance_inner(run_id, to, why, false)
+    }
+
+    fn move_run(&self, run_id: &str, to: RunState, why: &str, checked: bool) -> Result<TeamRun> {
         let mut run = self.db.run(run_id)?.ok_or_else(|| anyhow!("no team run {run_id}"))?;
         if run.status == to {
             return Ok(run);
         }
-        if !run.status.can_go(to) {
+        if checked && !run.status.can_go(to) {
             bail!("a {} run can't go to {}", run.status, to);
         }
         let from = run.status;
@@ -305,15 +325,19 @@ impl Runtime {
     /// opened). On a paused or deferred run it becomes the state the run
     /// resumes into, so the pause holds (its agents stay paused).
     pub(crate) fn advance_run(&self, run_id: &str, to: RunState, why: &str) -> Result<TeamRun> {
+        self.advance_inner(run_id, to, why, true)
+    }
+
+    fn advance_inner(&self, run_id: &str, to: RunState, why: &str, checked: bool) -> Result<TeamRun> {
         let mut run = self.db.run(run_id)?.ok_or_else(|| anyhow!("no team run {run_id}"))?;
         if !run.status.held() || to.held() || to == RunState::Failed {
-            return self.set_run_state(run_id, to, why);
+            return self.move_run(run_id, to, why, checked);
         }
         let from = effective(&run);
         if from == to {
             return Ok(run);
         }
-        if !from.can_go(to) {
+        if checked && !from.can_go(to) {
             bail!("a {from} run can't go to {to}");
         }
         run.resume_status = Some(to);

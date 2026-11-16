@@ -172,7 +172,17 @@ impl Runtime {
             && let Some(me) = self.me.upgrade()
         {
             let run = cx.run.id.clone();
-            std::thread::spawn(move || me.pr_check_now(&run, None));
+            // The single PR, or each open issue PR (now `rewritten`).
+            let issues = if cx.run.pr_number.is_some() {
+                vec![None]
+            } else {
+                crate::pr::open_issues(&cx.run).into_iter().map(Some).collect()
+            };
+            std::thread::spawn(move || {
+                for i in issues {
+                    me.pr_check_now(&run, i.as_deref(), None);
+                }
+            });
         }
         moved
     }

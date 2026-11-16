@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use anyhow::{Result, bail};
 use orch_git::fixtures::{commit_file, git as g, scratch_repo};
-use orch_protocol::{InboxDecision, McpMsg, now_ms};
+use orch_protocol::{InboxDecision, now_ms};
 use orch_store::{InboxItem, PrMode, RunPr, TeamRun};
 use orch_team::RunState;
 use serde_json::{Value, json};
@@ -15,6 +15,7 @@ use serde_json::{Value, json};
 use crate::runtime::Runtime;
 use crate::runtime::tests::test_cfg;
 use crate::store::TurnStatus;
+use crate::team::tests::{call, ok};
 use crate::team::{GhFactory, LaunchSpec};
 
 const LEAD: &str = "fx-lead-1";
@@ -83,18 +84,6 @@ struct Fx {
     run: String,
     /// A clone of `origin` to move `main` from.
     other: PathBuf,
-}
-
-fn call(rt: &Runtime, agent: &str, tool: &str, args: Value) -> (bool, String) {
-    let (err, text, _) =
-        rt.on_mcp(&McpMsg { agent_id: agent.into(), tool: tool.into(), arguments: args, deadline_ms: 10_000 }, None);
-    (err, text)
-}
-
-fn ok(rt: &Runtime, agent: &str, tool: &str, args: Value) -> String {
-    let (err, text) = call(rt, agent, tool, args);
-    assert!(!err, "{agent} {tool}: {text}");
-    text
 }
 
 fn refused(rt: &Runtime, args: Value) -> String {

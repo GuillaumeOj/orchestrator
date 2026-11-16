@@ -27,6 +27,11 @@ impl CommitInfo {
     pub fn trailer(&self, key: &str) -> Option<&str> {
         self.trailers.iter().find(|(k, _)| k.eq_ignore_ascii_case(key)).map(|(_, v)| v.as_str())
     }
+
+    /// The task its `Orch-Task` trailer names (a task merge).
+    pub fn task_id(&self) -> Option<u64> {
+        self.trailer("Orch-Task").and_then(|v| v.trim().parse().ok())
+    }
 }
 
 /// A name, email and raw date (`<secs> <tz>`).
@@ -139,6 +144,8 @@ pub fn set_branch(dir: &Path, branch: &str, sha: &str) -> Result<()> {
 pub enum Replay {
     Done {
         head: String,
+        /// The tree of `head`.
+        tree: String,
         /// The commits replayed (their source shas).
         replayed: Vec<String>,
         /// Their change was already there: left out.
@@ -153,7 +160,7 @@ pub enum Replay {
 /// Applies each commit's own change (`diff(C^1, C)`) onto `onto`, in order,
 /// keeping its author and message. An empty result is skipped. Nothing is
 /// written but objects; a conflict stops at its commit.
-pub fn replay(dir: &Path, onto: &str, commits: &[CommitInfo]) -> Result<Replay> {
+pub fn replay(dir: &Path, onto: &str, commits: &[&CommitInfo]) -> Result<Replay> {
     let mut head = onto.to_string();
     let mut tree = tree_of(dir, onto)?;
     let (mut replayed, mut skipped) = (vec![], vec![]);
@@ -169,7 +176,7 @@ pub fn replay(dir: &Path, onto: &str, commits: &[CommitInfo]) -> Result<Replay> 
             }
         }
     }
-    Ok(Replay::Done { head, replayed, skipped })
+    Ok(Replay::Done { head, tree, replayed, skipped })
 }
 
 #[cfg(test)]
@@ -229,8 +236,7 @@ mod tests {
         let (_d, repo, fork) = repo();
         let cs = first_parent_commits(&repo, &fork, "integ").unwrap();
         // Only the merge and c: a.txt is left out.
-        let Replay::Done { head, replayed, skipped } = replay(&repo, &fork, &[cs[1].clone(), cs[2].clone()]).unwrap()
-        else {
+        let Replay::Done { head, replayed, skipped, .. } = replay(&repo, &fork, &[&cs[1], &cs[2]]).unwrap() else {
             panic!("conflict")
         };
         assert_eq!((replayed.len(), skipped.len()), (2, 0));
@@ -240,12 +246,10 @@ mod tests {
         assert_eq!(log.lines().collect::<Vec<_>>(), ["T|add c", "L|Merge side"]);
         assert_eq!(g(&repo, &["rev-list", "--count", &format!("{fork}..{head}")]).trim(), "2", "linear");
         // Deterministic: the same replay gives the same head.
-        let Replay::Done { head: again, .. } = replay(&repo, &fork, &[cs[1].clone(), cs[2].clone()]).unwrap() else {
-            panic!()
-        };
+        let Replay::Done { head: again, .. } = replay(&repo, &fork, &[&cs[1], &cs[2]]).unwrap() else { panic!() };
         assert_eq!(again, head);
         // Onto a base that already has the change: skipped.
-        let Replay::Done { head: h2, replayed, skipped } = replay(&repo, &head, &[cs[2].clone()]).unwrap() else {
+        let Replay::Done { head: h2, replayed, skipped, .. } = replay(&repo, &head, &[&cs[2]]).unwrap() else {
             panic!()
         };
         assert_eq!((h2, replayed.len(), skipped), (head.clone(), 0, vec![cs[2].sha.clone()]));
@@ -261,7 +265,7 @@ mod tests {
         commit_file(&repo, "x.txt", "one\n", "create x");
         commit_file(&repo, "x.txt", "two\n", "edit x");
         let cs = first_parent_commits(&repo, &fork, "HEAD").unwrap();
-        let r = replay(&repo, &fork, &cs[1..]).unwrap();
+        let r = replay(&repo, &fork, &cs[1..].iter().collect::<Vec<_>>()).unwrap();
         assert_eq!(r, Replay::Conflict { commit: cs[1].sha.clone(), files: vec!["x.txt".into()] });
         assert!(matches!(merge_tree(&repo, &fork, &fork, &cs[0].sha).unwrap(), MergeTree::Clean(_)));
     }

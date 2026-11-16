@@ -199,7 +199,12 @@ fn gates_spec_pr_and_restart() {
     let d = f.one("gate-4");
     assert_eq!((d.kind, d.gate, d.title.as_str()), ("gate", Some("pr"), "Push to PR #34 · shop-checkout"));
     assert_eq!(d.summary, "orch/checkout/integration → PR #34 · 1 commit(s)");
-    assert_eq!(d.context[0]["text"].as_str().map(|t| t.contains("`01234567` fix CI")), Some(true), "{:?}", d.context);
+    assert_eq!(
+        d.context[0]["text"].as_str().map(|t| t.contains("`0123456789ab` fix CI")),
+        Some(true),
+        "{:?}",
+        d.context
+    );
     assert_eq!(action_ids(&d), ["approve", "reject", "reply", "open"]);
     assert_eq!(d.actions[0].label, "Approve: push");
     f.item(

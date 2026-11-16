@@ -131,6 +131,36 @@ pub struct RunPr {
     pub integration_sha: String,
 }
 
+impl RunPr {
+    /// Open, or not checked yet (just opened).
+    pub fn is_open(&self) -> bool {
+        self.pr.as_ref().is_none_or(|s| s.state == "open")
+    }
+
+    pub fn is_merged(&self) -> bool {
+        self.pr.as_ref().is_some_and(|s| s.state == "merged")
+    }
+}
+
+impl TeamRun {
+    /// The latest PR of each issue (`prs` holds a closed one replaced), in first-seen order.
+    pub fn latest_prs(&self) -> Vec<&RunPr> {
+        let mut out: Vec<&RunPr> = vec![];
+        for p in &self.prs {
+            match out.iter_mut().find(|o| o.issue == p.issue) {
+                Some(o) => *o = p,
+                None => out.push(p),
+            }
+        }
+        out
+    }
+
+    /// The latest PR of `issue`.
+    pub fn latest_pr(&self, issue: &str) -> Option<&RunPr> {
+        self.prs.iter().rev().find(|p| p.issue == issue)
+    }
+}
+
 /// A team launched on a feature (SPEC §7 TeamRun). The team graph and roles
 /// it uses are the snapshot `team_versions(team_id, team_version)` (FR-308).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

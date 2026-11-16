@@ -8,7 +8,7 @@ use std::path::Path;
 
 use anyhow::{Result, anyhow};
 use orch_git::replay::{self, CommitInfo, Replay};
-use orch_store::{Feature, RunPr, Task};
+use orch_store::{Feature, RunPr, Task, TeamRun};
 use serde_json::json;
 
 use crate::inbox::short;
@@ -20,7 +20,7 @@ use crate::team::RunCtx;
 /// follows task `n`'s issue as it is now; `Orch-Issue: r` names it; anything
 /// else (lead docs, untagged tasks, unknown tasks) is shared.
 pub fn attribute(c: &CommitInfo, task_issue: &dyn Fn(u64) -> Option<String>) -> Option<String> {
-    if let Some(n) = c.trailer("Orch-Task").and_then(|v| v.trim().parse::<u64>().ok()) {
+    if let Some(n) = c.task_id() {
         return task_issue(n);
     }
     c.trailer("Orch-Issue").map(|r| r.trim().to_string()).filter(|r| !r.is_empty())
@@ -104,12 +104,12 @@ pub fn fork_point(wt: &Path, feature: &Feature) -> Result<String> {
     Ok(orch_git::git(wt, &["merge-base", &integ, &base])?.trim().to_string())
 }
 
-/// The issue of each task of a run, by id (`None`: untagged).
-fn task_issues(tasks: &[Task]) -> BTreeMap<u64, Option<String>> {
-    tasks.iter().map(|t| (t.id, t.issue.clone())).collect()
-}
-
 impl Runtime {
+    /// A run's tasks by id.
+    fn run_tasks(&self, run_id: &str) -> Result<BTreeMap<u64, Task>> {
+        Ok(self.db.tasks(None, None, Some(run_id))?.into_iter().map(|t| (t.id, t)).collect())
+    }
+
     /// Builds `issue`'s branch in the integration worktree `wt` (spec §3.3).
     /// `pr` is its open PR: the build becomes one update commit on the PR's
     /// pushed head, or a force push after `rebase_base` moved the fork point.
@@ -147,19 +147,17 @@ impl Runtime {
         let head_of_integ = orch_git::gh::rev_sha(wt, &integ).ok_or_else(|| anyhow!("{integ} has no commit"))?;
         let fork = fork_point(wt, f)?;
         let commits = replay::first_parent_commits(wt, &fork, &head_of_integ)?;
-        let tasks = self.db.tasks(None, None, Some(&cx.run.id))?;
-        let issues = task_issues(&tasks);
-        let task_issue = |n: u64| issues.get(&n).cloned().flatten();
+        let tasks = self.run_tasks(&cx.run.id)?;
+        let task_issue = |n: u64| tasks.get(&n).and_then(|t| t.issue.clone());
         let picked = of_issue(&commits, issue, &task_issue);
-        let list: Vec<CommitInfo> = picked.iter().map(|(c, _)| (*c).clone()).collect();
-        let (head, replayed, skipped) = match replay::replay(wt, &fork, &list)? {
-            Replay::Done { head, replayed, skipped } => (head, replayed, skipped),
+        let list: Vec<&CommitInfo> = picked.iter().map(|(c, _)| *c).collect();
+        let (head, tree, replayed, skipped) = match replay::replay(wt, &fork, &list)? {
+            Replay::Done { head, tree, replayed, skipped } => (head, tree, replayed, skipped),
             Replay::Conflict { commit, files } => {
                 let c = commits.iter().find(|c| c.sha == commit);
                 let task = c
-                    .and_then(|c| c.trailer("Orch-Task"))
-                    .and_then(|v| v.trim().parse::<u64>().ok())
-                    .and_then(|n| tasks.iter().find(|t| t.id == n))
+                    .and_then(CommitInfo::task_id)
+                    .and_then(|n| tasks.get(&n))
                     .map(|t| (t.handle(), t.node.clone().unwrap_or_default()));
                 return Ok(Err(Conflict {
                     subject: c.map(|c| c.subject.clone()).unwrap_or_default(),
@@ -175,11 +173,10 @@ impl Runtime {
         let lease = pr.map(|p| p.pr.as_ref().and_then(|s| s.pushed_sha.clone()).unwrap_or_else(|| p.built_sha.clone()));
         let (head, push) = match (pr, lease) {
             (Some(p), Some(lease)) if p.fork_sha == fork && orch_git::git::valid_sha(&lease) => {
-                let tree = replay::tree_of(wt, &head)?;
                 if replay::tree_of(wt, &lease)? == tree {
                     (lease, Push::UpToDate)
                 } else {
-                    let msg = update_message(issue, &commits, p, &task_issue, &tasks);
+                    let msg = update_message(issue, &commits, p, &tasks);
                     let author = match commits.last() {
                         Some(c) => c.author.clone(),
                         None => replay::author_of(wt, &head_of_integ)?,
@@ -210,34 +207,26 @@ impl Runtime {
     /// `PrStatus.unpushed` / `rewritten` of an issue PR (spec §3.5): the
     /// integration commits of the issue or shared since its last pushed
     /// build, and whether the fork point moved since.
-    pub(crate) fn issue_pr_drift(&self, cx: &RunCtx, wt: &Path, p: &RunPr) -> (u32, bool) {
-        let Ok(fork) = fork_point(wt, &cx.feature) else { return (0, false) };
+    pub(crate) fn issue_pr_drift(&self, run: &TeamRun, feature: &Feature, wt: &Path, p: &RunPr) -> (u32, bool) {
+        let Ok(fork) = fork_point(wt, feature) else { return (0, false) };
         let rewritten = !p.fork_sha.is_empty() && p.fork_sha != fork;
-        let integ = cx.feature.integration_branch();
+        let integ = feature.integration_branch();
         let from = if rewritten || p.integration_sha.is_empty() { fork.as_str() } else { p.integration_sha.as_str() };
         let Ok(commits) = replay::first_parent_commits(wt, from, &integ) else { return (0, rewritten) };
-        let tasks = self.db.tasks(None, None, Some(&cx.run.id)).unwrap_or_default();
-        let issues = task_issues(&tasks);
-        let n = of_issue(&commits, &p.issue, &|n| issues.get(&n).cloned().flatten()).len();
+        let tasks = self.run_tasks(&run.id).unwrap_or_default();
+        let n = of_issue(&commits, &p.issue, &|n| tasks.get(&n).and_then(|t| t.issue.clone())).len();
         (n as u32, rewritten)
     }
 }
 
 /// `Update for <ref>: <task handles>`: the issue's tasks merged since the
 /// PR's last pushed build (`shared changes` when only shared work moved).
-fn update_message(
-    issue: &str,
-    commits: &[CommitInfo],
-    p: &RunPr,
-    task_issue: &dyn Fn(u64) -> Option<String>,
-    tasks: &[Task],
-) -> String {
+fn update_message(issue: &str, commits: &[CommitInfo], p: &RunPr, tasks: &BTreeMap<u64, Task>) -> String {
     let since = commits.iter().position(|c| c.sha == p.integration_sha).map_or(0, |i| i + 1);
     let mut handles: Vec<String> = vec![];
     for c in &commits[since..] {
-        let Some(n) = c.trailer("Orch-Task").and_then(|v| v.trim().parse::<u64>().ok()) else { continue };
-        if task_issue(n).as_deref() == Some(issue)
-            && let Some(t) = tasks.iter().find(|t| t.id == n)
+        if let Some(t) = c.task_id().and_then(|n| tasks.get(&n))
+            && t.issue.as_deref() == Some(issue)
             && !handles.contains(&t.handle())
         {
             handles.push(t.handle());
