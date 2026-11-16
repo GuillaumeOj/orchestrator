@@ -78,8 +78,7 @@ impl Output {
             b.tail_text.drain(..cut);
         }
         if self.watch_trust.load(Ordering::Relaxed) {
-            let squashed: String = b.tail_text.split_whitespace().collect::<Vec<_>>().join(" ");
-            self.trust_dialog.store(squashed.contains(TRUST_DIALOG_TEXT), Ordering::Relaxed);
+            self.trust_dialog.store(squash(&b.tail_text).contains(TRUST_DIALOG_TEXT), Ordering::Relaxed);
         }
         self.cv.notify_all();
         let mut answers = vec![];
@@ -148,6 +147,12 @@ impl Output {
         self.lock().closed = true;
         self.cv.notify_all();
     }
+}
+
+/// Runs of whitespace as one space: a stripped escape leaves a run of them,
+/// even inside a word sequence like the trust dialog's header.
+pub(crate) fn squash(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn contains(hay: &[u8], needle: &[u8]) -> bool {

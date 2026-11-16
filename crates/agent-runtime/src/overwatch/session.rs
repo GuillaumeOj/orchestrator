@@ -259,7 +259,7 @@ impl Runtime {
             return (Status::Paused, Some(w.into()), events);
         }
         // The record flag is only up once the auto-answer failed (§3.4).
-        if self.store.read(|s| s.agents.get(ID).is_some_and(|a| a.is_overwatch() && a.trust_dialog)) {
+        if self.overwatch_trust_raised() {
             return (Status::Paused, Some(why::TRUST.into()), events);
         }
         let status = if in_flight {
