@@ -119,3 +119,86 @@ fn issue_suggest_reads_the_intake_cache() {
     let (_d, rt, _rd, _repo, pid) = setup();
     assert_eq!(rt.issue_suggest(&pid, "x").unwrap(), json!([]));
 }
+
+fn head_message(rt: &Runtime, agent: &str) -> String {
+    let wt = rt.store.read(|s| s.agents[agent].worktree.clone());
+    orch_git::git(&wt, &["log", "-1", "--format=%B"]).unwrap()
+}
+
+/// `git interpret-trailers --parse` of a message.
+fn trailers(msg: &str) -> String {
+    use std::io::Write;
+    let mut c = std::process::Command::new("git")
+        .args(["interpret-trailers", "--parse"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    c.stdin.take().unwrap().write_all(msg.as_bytes()).unwrap();
+    String::from_utf8(c.wait_with_output().unwrap().stdout).unwrap()
+}
+
+#[test]
+fn tasks_and_lead_commits_carry_a_feature_issue() {
+    let (_d, rt, _rd, _repo, pid) = setup();
+    approved(&rt, &pid, &["#1", "ENG-2"], PrMode::Single);
+    let t = create(&rt, json!({"title": "API", "node": "back", "issue": "1"}));
+    assert_eq!(t.issue.as_deref(), Some("#1"));
+    assert!(call(&rt, LEAD, "create_task", json!({"title": "x", "node": "back", "issue": "#9"})).1.contains("not an issue of this feature"));
+    ok(&rt, LEAD, "update_task", json!({"id": t.id, "issue": "eng-2"}));
+    assert_eq!(rt.db.task(t.id).unwrap().unwrap().issue.as_deref(), Some("ENG-2"));
+    ok(&rt, LEAD, "update_task", json!({"id": t.id, "issue": ""}));
+    assert_eq!(rt.db.task(t.id).unwrap().unwrap().issue, None, "cleared");
+    // The lead's commit gets the trailer; a ref not on the feature is refused.
+    let wt = rt.store.read(|s| s.agents[LEAD].worktree.clone());
+    std::fs::write(wt.join("docs.md"), "x").unwrap();
+    assert!(call(&rt, LEAD, "commit", json!({"message": "docs", "issue": "#5"})).1.contains("not an issue of this feature"));
+    ok(&rt, LEAD, "commit", json!({"message": "docs", "issue": "#1"}));
+    let msg = head_message(&rt, LEAD);
+    assert!(trailers(&msg).lines().any(|l| l == "Orch-Issue: #1"), "{msg:?}");
+    // A specialist does not tag commits or tasks with an issue.
+    rt.team_tick();
+    let back = "fx-back-1";
+    let bwt = rt.store.read(|s| s.agents[back].worktree.clone());
+    std::fs::write(bwt.join("a.rs"), "a").unwrap();
+    assert!(call(&rt, back, "commit", json!({"message": "a", "issue": "#1"})).1.contains("only the lead"));
+    assert!(call(&rt, back, "update_task", json!({"id": t.id, "issue": "#1"})).1.contains("only the lead"));
+}
+
+#[test]
+fn request_pr_in_single_mode_closes_the_issues_and_locks_the_mode() {
+    let (_d, rt, _rd, _repo, pid) = setup();
+    let run = approved(&rt, &pid, &["#1", "#2"], PrMode::Single);
+    rt.set_run_state(&run.id, RunState::Integrating, "test").unwrap();
+    assert!(call(&rt, LEAD, "request_pr", json!({"title": "T", "issue": "#1"})).1.contains("this feature has one PR"));
+    ok(&rt, LEAD, "request_pr", json!({"title": "T", "body": "Fixes #1"}));
+    let gate = rt.store.read(|s| s.inbox.iter().find(|i| i.pending() && i.kind == "gate").cloned().unwrap());
+    assert_eq!(gate.payload["body"], "Fixes #1\n\nCloses #2");
+    assert_eq!((gate.payload["run"].as_str(), gate.payload["issue"].clone()), (Some(run.id.as_str()), Value::Null));
+    let v = rt.run_json(&run.id).unwrap();
+    assert_eq!(v["run"]["prs_view"], json!([{"issue": null, "branch": "orch/fx/integration", "state": "pending",
+        "number": null, "url": null, "pr": null, "gate": gate.id}]));
+    // team_status names the issues and their PR.
+    let (err, text, data) = rt.on_mcp(
+        &orch_protocol::McpMsg { agent_id: LEAD.into(), tool: "team_status".into(), arguments: json!({}), deadline_ms: 1 },
+        None,
+    );
+    assert!(!err, "{text}");
+    assert!(text.contains("Pull requests: One PR for the feature; it closes #1, #2.") && text.contains("- #2: no task · PR waiting for the user"), "{text}");
+    assert_eq!(data["pr_mode"], "single");
+    assert_eq!(data["issues"][0], json!({"ref": "#1", "tasks": [], "pr": {"number": null, "state": "pending"}}));
+    assert!(data["members"].is_array());
+    // Declined: the mode stays locked (a PR was asked for).
+    rt.decide(gate.id, InboxDecision::Reject, None, Some("not yet")).unwrap();
+    assert_eq!(code(rt.feature_set_prs("fx", None, Some(PrMode::PerIssue)).unwrap_err()), "pr_busy");
+}
+
+#[test]
+fn request_pr_per_issue_is_refused_until_per_issue_prs_exist() {
+    let (_d, rt, _rd, _repo, pid) = setup();
+    let run = approved(&rt, &pid, &["#1", "#2"], PrMode::PerIssue);
+    rt.set_run_state(&run.id, RunState::Integrating, "test").unwrap();
+    let (err, text) = call(&rt, LEAD, "request_pr", json!({"title": "T", "issue": "#1"}));
+    assert!(err && text.contains("cannot open per-issue PRs yet"), "{text}");
+    assert!(rt.store.read(|s| !s.inbox.iter().any(|i| i.pending() && i.kind == "gate")));
+}

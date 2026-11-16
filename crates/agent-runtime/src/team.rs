@@ -1779,7 +1779,7 @@ impl Runtime {
                 }
                 // Validated before any change (a reassignment below is written at once).
                 let model = model_arg(args)?;
-                let issue = match str_arg(args, "issue") {
+                let issue = match args.get("issue").and_then(Value::as_str) {
                     None => None,
                     Some(_) if !is_lead => bail!("only the lead sets a task's issue"),
                     Some(i) if i.trim().is_empty() => Some(None),
