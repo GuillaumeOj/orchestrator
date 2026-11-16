@@ -55,7 +55,7 @@
     {/each}
   </div>
   {#if locked}<p class="muted cap lockline"><span class="lk" aria-hidden="true">{LOCK}</span> {MODE_LOCKED}</p>{/if}
-  {#if help}<p class="muted cap" data-mode-help>{modeHelp(value, refs)}</p>{/if}
+  {#if help && !locked}<p class="muted cap" data-mode-help>{modeHelp(value, refs)}</p>{/if}
 </div>
 
 <style>

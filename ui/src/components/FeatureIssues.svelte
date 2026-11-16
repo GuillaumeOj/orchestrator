@@ -106,11 +106,12 @@
         <button type="button" class="link add" onclick={show}><span class="plus" aria-hidden="true">{PLUS}</span> Add issues</button>
       {/if}
     </div>
-    {#if read}<span class="mode muted">· {modeLabel(mode)}</span>{/if}
-    {#if read && !done}<button type="button" class="link edit" bind:this={editBtn} aria-expanded={open} aria-haspopup="dialog" onclick={() => (open ? close() : show())}>Edit</button>{/if}
+    {#if read}<span class="mode">· {modeLabel(mode)}</span>{/if}
+    {#if read && !done}<button type="button" class="edit" bind:this={editBtn} aria-expanded={open} aria-haspopup="dialog" onclick={() => (open ? close() : show())}>Edit</button>{/if}
     {#if open}
       <!-- svelte-ignore a11y_no_noninteractive_element_interactions, a11y_no_noninteractive_tabindex -->
       <div class="pop" role="dialog" aria-label="Issues and pull requests" tabindex="-1" onkeydown={onkey}>
+        <b class="ph">Issues and pull requests</b>
         <div class="fg">
           <label for="feature-issues">Issues</label>
           <IssuesField id="feature-issues" bind:chips project={feature.project_id} {locked} />
@@ -152,6 +153,24 @@
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+  .mode {
+    color: var(--color-text-secondary);
+  }
+  .edit {
+    padding: 0 var(--space-sm);
+    background: none;
+    border: var(--border-width-default) solid var(--color-border-subtle);
+    border-radius: var(--radius-sm);
+    color: var(--color-text-primary);
+    font: inherit;
+    cursor: pointer;
+  }
+  .edit:hover {
+    background: var(--color-surface-selected);
+  }
+  .ph {
+    font: var(--text-heading);
   }
   .mode,
   .edit {

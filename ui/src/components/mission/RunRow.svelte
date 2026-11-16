@@ -8,6 +8,7 @@
   import { phaseFull, phaseText, prText, tasksText } from '../../lib/mission.js';
   import { attention } from '../../lib/now.svelte.js';
   import { isPerIssue, prsDot, prsSummary, prsTooltip } from '../../lib/pr.js';
+  import { tooltip } from '../../lib/tooltip.js';
   import MemberChip from './MemberChip.svelte';
   import OriginChip from './OriginChip.svelte';
   import PhaseStepper from './PhaseStepper.svelte';
@@ -44,7 +45,7 @@
   <span>{tasksText(run.tasks)}</span>
   {#if perIssue}
     {@const dot = prsDot(run.prs_view)}
-    <span class="muted">·</span><button class="link" tabindex="-1" data-prs title={prsTooltip(run.prs_view, issueOf)} onclick={(e) => (e.stopPropagation(), feature && openFeature(feature.id))}>{#if dot}<span class="dot" style:background={dot} aria-hidden="true"></span>{/if}{prsSummary(run.prs_view)}</button>
+    <span class="muted">·</span><button class="link" tabindex="-1" data-prs use:tooltip={{ label: prsSummary(run.prs_view), detail: prsTooltip(run.prs_view, issueOf) }} onclick={(e) => (e.stopPropagation(), feature && openFeature(feature.id))}>{#if dot}<span class="dot" style:background={dot} aria-hidden="true"></span>{/if}{prsSummary(run.prs_view)}</button>
   {:else if run.pr}<span class="muted">·</span><button class="link" tabindex="-1" onclick={(e) => (e.stopPropagation(), openUrl(run.pr.url))}>{prText(run.pr)}</button>{/if}
   {#if b}
     <span class="muted">·</span>

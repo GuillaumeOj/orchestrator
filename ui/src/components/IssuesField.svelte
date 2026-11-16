@@ -101,9 +101,9 @@
     {#each chips as c (c.text)}
       {@const lock = isLocked(c)}
       <span class="chip" class:bad={!!c.bad} class:lock use:tooltip={lock ? lockedText(c.ref, locked.get(c.ref)) : null} aria-label={lock ? lockedLabel(c.ref, locked.get(c.ref)) : undefined}>
-        {#if lock}<span class="lk" aria-hidden="true">{LOCK}</span>{/if}
         <span class="ref mono">{c.ref}</span>
         {#if c.title}<span class="ttl muted">{c.title}</span>{/if}
+        {#if lock}<span class="lk" aria-hidden="true">{LOCK}</span>{/if}
         {#if !lock && !disabled}<button type="button" class="x" aria-label="Remove {c.ref}" onclick={(e) => (e.stopPropagation(), remove(c))}>×</button>{/if}
       </span>
     {/each}
@@ -185,6 +185,12 @@
   .chip.bad {
     border-color: var(--color-status-error);
     background: color-mix(in srgb, var(--color-status-error) 15%, transparent);
+  }
+  .ref {
+    font-weight: var(--font-weight-semibold);
+  }
+  .chip.bad {
+    color: var(--color-status-error);
   }
   .ttl {
     min-width: 0;

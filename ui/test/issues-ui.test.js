@@ -78,6 +78,18 @@ describe('IssuesField', () => {
     expect(chipsOf(c)).toEqual([]);
   });
 
+  it('a comma commits a ref but keeps text that is not one', async () => {
+    const { container: c, input } = setup();
+    await type(input, 'crash');
+    const e = new KeyboardEvent('keydown', { key: ',', cancelable: true, bubbles: true });
+    input.dispatchEvent(e);
+    expect(e.defaultPrevented).toBe(false);
+    expect(chipsOf(c)).toEqual([]);
+    await type(input, 'ENG-7');
+    await key(input, ',');
+    expect(chipsOf(c)).toEqual(['ENG-7']);
+  });
+
   it('Enter commits a typed text as a chip, in error when it is not a ref', async () => {
     const { container: c, input } = setup();
     await type(input, 'nope');
@@ -509,12 +521,6 @@ describe('Mission run row, run inspector, decision card and task chip', () => {
     const b = /** @type {HTMLElement} */ (c.querySelector('[data-key="run:run-12"] [data-prs]'));
     expect(text(b)).toBe('2 PRs open · 1 merged');
     expect(/** @type {HTMLElement} */ (b.querySelector('.dot')).style.background).toBe('var(--color-status-error)');
-    expect(b.title.split('\n')).toEqual([
-      '#1 Crash · PR #34 open · CI 1/2',
-      '#2 · PR #35 open · CI 1/2',
-      '#3 · PR #36 merged',
-      '#4 · no PR yet',
-    ]);
     await fireEvent.click(b);
     expect(Object.values(app.panes).some((s) => s.type === 'feature' && s.featureId === 'f-co')).toBe(true);
   });
