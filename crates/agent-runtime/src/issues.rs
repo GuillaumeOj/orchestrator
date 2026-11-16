@@ -95,6 +95,12 @@ pub fn links(refs: &[String], rows: &[IntakeRow], repo: Option<&str>) -> Vec<Iss
 /// A GitHub item of another repository than `repo` (the project's) has none:
 /// an intake source or a project board may list other repositories' issues,
 /// and `#12` names the project's own.
+/// The tracker issues among a project's work nodes (milestones, projects and
+/// briefs are not issues a PR closes).
+pub fn issue_rows(rows: Vec<IntakeRow>) -> Vec<IntakeRow> {
+    rows.into_iter().filter(|r| r.kind == "issue" && !r.deleted).collect()
+}
+
 pub fn row_ref(row: &IntakeRow, repo: Option<&str>) -> Option<String> {
     match row.source.as_str() {
         "github" => {
@@ -374,6 +380,11 @@ pub(crate) mod tests {
             started_ref: None,
             hidden_at_ms: None,
             hidden_rev: None,
+            node_id: format!("n:{reference}"),
+            kind: "issue".into(),
+            parent_id: None,
+            depth: 1,
+            deleted: false,
         }
     }
 

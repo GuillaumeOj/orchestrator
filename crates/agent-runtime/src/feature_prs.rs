@@ -157,7 +157,7 @@ impl Runtime {
                 }
             }
         }
-        let rows = self.db.intake_items(Some(&project.id)).unwrap_or_default();
+        let rows = issues::issue_rows(self.db.work_nodes(Some(&project.id)).unwrap_or_default());
         // Known issues keep what was stored about them; new ones read the cache.
         let links = issues::links(&refs, &rows, repo.as_deref())
             .into_iter()
@@ -221,7 +221,7 @@ impl Runtime {
     /// ref or title matches `text`, at most 8. No network.
     pub fn issue_suggest(&self, project: &str, text: &str) -> Result<Value> {
         let p = self.db.project(project)?.ok_or_else(|| anyhow!("no project {project}"))?;
-        let rows = self.db.intake_items(Some(&p.id))?;
+        let rows = issues::issue_rows(self.db.work_nodes(Some(&p.id))?);
         let out: Vec<Value> = issues::suggest(text, &rows, crate::github_issue::known_repo(&p).as_deref())
             .into_iter()
             .map(|l| json!({"ref": l.reference, "key": l.key, "title": l.title, "url": l.url}))

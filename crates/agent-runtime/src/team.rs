@@ -388,7 +388,11 @@ impl Runtime {
         let repo = crate::github_issue::known_repo(&project);
         let issues = crate::issues::normalize(&spec.issues, repo.as_deref())?;
         let set_prs = !issues.is_empty() || spec.pr_mode.is_some();
-        let rows = if issues.is_empty() { vec![] } else { self.db.intake_items(Some(&project.id)).unwrap_or_default() };
+        let rows = if issues.is_empty() {
+            vec![]
+        } else {
+            crate::issues::issue_rows(self.db.work_nodes(Some(&project.id)).unwrap_or_default())
+        };
         let links = crate::issues::links(&issues, &rows, repo.as_deref());
         let now = now_ms();
         let feature = match self.db.feature_by_slug(&project.id, &spec.slug)? {
