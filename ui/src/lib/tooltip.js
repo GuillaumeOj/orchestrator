@@ -67,7 +67,7 @@ export function placeTip(r, w, h, vw, vh) {
     top = r.top - GAP - h;
     above = true;
   } else {
-    // Neither side has room: keep the tooltip inside the window (it may then cover the control).
+    // Below it is: keep it inside the window. When neither side had room, this pulls it up over the control.
     top = Math.max(EDGE, Math.min(top, vh - EDGE - h));
   }
   const left = Math.max(EDGE, Math.min(r.left + r.width / 2 - w / 2, vw - EDGE - w));
