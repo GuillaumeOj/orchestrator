@@ -422,8 +422,9 @@ mod tests {
         let mut f = McpServer::new("figma", "Figma", McpKind::Http);
         f.url = Some("https://figma.example/mcp".into());
         f.design_tool = Some(DesignTool::Figma);
-        rt.mcp_server_save(f, &Scope::Global).unwrap();
+        // Routed first: the save probes it in the background.
         net.route("https://figma.example/mcp", 200, &[], "{}");
+        rt.mcp_server_save(f, &Scope::Global).unwrap();
         let v = rt.integration_test("figma").unwrap();
         assert_eq!((v["status"].as_str(), v["detail"].as_str()), (Some("connected"), Some("MCP: Figma")));
         assert!(v["checked_at_ms"].as_u64().is_some());
@@ -432,23 +433,19 @@ mod tests {
     #[test]
     fn figcraft_is_probed_over_stdio() {
         let (_d, rt, _net) = test_runtime_net();
-        let mut s = McpServer::new("figcraft", "FigCraft", McpKind::Stdio);
-        s.command = Some("/bin/sh".into());
-        s.args = vec![
-            "-c".into(),
-            r#"read l; echo '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{},"serverInfo":{"name":"x","version":"1"}}}'
-               read l; read l; echo '{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"a"}]}}'; sleep 5"#
-                .into(),
-        ];
-        s.design_tool = Some(DesignTool::Figcraft);
-        rt.mcp_server_save(s.clone(), &Scope::Global).unwrap();
-        assert_eq!(rt.integration_json("figcraft")["status"], "unknown");
+        let mut s = crate::registry::tests::figcraft("figcraft");
+        // Saved, it is probed in the background: no Test needed (no role uses it).
+        assert_eq!(rt.mcp_server_save(s.clone(), &Scope::Global).unwrap().status, McpStatus::Unknown);
+        let e = crate::registry::tests::wait_status(&rt, &Scope::Global, "figcraft", McpStatus::Connected);
+        assert_eq!(e.detail.as_deref(), Some("1 tool(s)"));
+        assert_eq!(rt.integration_json("figcraft")["status"], "connected");
         let v = rt.integration_test("figcraft").unwrap();
         assert_eq!((v["status"].as_str(), v["detail"].as_str()), (Some("connected"), Some("MCP: FigCraft")));
         assert!(v["checked_at_ms"].as_u64().is_some());
         // A command that fails shows as an error on the integration too.
         s.command = Some("/nonexistent/figcraft-cli".into());
         rt.mcp_server_save(s, &Scope::Global).unwrap();
+        crate::registry::tests::wait_status(&rt, &Scope::Global, "figcraft", McpStatus::Error);
         assert_eq!(rt.integration_test("figcraft").unwrap()["status"], "error");
     }
 }
