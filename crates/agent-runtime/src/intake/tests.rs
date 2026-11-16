@@ -1286,6 +1286,8 @@ fn app_state_rollup_and_actions_follow_what_runs() {
         allocation: None,
         created_at_ms: 1,
         archived: false,
+        issues: vec![],
+        pr_mode: Default::default(),
     };
     f.rt.db.upsert_feature(&feature).unwrap();
     let run = |rid: &str, status, pr: Option<&str>| orch_store::TeamRun {
@@ -1301,6 +1303,7 @@ fn app_state_rollup_and_actions_follow_what_runs() {
         ended_at_ms: Some(9),
         pr_number: pr.map(|_| 61),
         pr: None,
+        prs: vec![],
     };
     f.rt.db.upsert_run(&run("r4", orch_team::RunState::PrOpen, Some("https://github.com/acme/shop/pull/61"))).unwrap();
     f.rt.db.upsert_run(&run("r1", orch_team::RunState::Done, None)).unwrap();
@@ -1541,6 +1544,8 @@ fn a_node_starts_with_its_source_and_leaves_its_history_and_run_source() {
         allocation: None,
         created_at_ms: 1,
         archived: false,
+        issues: vec![],
+        pr_mode: Default::default(),
     };
     f.rt.db.upsert_feature(&feature).unwrap();
     f.rt.db
@@ -1557,6 +1562,7 @@ fn a_node_starts_with_its_source_and_leaves_its_history_and_run_source() {
             ended_at_ms: None,
             pr_number: None,
             pr: None,
+            prs: vec![],
         })
         .unwrap();
     f.rt.db.intake_mark_started(id(4).id, "run", "r9").unwrap();
@@ -1799,6 +1805,8 @@ fn fake_start(f: &Fx) {
             allocation: None,
             created_at_ms: 1,
             archived: false,
+            issues: vec![],
+            pr_mode: Default::default(),
         })?;
         rt.db.upsert_run(&orch_store::TeamRun {
             id: id.clone(),
@@ -1813,6 +1821,7 @@ fn fake_start(f: &Fx) {
             ended_at_ms: None,
             pr_number: None,
             pr: None,
+            prs: vec![],
         })?;
         let first = rt.db.work_node_rows(&feat.items[0])?.remove(0);
         rt.db.intake_mark_started(first.id, "run", &id)?;
@@ -2460,6 +2469,8 @@ fn a_leads_first_turn_names_its_source_item_and_the_open_children() {
             allocation: None,
             created_at_ms: 1,
             archived: false,
+            issues: vec![],
+            pr_mode: Default::default(),
         })
         .unwrap();
     f.rt.db
@@ -2476,6 +2487,7 @@ fn a_leads_first_turn_names_its_source_item_and_the_open_children() {
             ended_at_ms: None,
             pr_number: None,
             pr: None,
+            prs: vec![],
         })
         .unwrap();
     f.rt.db.intake_mark_started(id(1), "run", "r1").unwrap();
@@ -2528,6 +2540,8 @@ fn fake_start_run(f: &Fx, slug: &str, node_row: u64) {
             allocation: None,
             created_at_ms: 1,
             archived: false,
+            issues: vec![],
+            pr_mode: Default::default(),
         })
         .unwrap();
     f.rt.db
@@ -2544,6 +2558,7 @@ fn fake_start_run(f: &Fx, slug: &str, node_row: u64) {
             ended_at_ms: None,
             pr_number: None,
             pr: None,
+            prs: vec![],
         })
         .unwrap();
     f.rt.db.intake_mark_started(node_row, "run", &format!("run-{slug}")).unwrap();
