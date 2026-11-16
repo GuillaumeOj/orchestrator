@@ -34,7 +34,8 @@
   let editBtn = $state(null);
   let timer;
 
-  const effMode = $derived(modeFor(pick, chips.length));
+  // Once the run had a PR the mode is fixed: dropping to one issue keeps it (the core allows that), only before does it fall back to One PR.
+  const effMode = $derived(modeLocked ? mode : modeFor(pick, chips.length));
   const invalid = $derived(!!chipError(chips));
 
   function show() {
@@ -61,11 +62,12 @@
     busy = true;
     error = null;
     try {
-      const f = await invoke('feature_set_prs', { feature: feature.id, issues: issueTexts(chips), pr_mode: effMode });
+      const f = await invoke('feature_set_prs', { feature: feature.id, issues: issueTexts(chips), prMode: effMode });
       onsaved(f);
       if (live) {
         saved = true;
-        timer = setTimeout(() => close(), 4000);
+        // Focus goes back to Edit only when it is still in the popover: this fires on its own.
+        timer = setTimeout(() => close(!!wrap?.contains(document.activeElement)), 4000);
       } else close();
     } catch (e) {
       const c = parseCoded(errText(e));
@@ -118,7 +120,7 @@
           <PrModeControl value={effMode} refs={chips.map((c) => c.ref)} count={chips.length} locked={modeLocked} onchange={(m) => (pick = m)} />
         </div>
         {#if error}<p class="err" role="alert">{error}</p>{/if}
-        {#if saved}<p class="muted ok" role="status">Saved; the lead is told.</p>{/if}
+        {#if saved}<p class="ok" role="status"><span aria-hidden="true">✓</span> Saved; the lead is told.</p>{/if}
         <div class="foot">
           <button type="button" class="btn ghost" onclick={() => close()}>Cancel</button>
           <button type="button" class="btn primary" disabled={busy || invalid || saved} onclick={save}>{busy ? 'Saving…' : 'Save'}</button>
@@ -205,6 +207,7 @@
   }
   .ok {
     margin: 0;
+    color: var(--color-status-done);
     font: var(--text-caption);
   }
   .foot {

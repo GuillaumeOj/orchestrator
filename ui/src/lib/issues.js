@@ -55,9 +55,6 @@ export function addChip(chips, chip) {
 /** The refs the form sends, `text` as typed, in order. */
 export const issueTexts = (chips) => chips.map((c) => c.text);
 
-/** The refs as the feature stores them (a chip's shown ref). */
-export const issueRefs = (chips) => chips.map((c) => c.ref);
-
 /** The message under the field while a chip is invalid (ux-brief §1.1), else null. */
 export function chipError(chips) {
   const bad = chips.find((c) => c.bad);

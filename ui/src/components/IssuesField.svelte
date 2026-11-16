@@ -18,6 +18,7 @@
   let active = $state(-1);
   let open = $state(false);
   let seq = 0;
+  let blurred = false; // a suggestion that lands after the input lost focus stays closed
   const full = $derived(chips.length >= MAX_ISSUES);
   const shown = $derived(found.filter((s) => !chips.some((c) => c.ref.toLowerCase() === s.ref.toLowerCase())));
   const message = $derived(error ?? chipError(chips));
@@ -38,7 +39,7 @@
       if (mine === seq) found = [];
     }
     active = -1;
-    open = found.length > 0;
+    open = found.length > 0 && !blurred;
   }
   $effect(() => {
     suggest(text);
@@ -75,11 +76,8 @@
         commit(text);
       }
     } else if (e.key === ' ' || e.key === ',') {
-      // Only a text that parses as a ref: otherwise it stays, to search titles.
+      // Space and comma commit only a text that parses as a ref (otherwise it stays, to search titles).
       if (parseRef(text)) {
-        e.preventDefault();
-        commit(text);
-      } else if (e.key === ',') {
         e.preventDefault();
         commit(text);
       }
@@ -124,7 +122,9 @@
       aria-autocomplete="list"
       aria-activedescendant={active >= 0 ? `${id}-opt-${active}` : undefined}
       onkeydown={onkey}
-      onblur={() => (open = false)}
+      oninput={() => (blurred = false)}
+      onfocus={() => (blurred = false)}
+      onblur={() => ((blurred = true), (open = false))}
     />
   </div>
   {#if open && shown.length}
@@ -153,7 +153,7 @@
     flex-wrap: wrap;
     align-items: center;
     gap: var(--space-xs);
-    min-height: 28px;
+    min-height: var(--size-control);
     padding: var(--space-xxs) var(--space-xs);
     background: var(--color-surface-pane);
     border: var(--border-width-default) solid var(--color-border-strong);

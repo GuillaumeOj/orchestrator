@@ -340,10 +340,10 @@ describe('FeatureIssues (header row 3 and the Edit popover)', () => {
     expect(calls.find((x) => x.cmd === 'feature_set_prs').args).toEqual({
       feature: 'f1',
       issues: ['#12', 'ENG-7'],
-      pr_mode: 'per_issue',
+      prMode: 'per_issue',
     });
     expect(onsaved).toHaveBeenCalledWith(feature({ pr_mode: 'per_issue' }));
-    expect(text(c.querySelector('[role="status"]'))).toBe('Saved; the lead is told.');
+    expect(text(c.querySelector('[role="status"]'))).toBe('✓ Saved; the lead is told.');
   });
 
   it('locks an issue with a PR and the mode once the run had a PR', async () => {
@@ -362,6 +362,28 @@ describe('FeatureIssues (header row 3 and the Edit popover)', () => {
     expect(chips[1].querySelector('.x')).toBeTruthy();
     expect(text(c.querySelector('.pop'))).toContain('Set before the first PR: this feature already has one.');
     expect(c.querySelectorAll('.pop [role="radio"]')[0].getAttribute('aria-disabled')).toBe('true');
+  });
+
+  it('keeps a locked per_issue mode when the list drops to one issue', async () => {
+    replies.feature_set_prs = feature({ pr_mode: 'per_issue' });
+    const view = [
+      { issue: '#12', state: 'open', number: 34, url: 'u', pr: null, gate: null, branch: 'b' },
+      { issue: 'ENG-7', state: 'none', number: null, url: null, pr: null, gate: null, branch: 'b2' },
+    ];
+    const { container: c } = render(FeatureIssues, {
+      feature: feature({ pr_mode: 'per_issue' }),
+      run: run({ prs_view: view }),
+    });
+    await open(c);
+    await fireEvent.click(c.querySelectorAll('.pop .chip')[1].querySelector('.x'));
+    await settle();
+    await fireEvent.click([...c.querySelectorAll('.foot button')].find((b) => b.textContent === 'Save'));
+    await settle();
+    expect(calls.find((x) => x.cmd === 'feature_set_prs').args).toEqual({
+      feature: 'f1',
+      issues: ['#12'],
+      prMode: 'per_issue',
+    });
   });
 
   it('shows a server error inline, and marks the chip of a bad_ref', async () => {
