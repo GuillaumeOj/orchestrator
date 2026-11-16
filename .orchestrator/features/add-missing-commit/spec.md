@@ -51,7 +51,7 @@ comment line that `main` has unchanged, so it applies cleanly too.
 - No other code changes: no new feature, no refactor, nothing in #78 reverted.
 
 ## Acceptance
-- `git diff main <PR head>` equals the union of the three patches above.
+- `git diff origin/main <PR head>` equals the union of the three patches above.
 - `cargo fmt --check` and `make clippy` (CI's `--all-targets --locked -D warnings`) are clean.
 - `cargo test -p orch-store` and `cargo test -p agent-runtime` pass, in particular
   `migrations` (the stale-copy check), `pr_issue_tests` and `feature_prs_tests`. The
