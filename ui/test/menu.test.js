@@ -245,4 +245,37 @@ describe('tooltip', () => {
     expect(placeTip({ ...r, top: 780, bottom: 798 }, 80, 24, 1280, 800)).toEqual({ top: 750, left: 21, above: true });
     expect(placeTip({ ...r, left: 0, width: 10 }, 80, 24, 1280, 800).left).toBe(4);
   });
+
+  it('with a key the label sits in its own element, the dot and the key outside it', async () => {
+    const { tooltip } = await import('../src/lib/tooltip.js');
+    const b = document.createElement('button');
+    document.body.append(b);
+    vi.useFakeTimers();
+    const t = tooltip(b, { label: 'A long label that wraps', key: '⌘J' });
+    b.dispatchEvent(new Event('pointerenter'));
+    vi.advanceTimersByTime(500);
+    const line = document.querySelector('#orch-tooltip .tip-line');
+    const label = line.querySelector('.tip-label');
+    expect(label.textContent).toBe('A long label that wraps');
+    expect([...line.children].map((c) => c.className)).toEqual(['tip-label', 'tip-dot', 'kbd']);
+    // Without a key the label is still in its own element, alone.
+    t.update({ label: 'Solo' });
+    expect([...document.querySelector('#orch-tooltip .tip-line').children].map((c) => c.className)).toEqual([
+      'tip-label',
+    ]);
+    b.dispatchEvent(new Event('pointerdown'));
+    t.destroy();
+  });
+
+  it('a multi-line tooltip flips above at the bottom and stays inside the window', async () => {
+    const { placeTip } = await import('../src/lib/tooltip.js');
+    const r = { top: 740, bottom: 762, left: 50, width: 22 };
+    // 60 px tall: 768 + 60 > 796, so above (740 - 6 - 60); one line (24) still fits below.
+    expect(placeTip(r, 480, 60, 1280, 800)).toEqual({ top: 674, left: 4, above: true });
+    expect(placeTip(r, 480, 24, 1280, 800).above).toBe(false);
+    expect(placeTip({ ...r, top: 100, bottom: 122 }, 480, 60, 1280, 800).above).toBe(false);
+    // No room on either side (short window): clamped inside, not run off the bottom.
+    expect(placeTip({ ...r, top: 20, bottom: 42 }, 480, 60, 1280, 100)).toEqual({ top: 36, left: 4, above: false });
+    expect(placeTip({ ...r, left: 1270 }, 480, 60, 1280, 800).left).toBe(796);
+  });
 });

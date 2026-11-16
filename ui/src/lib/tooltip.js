@@ -37,7 +37,10 @@ function fill(t, { label, key, detail }) {
   t.replaceChildren();
   const line = document.createElement('div');
   line.className = 'tip-line';
-  line.append(label);
+  const l = document.createElement('span');
+  l.className = 'tip-label';
+  l.textContent = label;
+  line.append(l);
   if (key) {
     const dot = document.createElement('span');
     dot.className = 'tip-dot';
@@ -63,6 +66,9 @@ export function placeTip(r, w, h, vw, vh) {
   if (top + h > vh - EDGE && r.top - GAP - h >= EDGE) {
     top = r.top - GAP - h;
     above = true;
+  } else {
+    // Below it is: keep it inside the window. When neither side had room, this pulls it up over the control.
+    top = Math.max(EDGE, Math.min(top, vh - EDGE - h));
   }
   const left = Math.max(EDGE, Math.min(r.left + r.width / 2 - w / 2, vw - EDGE - w));
   return { top, left, above };
@@ -85,7 +91,8 @@ function show(node, p) {
   if (owner && owner !== node) hide(owner);
   const t = tipEl();
   fill(t, p);
-  // Measured from the corner: at the last spot its width is cut to what the window has left of it.
+  // Measured from the corner, where max-width (480 px or the window less its edges) wraps the text:
+  // the width and height read below are the final, wrapped ones.
   t.style.top = '0px';
   t.style.left = '0px';
   t.hidden = false;

@@ -125,7 +125,8 @@ textarea {
   flex-direction: column;
   justify-content: center;
   min-height: 24px;
-  max-width: 480px;
+  /* 4 px of window edge on each side (EDGE in tooltip.js). */
+  max-width: min(480px, calc(100vw - 8px));
   padding: var(--space-xxs) var(--space-sm);
   border-radius: var(--radius-sm);
   border: var(--border-width-default) solid var(--color-border-strong);
@@ -134,7 +135,8 @@ textarea {
   color: var(--color-text-primary);
   font: var(--text-label);
   pointer-events: none;
-  white-space: nowrap;
+  /* Long text wraps inside the box; a token with no space (a path) breaks anywhere. */
+  overflow-wrap: anywhere;
 }
 .tooltip[hidden] {
   display: none;
@@ -144,14 +146,20 @@ textarea {
   align-items: center;
   gap: var(--space-xs);
 }
+/* Only the label wraps: the dot and the key keep their size, at the end of the label. */
+.tooltip .tip-label {
+  min-width: 0;
+}
+.tooltip .tip-dot,
+.tooltip .kbd {
+  flex: none;
+}
 .tooltip .tip-dot {
   color: var(--color-text-muted);
 }
 .tooltip .tip-detail {
   color: var(--color-text-muted);
   font: var(--text-caption);
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 /* The popover of Select and Menu (lib/popover.js, 02-select.png, 02-menu.png):
