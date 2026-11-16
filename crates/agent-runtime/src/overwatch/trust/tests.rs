@@ -142,8 +142,30 @@ fn the_answer_moves_up_then_enters_within_its_budget() {
     let mut a = Answer::new(0, true);
     assert_eq!(a.step(0, &yes), Step::Send(Key::Enter));
     assert_eq!(a.step(500, &gone), Step::Wait, "the re-render's time first");
-    assert_eq!(a.step(RERENDER_MS, &gone), Step::Took);
+    assert_eq!(a.step(RERENDER_MS, &gone), Step::Took, "gone since 500");
     assert_eq!(a.step(WINDOW_MS, &gone), Step::Wait, "never NOT_TAKEN");
+
+    // An Enter late in the window still gets its re-render's time.
+    let mut a = Answer::new(0, true);
+    assert_eq!(a.step(WINDOW_MS - 200, &yes), Step::Send(Key::Enter));
+    assert_eq!(a.step(WINDOW_MS, &yes), Step::Wait);
+    assert_eq!(a.step(WINDOW_MS + 800, &gone), Step::Wait, "gone: settling");
+    assert_eq!(a.step(WINDOW_MS + 1_200, &gone), Step::Took);
+
+    // A blank between a redraw's clear and its draw is not the dialog gone.
+    let mut a = Answer::new(0, true);
+    assert_eq!(a.step(0, &yes), Step::Send(Key::Enter));
+    assert_eq!(a.step(1_000, &gone), Step::Wait);
+    assert_eq!(a.step(1_200, &yes), Step::Wait, "back on screen");
+    assert_eq!(a.step(1_400, &gone), Step::Wait);
+    assert_eq!(a.step(1_800, &gone), Step::Took);
+
+    // A screen caught mid-redraw does not end an arrow's wait.
+    let mut a = Answer::new(0, true);
+    assert_eq!(a.step(0, &no), Step::Send(Key::Up));
+    assert_eq!(a.step(200, ""), Step::Wait);
+    assert_eq!(a.step(400, &no), Step::Wait, "no second arrow yet");
+    assert_eq!(a.step(600, &yes), Step::Send(Key::Enter));
 
     // The selection never moves: an arrow a second, three at most. Other
     // output (the same screen) does not count as the re-render.
@@ -261,6 +283,7 @@ fn the_overwatch_answers_its_own_dialog_and_nobody_sees_it() {
     // block is the startup watch's), though SessionStart has not come.
     assert!(dialog.pty_flag());
     rt.pump_trust(t + 200 + RERENDER_MS);
+    rt.pump_trust(t + 200 + RERENDER_MS + GONE_MS);
     assert!(!dialog.pty_flag(), "the PTY flag down");
     rt.pump_trust(t + WINDOW_MS + 1);
     dialog.started();

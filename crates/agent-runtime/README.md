@@ -291,9 +291,9 @@ ignored · `SessionEnd` ignored (the process exit and the core's intent decide).
   (`vt100`, fed the raw PTY bytes until SessionStart), so a diff render reads like a full one:
   Enter only once `❯` is on "Yes, I trust this folder", else Up and up to 1 s for the selection to
   move, at most 3 arrows; never Esc; an unknown layout gets no key. After Enter, the dialog gone
-  from the screen means it took (the trust watch ends; a later block is FR-415's). During the 10 s window the record's `trust_dialog`
-  stays down (no Inbox card, no `trust-overwatch` decision, no notification) and delivery waits on
-  the PTY flag. Events `overwatch.trust_answered {dir}`, `overwatch.trust_failed {dir, why}`.
+  from the screen means it took (the trust watch ends; a later block is FR-415's). During the
+  10 s window the record's `trust_dialog` stays down (no Inbox card, no `trust-overwatch`
+  decision, no notification) and delivery waits on the PTY flag. Events `overwatch.trust_answered {dir}`, `overwatch.trust_failed {dir, why}`.
   **Fallback** (window over or gave up): the flag goes up, the `trust-overwatch` card ("Claude Code
   asks to trust today's Overwatch folder") and `paused` / `waiting for folder trust`, all cleared
   by SessionStart. Every other agent keeps J0: the app never answers their dialog.

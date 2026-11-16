@@ -52,8 +52,10 @@ impl Output {
     }
 
     pub(crate) fn with_size(rows: u16, cols: u16) -> Self {
+        // The screen model panics on an empty grid: one cell at least.
+        let screen = vt100::Parser::new(rows.max(1), cols.max(1), 0);
         Output {
-            buf: Mutex::new(Buf { screen: Some(vt100::Parser::new(rows, cols, 0)), ..Default::default() }),
+            buf: Mutex::new(Buf { screen: Some(screen), ..Default::default() }),
             cv: Condvar::new(),
             trust_dialog: AtomicBool::new(false),
             watch_trust: AtomicBool::new(true),
@@ -87,11 +89,11 @@ impl Output {
         }
         if self.watch_trust.load(Ordering::Relaxed) {
             // On the screen too: drawn cell by cell, the tail may not hold the header whole.
-            let on_screen = b.screen.as_mut().is_some_and(|p| {
+            if let Some(p) = b.screen.as_mut() {
                 p.process(data);
-                squash(&p.screen().contents()).contains(TRUST_DIALOG_TEXT)
-            });
-            let seen = on_screen || squash(&b.tail_text).contains(TRUST_DIALOG_TEXT);
+            }
+            let seen = squash(&b.tail_text).contains(TRUST_DIALOG_TEXT)
+                || b.screen.as_ref().is_some_and(|p| squash(&p.screen().contents()).contains(TRUST_DIALOG_TEXT));
             self.trust_dialog.store(seen, Ordering::Relaxed);
         }
         self.cv.notify_all();
@@ -159,7 +161,7 @@ impl Output {
     /// The PTY was resized: so is the screen model.
     pub(crate) fn set_size(&self, rows: u16, cols: u16) {
         if let Some(p) = self.lock().screen.as_mut() {
-            p.set_size(rows, cols);
+            p.set_size(rows.max(1), cols.max(1));
         }
     }
 

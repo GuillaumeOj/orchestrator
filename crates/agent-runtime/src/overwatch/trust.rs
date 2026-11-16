@@ -15,6 +15,8 @@ use crate::runtime::{Live, Runtime};
 pub const WINDOW_MS: u64 = 10_000;
 /// How long an arrow waits for the dialog's re-render.
 pub const RERENDER_MS: u64 = 1_000;
+/// How long the dialog stays off the screen after Enter before it took.
+pub const GONE_MS: u64 = 400;
 /// Arrows per spawn before giving up.
 pub const MAX_ARROWS: u32 = 3;
 /// The option the answer picks.
@@ -103,6 +105,7 @@ impl Dialog {
 }
 
 /// [`Dialog::key`] of the dialog on `screen`.
+#[cfg(test)]
 pub fn next_key(screen: &str) -> Option<Key> {
     read_dialog(screen)?.key()
 }
@@ -135,8 +138,11 @@ pub enum Step {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Phase {
     Answering,
-    /// Enter was sent then.
-    Answered(u64),
+    /// Enter was sent `at`; the dialog off the screen since `gone`.
+    Answered {
+        at: u64,
+        gone: Option<u64>,
+    },
     /// The dialog left the screen after Enter.
     Took,
     /// Not auto-answered, or given up: the flag is up.
@@ -171,25 +177,33 @@ impl Answer {
         match self.phase {
             Phase::Raised => return Step::Raise,
             Phase::Took => return Step::Wait,
-            // Gone from the screen once the re-render had time: it took,
-            // even if SessionStart is slow.
-            Phase::Answered(at) if now.saturating_sub(at) >= RERENDER_MS && !on_screen(screen) => {
-                self.phase = Phase::Took;
-                return Step::Took;
+            // Gone from the screen once the re-render had time, and still
+            // gone a moment later (not a redraw's blank): it took, even if
+            // SessionStart is slow.
+            Phase::Answered { at, gone } => {
+                let gone = if on_screen(screen) { None } else { Some(gone.unwrap_or(now)) };
+                self.phase = Phase::Answered { at, gone };
+                if gone.is_some_and(|g| now.saturating_sub(g) >= GONE_MS) && now.saturating_sub(at) >= RERENDER_MS {
+                    self.phase = Phase::Took;
+                    return Step::Took;
+                }
             }
-            _ => {}
+            Phase::Answering => {}
         }
-        if now.saturating_sub(self.detected_ms) >= WINDOW_MS {
-            let why = if matches!(self.phase, Phase::Answered(_)) { failed::NOT_TAKEN } else { failed::TIMEOUT };
-            return self.fail(why);
+        // An Enter late in the window still gets its re-render's time.
+        let settling = matches!(self.phase, Phase::Answered { at, gone } if gone.is_some() || now.saturating_sub(at) < RERENDER_MS);
+        if now.saturating_sub(self.detected_ms) >= WINDOW_MS && !settling {
+            let answered = matches!(self.phase, Phase::Answered { .. });
+            return self.fail(if answered { failed::NOT_TAKEN } else { failed::TIMEOUT });
         }
-        if matches!(self.phase, Phase::Answered(_)) {
+        if matches!(self.phase, Phase::Answered { .. }) {
             return Step::Wait;
         }
         let dialog = read_dialog(screen);
         let selected = dialog.map(|d| d.selected);
+        // A screen caught mid-redraw (no dialog read) is not the re-render.
         if let Some((at, before)) = self.sent
-            && selected == before
+            && (selected.is_none() || selected == before)
             && now.saturating_sub(at) < RERENDER_MS
         {
             return Step::Wait;
@@ -197,7 +211,7 @@ impl Answer {
         self.sent = None;
         match dialog.and_then(Dialog::key) {
             Some(Key::Enter) => {
-                self.phase = Phase::Answered(now);
+                self.phase = Phase::Answered { at: now, gone: None };
                 Step::Send(Key::Enter)
             }
             Some(Key::Up) if self.arrows < MAX_ARROWS => {
