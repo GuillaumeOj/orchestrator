@@ -37,8 +37,11 @@ function fill(t, { label, key, detail }) {
   t.replaceChildren();
   const line = document.createElement('div');
   line.className = 'tip-line';
-  line.append(label);
   if (key) {
+    const l = document.createElement('span');
+    l.className = 'tip-label';
+    l.textContent = label;
+    line.append(l);
     const dot = document.createElement('span');
     dot.className = 'tip-dot';
     dot.textContent = '·';
@@ -46,6 +49,8 @@ function fill(t, { label, key, detail }) {
     k.className = 'kbd';
     k.textContent = key;
     line.append(dot, k);
+  } else {
+    line.append(label);
   }
   t.append(line);
   if (detail) {
@@ -85,7 +90,8 @@ function show(node, p) {
   if (owner && owner !== node) hide(owner);
   const t = tipEl();
   fill(t, p);
-  // Measured from the corner: at the last spot its width is cut to what the window has left of it.
+  // Measured from the corner, where max-width (480 px or the window less its edges) wraps the text:
+  // the width and height read below are the final, wrapped ones.
   t.style.top = '0px';
   t.style.left = '0px';
   t.hidden = false;
