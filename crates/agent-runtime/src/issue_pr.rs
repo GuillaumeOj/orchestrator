@@ -12,7 +12,7 @@ use orch_store::{Feature, PrMode, RunPr, TeamRun};
 use orch_team::RunState;
 use serde_json::{Value, json};
 
-use crate::inbox::{PRIORITY_ALERT, PRIORITY_GATE, diff_summary};
+use crate::inbox::{PRIORITY_ALERT, PRIORITY_GATE, diff_summary, short};
 use crate::issue_build::{Build, Push};
 use crate::pr::latest_prs;
 use crate::runtime::Runtime;
@@ -69,7 +69,8 @@ impl Runtime {
         }
         if to == RunState::Done {
             // A merge is not held back by a pause; done from any PR state.
-            let mut r = run.clone();
+            // Read again: only the state columns change from what is stored.
+            let mut r = self.db.run(run_id)?.ok_or_else(|| anyhow!("no team run {run_id}"))?;
             r.status = RunState::Done;
             r.resume_status = None;
             r.ended_at_ms = Some(now_ms());
@@ -96,12 +97,11 @@ impl Runtime {
 
     /// An issue PR merged or closed (the run's PRs already stored): the run
     /// re-evaluated, and the lead's message.
-    pub(crate) fn issue_pr_ended(&self, run: &TeamRun, f: &Feature, label: &str, merged: bool) -> String {
+    pub(crate) fn issue_pr_ended(&self, run: &TeamRun, f: &Feature, issue: &str, label: &str, merged: bool) -> String {
         if let Err(e) = self.reevaluate_run_prs(&run.id, None) {
             self.run_event(&run.id, None, "team_error", json!(format!("{e:#}")));
         }
         let run = self.db.run(&run.id).ok().flatten().unwrap_or_else(|| run.clone());
-        let issue = label.split("(issue ").nth(1).map(|s| s.trim_end_matches(')')).unwrap_or("");
         if !merged {
             return format!(
                 "ORCH: {label} was closed without being merged. Ask the user what they want with \
@@ -124,9 +124,17 @@ impl Runtime {
         format!("ORCH: {label} was merged; {} issue(s) left: {}.{next}", left.len(), left.join(", "))
     }
 
-    /// A gate of `issue` waits for the user in `run`.
+    /// A gate of `issue` in `run` waits for the user, or was approved and
+    /// is pushing (its PR not recorded yet).
     fn pending_issue_gate(&self, run: &str, issue: &str) -> bool {
-        self.run_pr_gates(run).iter().any(|g| g.issue.as_deref() == Some(issue))
+        self.store.read(|s| {
+            s.inbox.iter().any(|i| {
+                matches!(i.status, orch_store::InboxStatus::Pending | orch_store::InboxStatus::Sent)
+                    && crate::feature_prs::is_pr_gate(&i.payload)
+                    && i.payload.get("run").and_then(Value::as_str) == Some(run)
+                    && i.payload.get("issue").and_then(Value::as_str) == Some(issue)
+            })
+        })
     }
 
     /// `request_pr {issue, title, body, draft?}` in `per_issue` mode (spec §3.4).
@@ -142,7 +150,7 @@ impl Runtime {
             .cloned()
             .ok_or_else(|| anyhow!("{issue} is not an issue of this feature ({})", refs.join(", ")))?;
         if self.pending_issue_gate(&cx.run.id, &issue) {
-            bail!("a pull request request for issue {issue} is already waiting for the user");
+            bail!("a pull request request for issue {issue} is already waiting for the user (or being pushed)");
         }
         let wt = cx.feature.integration_worktree.clone().unwrap_or_else(|| rec.worktree.clone());
         if orch_git::commit::rebase_in_progress(&wt) {
@@ -160,16 +168,49 @@ impl Runtime {
             .into_iter()
             .find(|p| p.issue == issue && p.pr.as_ref().is_none_or(|s| s.state == "open"))
             .cloned();
+        // Someone else pushed to the PR: only merges of the base (GitHub's
+        // "Update branch") may be replaced, by a force push with their lease.
+        let mut foreign: Option<(String, u32)> = None;
         if let Some(p) = &open
             && let Some(st) = &p.pr
-            && st.pushed_sha.as_deref().is_some_and(|ps| ps != st.head_sha)
-            && !orch_git::cleanup::is_merged(&wt, &st.head_sha, &format!("origin/{}", st.base))
+            && let Some(pushed) = st.pushed_sha.as_deref().filter(|ps| *ps != st.head_sha)
+            && orch_git::git::valid_sha(&st.head_sha)
         {
-            bail!(
-                "PR #{} (issue {issue}) has commits pushed outside the app: pushing would drop them. Ask the user \
-                 what to do with mcp__orch__ask_user.",
-                p.number
-            );
+            if gh::rev_sha(&wt, &st.head_sha).is_none()
+                && let Ok(_watch) = self.pr_watch.try_lock()
+            {
+                let _ = gh::fetch_branches(&wt, &[&st.base, &p.branch], crate::pr::FETCH_DEADLINE);
+            }
+            if gh::rev_sha(&wt, &st.head_sha).is_none() {
+                bail!(
+                    "PR #{} (issue {issue}) has commits pushed outside the app that could not be fetched: try again in a minute",
+                    p.number
+                );
+            }
+            let base_ref = format!("^origin/{}", st.base);
+            let theirs = orch_git::git(
+                &wt,
+                &[
+                    "log",
+                    "--no-merges",
+                    "--max-count=50",
+                    "--format=%h %s",
+                    &st.head_sha,
+                    &format!("^{pushed}"),
+                    &base_ref,
+                    "--",
+                ],
+            )?;
+            if !theirs.trim().is_empty() {
+                bail!(
+                    "PR #{} (issue {issue}) has commits pushed outside the app:\n{}\nAsk the user what to do with \
+                     mcp__orch__ask_user (list these commits): pushing would drop them.",
+                    p.number,
+                    theirs.trim()
+                );
+            }
+            let n = orch_git::git(&wt, &["rev-list", "--count", &st.head_sha, &format!("^{pushed}"), &base_ref, "--"])?;
+            foreign = Some((st.head_sha.clone(), n.trim().parse().unwrap_or(0)));
         }
         let b = match self.build_issue(cx, &wt, &issue, open.as_ref())? {
             Ok(b) => b,
@@ -185,8 +226,24 @@ impl Runtime {
             Push::Update { lease } | Push::Force { lease } => lease.clone(),
             Push::Open => unreachable!("an open PR is updated"),
         };
-        let force = matches!(b.push, Push::Force { .. });
-        let range = if force { format!("origin/{base}..{}", b.head) } else { format!("{lease}..{}", b.head) };
+        let mut force = matches!(b.push, Push::Force { .. });
+        // A foreign merge on the PR is replaced: the lease is the PR head as last seen.
+        let (lease, foreign_replaced) = match foreign {
+            Some((head, n)) => {
+                force = true;
+                (head, n)
+            }
+            None => (lease, 0),
+        };
+        let range = if matches!(b.push, Push::Force { .. }) {
+            format!("origin/{base}..{}", b.head)
+        } else {
+            format!(
+                "{}..{}",
+                p.pr.as_ref().and_then(|s| s.pushed_sha.clone()).unwrap_or_else(|| p.built_sha.clone()),
+                b.head
+            )
+        };
         let log = orch_git::git(&wt, &["log", "--max-count=200", "--format=%H%x1f%s", &range, "--"])?;
         let commits: Vec<Value> = log
             .lines()
@@ -201,7 +258,7 @@ impl Runtime {
         };
         let mut payload = common;
         let extra = json!({"action": "push_pr_update", "pr_number": n, "url": p.url, "commits": commits,
-                           "force": force, "lease_sha": lease, "foreign_replaced": 0});
+                           "force": force, "lease_sha": lease, "foreign_replaced": foreign_replaced});
         merge(&mut payload, extra);
         let id = self.add_item(Some(&rec.id), "gate", title, payload, PRIORITY_GATE)?;
         self.db.audit(
@@ -231,7 +288,19 @@ impl Runtime {
         let draft = args.get("draft").and_then(Value::as_bool).unwrap_or(false);
         let wt = PathBuf::from(s(&common, "worktree"));
         let base = s(&common, "base");
+        // The branch of a closed PR stays on GitHub: the new build replaces it,
+        // only while it still holds what is there now.
+        let remote = orch_git::git::git_deadline(
+            &wt,
+            &["ls-remote", "origin", &format!("refs/heads/{}", b.branch)],
+            crate::pr::FETCH_DEADLINE,
+        )
+        .map_err(|e| anyhow!("reading origin/{} failed: {e:#}", b.branch))?;
+        let lease = remote.split_whitespace().next().filter(|l| orch_git::git::valid_sha(l)).map(str::to_string);
         let mut payload = common;
+        if let Some(l) = &lease {
+            merge(&mut payload, json!({"lease_sha": l}));
+        }
         let diff = diff_summary(&wt, &format!("origin/{base}"), &b.branch);
         merge(&mut payload, json!({"action": "push_pr", "title": title, "body": body, "draft": draft, "diff": diff}));
         let id = self.add_item(
@@ -267,11 +336,7 @@ impl Runtime {
             }
             let now = gh::rev_sha(&wt, &branch).unwrap_or_default();
             if now != was {
-                return Some(format!(
-                    "{branch} is at {} now, not {}",
-                    &now[..now.len().min(12)],
-                    &was[..was.len().min(12)]
-                ));
+                return Some(format!("{branch} is at {} now, not {}", short(&now), short(&was)));
             }
         }
         None

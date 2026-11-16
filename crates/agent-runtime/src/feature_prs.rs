@@ -217,10 +217,6 @@ impl Runtime {
         let _ = self.deliver_kind(&lead.id, &text, TurnKind::Continue);
     }
 
-    /// Re-evaluates the run's state after its issues or mode changed (spec
-    /// §3.5). The per-issue rules (every issue PR merged → done, no PR open
-    /// → integrating) come with the per-issue PR watcher; until then a
-    /// change leaves the state as it is.
     /// `issue_suggest` (api-contract §3): the project's intake issues whose
     /// ref or title matches `text`, at most 8. No network.
     pub fn issue_suggest(&self, project: &str, text: &str) -> Result<Value> {

@@ -400,7 +400,8 @@ impl Runtime {
         // A feature launched again keeps its issues unless the launch names
         // them, and its mode unless the launch gives one.
         let feature = if set_prs {
-            Feature { issues: links, pr_mode: spec.pr_mode.unwrap_or(feature.pr_mode), ..feature }
+            let issues = if issues.is_empty() { feature.issues.clone() } else { links };
+            Feature { issues, pr_mode: spec.pr_mode.unwrap_or(feature.pr_mode), ..feature }
         } else {
             feature
         };

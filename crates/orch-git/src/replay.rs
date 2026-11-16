@@ -44,7 +44,10 @@ const TS: char = '\x1d';
 /// The first-parent commits of `from..to`, oldest first.
 pub fn first_parent_commits(dir: &Path, from: &str, to: &str) -> Result<Vec<CommitInfo>> {
     let format = "--format=%H%x1f%P%x1f%an%x1f%ae%x1f%ad%x1f%s%x1f%(trailers:only,unfold,separator=%x1d)%x1f%B%x1e";
-    let out = git(dir, &["log", "--first-parent", "--reverse", "--date=raw", format, &format!("{from}..{to}"), "--"])?;
+    // `--no-show-signature`: a user's `log.showSignature` would put gpg's lines in the records.
+    let range = format!("{from}..{to}");
+    let args = ["log", "--no-show-signature", "--first-parent", "--reverse", "--date=raw", format, &range, "--"];
+    let out = git(dir, &args)?;
     Ok(out.split(RS).map(|r| r.trim_start_matches('\n')).filter(|r| !r.is_empty()).filter_map(parse_commit).collect())
 }
 
@@ -92,6 +95,14 @@ pub fn merge_tree(dir: &Path, base: &str, ours: &str, theirs: &str) -> Result<Me
         }
         _ => bail!("git merge-tree in {}: {}", dir.display(), String::from_utf8_lossy(&out.stderr).trim()),
     }
+}
+
+/// The author of a commit.
+pub fn author_of(dir: &Path, rev: &str) -> Result<Ident> {
+    let out = git(dir, &["log", "-1", "--no-show-signature", "--date=raw", "--format=%an%x1f%ae%x1f%ad", rev, "--"])?;
+    let mut f = out.trim_end().splitn(3, FS);
+    let mut next = || f.next().unwrap_or("").to_string();
+    Ok(Ident { name: next(), email: next(), date: next() })
 }
 
 /// The tree of a commit.
@@ -209,6 +220,7 @@ mod tests {
         assert_eq!(cs[0].trailer("Orch-Task"), None);
         assert_eq!(cs[1].parent.as_deref(), Some(cs[0].sha.as_str()));
         assert_eq!((cs[1].author.name.as_str(), cs[1].author.email.as_str()), ("L", "l@x"));
+        assert_eq!(author_of(&repo, &cs[1].sha).unwrap(), cs[1].author);
         assert!(cs[1].message.starts_with("Merge side\n\nOrch-Task: 7"));
     }
 

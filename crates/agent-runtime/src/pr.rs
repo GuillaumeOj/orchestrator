@@ -403,7 +403,13 @@ impl Runtime {
                                "url": url, "issue": issue}),
                         PRIORITY_ALERT,
                     );
-                    tell.push(self.issue_pr_ended(run, feature, &label, *c == PrChange::Merged));
+                    tell.push(self.issue_pr_ended(
+                        run,
+                        feature,
+                        issue.unwrap_or_default(),
+                        &label,
+                        *c == PrChange::Merged,
+                    ));
                 }
                 PrChange::Merged | PrChange::Closed => {
                     let (to, why, what, lead) = if *c == PrChange::Merged {

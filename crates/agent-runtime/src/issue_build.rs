@@ -11,6 +11,7 @@ use orch_git::replay::{self, CommitInfo, Replay};
 use orch_store::{Feature, RunPr, Task};
 use serde_json::json;
 
+use crate::inbox::short;
 use crate::runtime::Runtime;
 use crate::team::RunCtx;
 
@@ -96,10 +97,6 @@ impl Conflict {
     }
 }
 
-fn short(s: &str) -> &str {
-    &s[..s.len().min(10)]
-}
-
 /// The fork point of the integration branch: where it leaves `origin/<base>`.
 pub fn fork_point(wt: &Path, feature: &Feature) -> Result<String> {
     let integ = feature.integration_branch();
@@ -183,7 +180,10 @@ impl Runtime {
                     (lease, Push::UpToDate)
                 } else {
                     let msg = update_message(issue, &commits, p, &task_issue, &tasks);
-                    let author = commits.last().map(|c| c.author.clone()).unwrap_or_default();
+                    let author = match commits.last() {
+                        Some(c) => c.author.clone(),
+                        None => replay::author_of(wt, &head_of_integ)?,
+                    };
                     let sha = replay::commit_tree(wt, &tree, &lease, &msg, &author)?;
                     (sha, Push::Update { lease })
                 }

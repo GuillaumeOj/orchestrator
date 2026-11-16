@@ -443,6 +443,14 @@ fn a_stale_issue_gate_and_a_closed_pr_follow_the_run_state() {
     assert!(local.contains("ui.ts") && !local.contains("api.rs"), "{local}");
     rt.decide(gate_of(rt, "#2").id, InboxDecision::Reject, None, None).unwrap();
     assert_eq!(run(&fx).status, RunState::PrOpen);
+    // An update pushed to PR 1: its branch on GitHub now has a commit no rebuild makes.
+    let wt = rt.store.read(|s| s.agents[LEAD].worktree.clone());
+    std::fs::write(wt.join("api2.rs"), "fn b() {}\n").unwrap();
+    ok(rt, LEAD, "commit", json!({"message": "api2", "issue": "#1"}));
+    ok(rt, LEAD, "request_pr", json!({"issue": "#1"}));
+    approve(rt, "#1");
+    wait("the update pushed", || !events(&fx, "pr.pushed").is_empty());
+    let updated = origin_rev(&fx, "orch/fx/issue/1");
     // PR 1 closed: no PR open → integrating; a new PR replaces it.
     fx.hub.lock().unwrap().prs[0].state = "CLOSED";
     rt.pr_tick(now_ms() + MIN);
@@ -450,8 +458,57 @@ fn a_stale_issue_gate_and_a_closed_pr_follow_the_run_state() {
     assert!(events(&fx, "run.state").iter().any(|e| e["why"] == "no PR open"));
     assert_eq!(told(rt, "ORCH: PR #12 (issue #1) was closed without being merged"), 1);
     ok(rt, LEAD, "request_pr", json!({"issue": "#1", "title": "One again"}));
-    approve(rt, "#1");
+    let gate = approve(rt, "#1");
+    assert_eq!(gate.payload["lease_sha"], json!(updated), "the closed PR's branch, replaced under its lease");
     wait("a new PR 1", || run(&fx).prs.iter().any(|p| p.number == 13 && p.pr.is_some()));
+    assert_eq!(origin_rev(&fx, "orch/fx/issue/1"), gate.payload["head"].as_str().unwrap());
+    assert_ne!(origin_rev(&fx, "orch/fx/issue/1"), updated);
     let r = run(&fx);
     assert_eq!((r.status, r.prs.len()), (RunState::PrOpen, 1), "the closed one is replaced");
+}
+
+#[test]
+fn github_s_update_branch_merge_on_an_issue_pr_is_replaced_by_a_force_push() {
+    let fx = integrating();
+    let rt = &fx.rt;
+    task(rt, "back", "#1", "api.rs", "fn api() {}\n");
+    task(rt, "front", "#2", "ui.ts", "export {}\n");
+    open_both(&fx);
+    // main moves; "Update branch" merges it into PR 1 on GitHub.
+    commit_file(&fx.other, "m1.txt", "m1", "main: m1");
+    g(&fx.other, &["push", "-q", "origin", "main"]);
+    let o = &fx.other;
+    let id = ["-c", "user.name=O", "-c", "user.email=o@example.invalid"];
+    g(o, &["fetch", "-q", "origin"]);
+    g(o, &["checkout", "-q", "-B", "pr", "origin/orch/fx/issue/1"]);
+    g(o, &[&id[..], &["merge", "-q", "--no-ff", "-m", "Merge main into the PR", "origin/main"]].concat());
+    g(o, &["push", "-q", "origin", "pr:orch/fx/issue/1"]);
+    g(o, &["checkout", "-q", "main"]);
+    let merge = origin_rev(&fx, "orch/fx/issue/1");
+    rt.pr_refresh("fx").unwrap();
+    assert_eq!(pr_of(&fx, "#1").pr.unwrap().head_sha, merge);
+    task(rt, "back", "#1", "api2.rs", "fn b() {}\n");
+    ok(rt, LEAD, "request_pr", json!({"issue": "#1"}));
+    let gate = approve(rt, "#1");
+    let p = &gate.payload;
+    assert_eq!(
+        (p["force"].clone(), p["lease_sha"].clone(), p["foreign_replaced"].clone()),
+        (json!(true), json!(merge), json!(1))
+    );
+    wait("the force push", || !events(&fx, "pr.pushed").is_empty());
+    assert_eq!(origin_rev(&fx, "orch/fx/issue/1"), p["head"].as_str().unwrap());
+    // A real commit of theirs is never dropped.
+    std::fs::write(o.join("theirs.txt"), "t").unwrap();
+    g(o, &["fetch", "-q", "origin"]);
+    g(o, &["checkout", "-q", "-B", "pr", "origin/orch/fx/issue/1"]);
+    g(o, &["add", "theirs.txt"]);
+    g(o, &[&id[..], &["commit", "-q", "-m", "their fix"]].concat());
+    g(o, &["push", "-q", "origin", "pr:orch/fx/issue/1"]);
+    wait("checked after the push", || {
+        pr_of(&fx, "#1").pr.is_some_and(|s| s.pushed_sha.as_deref() == p["head"].as_str())
+    });
+    rt.pr_refresh("fx").unwrap();
+    task(rt, "back", "#1", "api3.rs", "fn c() {}\n");
+    let text = refused(rt, json!({"issue": "#1"}));
+    assert!(text.contains("pushed outside the app") && text.contains("their fix"), "{text}");
 }
