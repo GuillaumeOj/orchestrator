@@ -50,6 +50,8 @@ usage: orchd [--home DIR] <command> [args]
   project remove-plan <id>                J11: worktrees, branches, agents
   project remove <id> --history delete|archive [--discard PATH]... [--keep-merged]
   pr refresh <feature>          check the PR of a feature's latest team run now (id or slug)
+  feature prs <feature> [--issue REF]... [--no-issues] [--pr-mode single|per_issue]
+                                set a feature's issues (the full list) and PR mode
   diff <worktree> [--against BRANCH]
   worktree-rm <project> <path> [--delete-branch] [--discard]
   commit <agent> <message...> [--path P]...   commit in the agent's worktree (same path as orch-mcp)
@@ -66,7 +68,7 @@ usage: orchd [--home DIR] <command> [args]
   team list [--project ID]      teams and roles, with validation issues and rules (P2)
   team presets                  add the starter roles and presets that are missing
   team import <file> | team export <team>
-  team launch <project> <team> <slug> [--title T] [--brief TEXT] [--base B]
+  team launch <project> <team> <slug> [--title T] [--brief TEXT] [--base B] [--issue REF]... [--pr-mode M]
   team runs | team run <run>    runs; one run with agents, tasks, docs, timeline
   team pause|resume|stop <run>
   team tasks [--project ID] [--run RUN]
@@ -413,6 +415,17 @@ fn run() -> Result<()> {
             a.done()?;
             print(request(&sock, CtlRequest::PrRefresh { feature })?)
         }
+        "feature" => {
+            match a.next("feature subcommand")?.as_str() {
+                "prs" => {}
+                other => bail!("unknown feature subcommand {other:?}\n\n{USAGE}"),
+            }
+            let (clear, list, pr_mode) = (a.flag("--no-issues"), a.opts("--issue")?, a.opt("--pr-mode")?);
+            let issues = if clear || !list.is_empty() { Some(list) } else { None };
+            let feature = a.next("feature")?;
+            a.done()?;
+            print(request(&sock, CtlRequest::FeaturePrs { feature, issues, pr_mode })?)
+        }
         "diff" => {
             let against = a.opt("--against")?;
             let worktree = abs(&a.next("worktree")?)?;
@@ -613,6 +626,7 @@ fn run() -> Result<()> {
                 "export" => CtlRequest::TeamExport { team_id: a.next("team")?, project_id: a.opt("--project")? },
                 "launch" => {
                     let (title, brief, base) = (a.opt("--title")?, a.opt("--brief")?, a.opt("--base")?);
+                    let (issues, pr_mode) = (a.opts("--issue")?, a.opt("--pr-mode")?);
                     CtlRequest::Launch {
                         project_id: a.next("project")?,
                         team_id: a.next("team")?,
@@ -620,6 +634,8 @@ fn run() -> Result<()> {
                         title,
                         brief,
                         base,
+                        issues,
+                        pr_mode,
                     }
                 }
                 "runs" => CtlRequest::Runs,

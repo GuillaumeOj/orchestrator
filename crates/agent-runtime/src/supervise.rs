@@ -6,6 +6,9 @@ use std::collections::BTreeMap;
 
 use anyhow::{Result, anyhow, bail};
 use orch_protocol::now_ms;
+use orch_store::PrMode;
+
+use crate::issues::PrView;
 
 use serde_json::{Value, json};
 
@@ -236,6 +239,44 @@ impl Runtime {
         Ok((format!("{agent} resumes when admitted."), json!({"turn": turn}), if held { "queued" } else { "resumed" }))
     }
 
+    /// `team_status`'s issues: per feature issue its tasks and PR (data),
+    /// and the lines that say so (none for a feature without issues).
+    fn issues_status(&self, cx: &RunCtx) -> Result<(Vec<Value>, Vec<String>)> {
+        let f = &cx.feature;
+        if f.issues.is_empty() {
+            return Ok((vec![], vec![]));
+        }
+        let tasks = self.db.tasks(None, None, Some(&cx.run.id))?;
+        let view = crate::issues::prs_view(&cx.run, f, &self.run_pr_gates(&cx.run.id));
+        let mut data = vec![];
+        let mut lines = vec![];
+        lines.push(format!("Pull requests: {}", orch_team::prs_line(&f.issue_refs(), f.pr_mode == PrMode::PerIssue)));
+        for i in &f.issues {
+            let handles: Vec<String> =
+                tasks.iter().filter(|t| t.issue.as_deref() == Some(&i.reference)).map(|t| t.handle()).collect();
+            // single mode: the feature's one PR is every issue's.
+            let pr = match f.pr_mode {
+                PrMode::PerIssue => view.iter().find(|v| v.issue.as_deref() == Some(&i.reference)),
+                PrMode::Single => view.first(),
+            };
+            let pr_text = match pr {
+                Some(PrView { number: Some(n), state, .. }) => format!("PR #{n} {state}"),
+                Some(v) if v.state == "pending" => "PR waiting for the user".into(),
+                _ => "no PR yet".into(),
+            };
+            lines.push(format!(
+                "- {}: {} · {pr_text}",
+                i.reference,
+                if handles.is_empty() { "no task".to_string() } else { format!("tasks {}", handles.join(", ")) }
+            ));
+            data.push(json!({
+                "ref": i.reference, "tasks": handles,
+                "pr": pr.filter(|v| v.state != "none").map(|v| json!({"number": v.number, "state": v.state})),
+            }));
+        }
+        Ok((data, lines))
+    }
+
     /// The lead's tools on its team.
     pub(crate) fn lead_tool(&self, cx: &RunCtx, tool: &str, args: &Value) -> Result<(String, Value)> {
         let now = now_ms();
@@ -249,18 +290,20 @@ impl Runtime {
         match tool {
             "team_status" => {
                 let ms = self.members(cx);
+                let mut lines: Vec<String> = ms.iter().map(|m| m.line(now)).collect();
                 if ms.is_empty() {
-                    return Ok(("No team members have started yet.".into(), json!([])));
+                    lines.push("No team members have started yet.".into());
                 }
-                let lines: Vec<String> = ms.iter().map(|m| m.line(now)).collect();
-                let data: Vec<Value> = ms
+                let members: Vec<Value> = ms
                     .iter()
                     .map(|m| {
                         json!({"agent": m.agent, "node": m.node, "state": m.state, "task": m.task,
                         "queue_reason": (m.level == Level::Queued).then_some(&m.reason), "reason": m.reason})
                     })
                     .collect();
-                Ok((lines.join("\n"), json!(data)))
+                let (issues, text) = self.issues_status(cx)?;
+                lines.extend(text);
+                Ok((lines.join("\n"), json!({"members": members, "pr_mode": cx.feature.pr_mode, "issues": issues})))
             }
             "nudge" => {
                 let m = member(args)?;

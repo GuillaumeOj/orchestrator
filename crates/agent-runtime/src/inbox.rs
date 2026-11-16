@@ -1146,7 +1146,7 @@ impl Runtime {
         self.store.read(|s| {
             s.inbox.iter().any(|i| {
                 i.pending()
-                    && matches!(i.payload.get("action").and_then(Value::as_str), Some("push_pr" | "push_pr_update"))
+                    && crate::feature_prs::is_pr_gate(&i.payload)
                     && (i.agent_id.as_deref() == Some(agent)
                         || run.is_some_and(|r| i.payload.get("run").and_then(Value::as_str) == Some(r)))
             })
@@ -1155,6 +1155,17 @@ impl Runtime {
 
     /// `request_pr` from orch-mcp: an Inbox gate (the agent can't push).
     pub(crate) fn request_pr(&self, rec: &AgentRecord, args: &Value) -> Result<String> {
+        let cx = rec.team.as_ref().and_then(|t| self.run_ctx(&t.run_id).ok());
+        if cx.as_ref().is_some_and(|cx| cx.feature.pr_mode == orch_store::PrMode::PerIssue) {
+            bail!(
+                "this feature has one PR per issue, and this build cannot open per-issue PRs yet: nothing was \
+                 requested. Keep merging tasks; ask the user (mcp__orch__ask_user) whether to switch the feature \
+                 to one PR or to wait for per-issue PR support."
+            );
+        }
+        if args.get("issue").and_then(Value::as_str).is_some_and(|i| !i.trim().is_empty()) {
+            bail!("this feature has one PR: call request_pr without `issue`");
+        }
         if self.pending_pr_gate(&rec.id, None) {
             bail!("a pull request request is already waiting for the user");
         }
@@ -1165,6 +1176,11 @@ impl Runtime {
         let title = args.get("title").and_then(Value::as_str).map(str::trim).filter(|t| !t.is_empty());
         let title = title.ok_or_else(|| anyhow!("title is required"))?.chars().take(256).collect::<String>();
         let body = args.get("body").and_then(Value::as_str).unwrap_or("").chars().take(20_000).collect::<String>();
+        // The feature's issues are closed by its PR (spec §3.1).
+        let body = match &cx {
+            Some(cx) => crate::issues::with_closes(&body, &cx.feature.issue_refs()),
+            None => body,
+        };
         let draft = args.get("draft").and_then(Value::as_bool).unwrap_or(false);
         let row = self.store.read(|s| s.worktrees.get(&rec.worktree).cloned());
         let branch = orch_git::worktree::current_branch(&rec.worktree)?;
@@ -1174,7 +1190,8 @@ impl Runtime {
             Some(&rec.id),
             "gate",
             format!("{}: open a PR \"{title}\" ({branch} → {base})", rec.id),
-            json!({"action": "push_pr", "branch": branch, "base": base, "title": title, "body": body, "draft": draft,
+            json!({"action": "push_pr", "run": cx.as_ref().map(|cx| cx.run.id.clone()), "issue": null,
+                   "branch": branch, "base": base, "title": title, "body": body, "draft": draft,
                    "worktree": rec.worktree, "head": head, "diff": diff_summary(&rec.worktree, &base, &branch)}),
             PRIORITY_GATE,
         )?;

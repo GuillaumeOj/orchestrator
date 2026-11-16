@@ -938,6 +938,29 @@ pub async fn project_fetch(core: CoreState<'_>, id: String) -> Res<Value> {
     blocking(core, move |c| c.project_fetch(&id)).await
 }
 
+/// allow-multiple-prs: the user sets a feature's issues (the full list when
+/// given) and/or its PR mode; returns the feature.
+#[tauri::command]
+pub async fn feature_set_prs(
+    core: CoreState<'_>,
+    feature: String,
+    issues: Option<Vec<String>>,
+    pr_mode: Option<String>,
+) -> Res<Value> {
+    blocking(core, move |c| {
+        let rt = c.runtime()?;
+        let mode = agent_runtime::feature_prs::pr_mode_arg(pr_mode.as_deref())?;
+        rt.feature_set_prs(&feature, issues, mode)
+    })
+    .await
+}
+
+/// The project's intake issues matching `text` (by ref or title), at most 8.
+#[tauri::command]
+pub async fn issue_suggest(core: CoreState<'_>, project: String, text: String) -> Res<Value> {
+    blocking(core, move |c| c.runtime()?.issue_suggest(&project, &text)).await
+}
+
 /// Checks a feature's PR now (it can wait on `gh` and a fetch: off the UI thread).
 #[tauri::command]
 pub async fn pr_refresh(core: CoreState<'_>, feature: String) -> Res<Value> {

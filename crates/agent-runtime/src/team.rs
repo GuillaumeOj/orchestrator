@@ -66,6 +66,12 @@ pub struct LaunchSpec {
     /// P4.5: started from an intake item or a planned brief.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub intake: Option<crate::intake::IntakeLink>,
+    /// The feature's issues as typed (`#12`, `ENG-7`, an issue URL…).
+    #[serde(default)]
+    pub issues: Vec<String>,
+    /// One PR for the feature (default) or one per issue.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr_mode: Option<orch_store::PrMode>,
 }
 
 /// Everything about a run, loaded together.
@@ -84,6 +90,8 @@ impl RunCtx {
             slug: self.feature.slug.clone(),
             title: self.feature.title.clone(),
             base: self.feature.base.clone(),
+            issues: self.feature.issue_refs(),
+            per_issue: self.feature.pr_mode == orch_store::PrMode::PerIssue,
         }
     }
 }
@@ -352,6 +360,12 @@ impl Runtime {
         {
             bail!("feature slug {:?} is too long", spec.slug);
         }
+        // The issues and mode, checked before anything is created.
+        let repo = crate::github_issue::known_repo(&project);
+        let issues = crate::issues::normalize(&spec.issues, repo.as_deref())?;
+        let set_prs = !issues.is_empty() || spec.pr_mode.is_some();
+        let rows = if issues.is_empty() { vec![] } else { self.db.intake_items(Some(&project.id)).unwrap_or_default() };
+        let links = crate::issues::links(&issues, &rows, repo.as_deref());
         let now = now_ms();
         let feature = match self.db.feature_by_slug(&project.id, &spec.slug)? {
             Some(f) => {
@@ -378,9 +392,19 @@ impl Runtime {
                     allocation: None,
                     created_at_ms: now,
                     archived: false,
+                    issues: vec![],
+                    pr_mode: Default::default(),
                 }
             }
         };
+        // A feature launched again keeps its issues unless the launch names
+        // them, and its mode unless the launch gives one.
+        let feature = if set_prs {
+            Feature { issues: links, pr_mode: spec.pr_mode.unwrap_or(feature.pr_mode), ..feature }
+        } else {
+            feature
+        };
+        crate::issues::check_mode(feature.pr_mode, feature.issues.len())?;
         // The snapshot this run uses (FR-308). A snapshot of this version
         // taken earlier with other roles (a role edited since, or created
         // after a draft was saved) gets a new version instead of being kept.
@@ -417,6 +441,7 @@ impl Runtime {
             ended_at_ms: None,
             pr_number: None,
             pr: None,
+            prs: vec![],
         };
         self.db.upsert_run(&run)?;
         if spec.off_hours {
@@ -1717,6 +1742,7 @@ impl Runtime {
                     },
                 };
                 let model = model_arg(args)?.flatten();
+                let issue = str_arg(args, "issue").map(|i| self.feature_issue(&cx, i)).transpose()?;
                 let mut t = Task::new(&cx.project.id, "", title, now_ms());
                 t.title = cut(title, 200);
                 // Stored whole (F7): a body too long to keep is refused, never cut.
@@ -1730,6 +1756,7 @@ impl Runtime {
                 t.team_run_id = Some(cx.run.id.clone());
                 t.flow.plan_first = args.get("plan_first").and_then(Value::as_bool).unwrap_or(false);
                 t.flow.model = model;
+                t.issue = issue;
                 let out = self.tasks_of(&cx).create(t)?;
                 let t = out.value;
                 // Written back as a sub-issue of the item the run came from (contract §5).
@@ -1758,6 +1785,12 @@ impl Runtime {
                 }
                 // Validated before any change (a reassignment below is written at once).
                 let model = model_arg(args)?;
+                let issue = match args.get("issue").and_then(Value::as_str) {
+                    None => None,
+                    Some(_) if !is_lead => bail!("only the lead sets a task's issue"),
+                    Some(i) if i.trim().is_empty() => Some(None),
+                    Some(i) => Some(Some(self.feature_issue(&cx, i)?)),
+                };
                 if let Some(node) = str_arg(args, "node") {
                     if !is_lead {
                         bail!("only the lead reassigns tasks");
@@ -1775,6 +1808,9 @@ impl Runtime {
                         bail!("only the lead sets a task's model");
                     }
                     t.flow.model = m;
+                }
+                if let Some(i) = issue {
+                    t.issue = i;
                 }
                 if let Some(s) = str_arg(args, "status") {
                     let s: TaskStatus = s.parse().map_err(|e: String| anyhow!(e))?;
@@ -1809,6 +1845,9 @@ impl Runtime {
                 if !st.trim().is_empty() {
                     bail!("you have uncommitted changes: commit them with mcp__orch__commit first");
                 }
+                // The head the lead merges in per_issue mode: the branch may
+                // move on with the owner's next task before the merge.
+                t.reported_sha = orch_git::gh::rev_sha(&rec.worktree, "HEAD");
                 if let Some(text) = self.review_first(&cx, rec, me, &mut t, args)? {
                     return Ok((text, Value::Null));
                 }
@@ -1842,6 +1881,7 @@ impl Runtime {
                 let r = orch_git::commit::merge_into_worktree(
                     &rec.worktree,
                     &integ,
+                    None,
                     &format!("Merge {integ} into {}", rec.id),
                     self.agent_gitconfig(&rec.id).as_deref(),
                     false,
@@ -1874,8 +1914,18 @@ impl Runtime {
                 }
                 let branch = str_arg(args, "branch").ok_or_else(|| anyhow!("`branch` is required"))?;
                 let prefix = format!("orch/{}/", cx.feature.slug);
-                if !branch.starts_with(&prefix) || branch == cx.feature.integration_branch() {
+                if !branch.starts_with(&prefix)
+                    || branch == cx.feature.integration_branch()
+                    || branch.starts_with(&format!("{prefix}issue/"))
+                {
                     bail!("only branches of this feature ({prefix}<node>-<n>) can be merged here");
+                }
+                let per_issue = cx.feature.pr_mode == orch_store::PrMode::PerIssue;
+                let task_id = args.get("task").and_then(Value::as_u64);
+                if per_issue && task_id.is_none() {
+                    bail!(
+                        "`task` is required: with one PR per issue, each merge belongs to the PR of its task's issue"
+                    );
                 }
                 // The review gate holds without `task` too: a branch whose task
                 // is under review is not merged.
@@ -1891,10 +1941,33 @@ impl Runtime {
                 if let Some(why) = gated.iter().find_map(|t| self.review_missing(&cx, t)) {
                     bail!("{why}");
                 }
+                // A task of another run is refused before anything is merged:
+                // its id would go into the merge commit's `Orch-Task` trailer.
+                let task_row = task_id.map(|id| self.run_task(&cx, id)).transpose()?;
+                // per_issue: one merge = one task, its reported head (spec §3.2).
+                let at = match task_row.filter(|_| per_issue) {
+                    None => None,
+                    Some(t) => {
+                        if t.branch.as_deref().is_some_and(|b| b != branch) {
+                            bail!("task {} is on {}, not {branch}", t.handle(), t.branch.unwrap_or_default());
+                        }
+                        let handle = t.handle();
+                        Some(t.reported_sha.ok_or_else(|| {
+                            anyhow!(
+                                "task {handle} has not been reported yet: merge it once its owner calls report_done"
+                            )
+                        })?)
+                    }
+                };
+                let message = match task_id {
+                    Some(id) => crate::issues::with_trailer(&format!("Merge {branch}"), "Orch-Task", &id.to_string()),
+                    None => format!("Merge {branch}"),
+                };
                 let r = orch_git::commit::merge_into_worktree(
                     &rec.worktree,
                     branch,
-                    &format!("Merge {branch}"),
+                    at.as_deref(),
+                    &message,
                     self.agent_gitconfig(&rec.id).as_deref(),
                     true,
                 );
@@ -2080,6 +2153,10 @@ impl Runtime {
     /// Run summaries for the UI and orchd.
     pub fn runs_json(&self) -> Value {
         let runs = self.db.runs(None, false).unwrap_or_default();
+        // One read for the features of every run (their `prs_view`).
+        let features: BTreeMap<String, Feature> =
+            self.db.features(None).unwrap_or_default().into_iter().map(|f| (f.id.clone(), f)).collect();
+        let gates = self.pr_gates(true);
         let mut by_feature: BTreeMap<String, Vec<Value>> = BTreeMap::new();
         for r in runs.iter().take(50) {
             let agents: Vec<Value> = self
@@ -2087,7 +2164,10 @@ impl Runtime {
                 .into_iter()
                 .map(|a| json!({"id": a.id, "node": a.team.as_ref().map(|s| s.node.clone()), "state": a.tracker.state, "task": a.team.as_ref().and_then(|s| s.task)}))
                 .collect();
-            by_feature.entry(r.feature_id.clone()).or_default().push(json!({"run": r, "agents": agents}));
+            by_feature.entry(r.feature_id.clone()).or_default().push(json!({"run": match features.get(&r.feature_id) {
+                    Some(f) => Self::run_value(r, f, gates.get(&r.id).map_or(&[], Vec::as_slice)),
+                    None => self.run_value_of(r),
+                }, "agents": agents}));
         }
         json!(by_feature)
     }
@@ -2560,7 +2640,7 @@ pub(crate) mod tests {
         assert_ne!(again[0].id, first.id);
     }
 
-    fn call(rt: &Runtime, agent: &str, tool: &str, args: Value) -> (bool, String) {
+    pub(crate) fn call(rt: &Runtime, agent: &str, tool: &str, args: Value) -> (bool, String) {
         let (err, text, _) = rt
             .on_mcp(&McpMsg { agent_id: agent.into(), tool: tool.into(), arguments: args, deadline_ms: 10_000 }, None);
         (err, text)
@@ -2572,7 +2652,7 @@ pub(crate) mod tests {
         text
     }
 
-    fn queued(rt: &Runtime, agent: &str) -> Vec<String> {
+    pub(crate) fn queued(rt: &Runtime, agent: &str) -> Vec<String> {
         rt.store.read(|s| {
             s.turns
                 .iter()
@@ -2586,7 +2666,7 @@ pub(crate) mod tests {
         rt.db.run(run).unwrap().unwrap().status
     }
 
-    fn setup() -> (tempfile::TempDir, Arc<Runtime>, tempfile::TempDir, std::path::PathBuf, String) {
+    pub(crate) fn setup() -> (tempfile::TempDir, Arc<Runtime>, tempfile::TempDir, std::path::PathBuf, String) {
         let (d, rt) = test_runtime(false);
         let (rd, repo) = scratch_repo();
         let p = orch_git::project::register(&rt.db, &repo).unwrap();
@@ -2673,18 +2753,22 @@ pub(crate) mod tests {
     }
 
     fn approved_with(rt: &Runtime, pid: &str, team: &str) -> TeamRun {
-        let run = rt
-            .launch(&LaunchSpec {
+        approved_spec(
+            rt,
+            &LaunchSpec {
                 project_id: pid.into(),
                 team_id: team.into(),
                 slug: "fx".into(),
                 title: "Fix X".into(),
                 brief: "Fix the X bug.".into(),
-                base: None,
-                off_hours: false,
-                intake: None,
-            })
-            .unwrap();
+                ..Default::default()
+            },
+        )
+    }
+
+    /// `spec` launched (feature `fx`), its spec committed and approved.
+    pub(crate) fn approved_spec(rt: &Runtime, spec: &LaunchSpec) -> TeamRun {
+        let run = rt.launch(spec).unwrap();
         write_commit(rt, "fx-lead-1", ".orchestrator/features/fx/spec.md", "# Fix X\n");
         ok(rt, "fx-lead-1", "request_spec_approval", json!({"summary": "s"}));
         let gate = rt.store.read(|s| s.inbox.iter().find(|i| i.pending() && i.kind == "gate").cloned().unwrap());
@@ -2841,6 +2925,8 @@ pub(crate) mod tests {
                 base: None,
                 off_hours: false,
                 intake: None,
+                issues: vec![],
+                pr_mode: Default::default(),
             })
             .unwrap();
         assert_eq!(run.status, RunState::Spec);
@@ -3084,6 +3170,8 @@ pub(crate) mod tests {
                 base: None,
                 off_hours: false,
                 intake: None,
+                issues: vec![],
+                pr_mode: Default::default(),
             })
             .unwrap();
         let lead = "fx-lead-1";
@@ -3130,6 +3218,8 @@ pub(crate) mod tests {
                 base: None,
                 off_hours: false,
                 intake: None,
+                issues: vec![],
+                pr_mode: Default::default(),
             })
             .unwrap();
         // The feature archived under its active run (an older relaunch).

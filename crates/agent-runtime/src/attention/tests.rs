@@ -108,6 +108,7 @@ impl Fx {
     fn ensure_run(&mut self, phase: RunState) {
         if self.runs.is_empty() {
             self.runs.push(RunFacts {
+                prs_view: vec![],
                 run: TeamRun {
                     id: "run-1".into(),
                     team_id: "t".into(),
@@ -121,6 +122,7 @@ impl Fx {
                     pr: None,
                     started_at_ms: NOW - 120 * MIN,
                     ended_at_ms: None,
+                    prs: vec![],
                 },
                 project: "shop".into(),
                 feature: "checkout".into(),

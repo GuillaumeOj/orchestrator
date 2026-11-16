@@ -301,6 +301,8 @@ mod tests {
             allocation: None,
             created_at_ms: 1,
             archived: false,
+            issues: vec![],
+            pr_mode: Default::default(),
         };
         rt.db.upsert_feature(&f).unwrap();
         let dir = ".orchestrator/features/shop/design";

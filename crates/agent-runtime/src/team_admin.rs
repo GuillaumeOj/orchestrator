@@ -150,7 +150,7 @@ impl Runtime {
         let wt = cx.feature.integration_worktree.clone();
         let docs = wt.as_deref().map(|w| feature_docs(w, &cx.feature.slug)).unwrap_or_default();
         Ok(json!({
-            "run": cx.run, "feature": cx.feature, "team": cx.team, "project": {"id": cx.project.id, "name": cx.project.name, "backend": cx.project.backend().kind()},
+            "run": Self::run_value(&cx.run, &cx.feature, &self.run_pr_gates(run_id)), "feature": cx.feature, "team": cx.team, "project": {"id": cx.project.id, "name": cx.project.name, "backend": cx.project.backend().kind()},
             "rules": rules::rules_text(&cx.team), "agents": agents, "tasks": tasks, "docs": docs,
             "artifacts": self.artifacts_json(&cx.feature)?,
             "timeline": self.timeline_json(run_id)?,
@@ -245,7 +245,7 @@ impl Runtime {
             "stop" => self.run_stop(run_id)?,
             other => bail!("unknown run action {other:?} (pause | resume | stop)"),
         };
-        Ok(json!(run))
+        Ok(self.run_value_of(&run))
     }
 
     /// The user creates a task on the board (in a run when `run_id` is set).

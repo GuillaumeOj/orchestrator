@@ -698,6 +698,16 @@ CREATE TABLE programs (
 );
 CREATE INDEX programs_project ON programs(project_id, status);
 "#,
+    // 22 (allow-multiple-prs): a feature's issues (JSON `[{ref,key,title,url}]`)
+    // and PR mode, a task's issue and reported head, the per-issue PRs of a
+    // run (JSON). Old rows read as `single` with no issues and no per-issue PRs.
+    r#"
+ALTER TABLE features ADD COLUMN issues TEXT;
+ALTER TABLE features ADD COLUMN pr_mode TEXT NOT NULL DEFAULT 'single';
+ALTER TABLE tasks ADD COLUMN issue TEXT;
+ALTER TABLE tasks ADD COLUMN reported_sha TEXT;
+ALTER TABLE team_runs ADD COLUMN prs TEXT;
+"#,
 ];
 
 pub(crate) fn migrate(c: &mut Connection) -> Result<()> {
@@ -821,6 +831,57 @@ mod tests {
         assert_eq!((m[0].handed_at_ms, m[0].attempts, m[0].via.clone()), (Some(5), 0, None));
         assert_eq!(m[0].delivery_state(), crate::DeliveryState::Seen);
         assert_eq!((m[1].handed_at_ms, m[1].delivery_state()), (None, crate::DeliveryState::Queued));
+    }
+
+    #[test]
+    fn migration_22_reads_old_features_runs_and_tasks_as_single_with_no_issues() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("m.db");
+        {
+            let mut c = Connection::open(&p).unwrap();
+            for sql in &MIGRATIONS[..17] {
+                c.execute_batch(sql).unwrap();
+            }
+            c.pragma_update(None, "user_version", 17).unwrap();
+            c.execute_batch(
+                "INSERT INTO features(id, project_id, slug, title, brief, base, integration_worktree, allocation, created_at_ms, archived)
+                   VALUES ('p-f', 'p', 'f', 'F', '', 'main', NULL, NULL, 1, 0);
+                 INSERT INTO team_runs(id, team_id, team_version, feature_id, status, resume_status, pr_url, started_at_ms,
+                   ended_at_ms, team_scope, pr_number, pr_status)
+                   VALUES ('r', 't', 1, 'p-f', 'integrating', NULL, NULL, 1, NULL, '', NULL, NULL);
+                 INSERT INTO tasks(id, project_id, backend, external_id, feature_id, team_run_id, title, body, status, node,
+                   agent_id, depends_on, branch, pr_url, notes, created_at_ms, updated_at_ms, remote_updated_at, flow)
+                   VALUES (1, 'p', 'local', NULL, 'p-f', 'r', 'T', '', 'ready', 'back', NULL, '[]', NULL, NULL, '[]', 1, 1, NULL, '{}');",
+            )
+            .unwrap();
+            migrate(&mut c).unwrap();
+        }
+        let s = crate::Store::open(&p).unwrap();
+        let f = s.feature("p-f").unwrap().unwrap();
+        assert_eq!((f.issues.len(), f.pr_mode), (0, crate::PrMode::Single));
+        assert!(s.run("r").unwrap().unwrap().prs.is_empty());
+        let t = s.task(1).unwrap().unwrap();
+        assert_eq!((t.issue, t.reported_sha), (None, None));
+        // The new fields round-trip.
+        let f = crate::Feature {
+            issues: vec![
+                crate::IssueLink::new("#12"),
+                crate::IssueLink { title: Some("x".into()), ..crate::IssueLink::new("ENG-7") },
+            ],
+            pr_mode: crate::PrMode::PerIssue,
+            ..f
+        };
+        s.upsert_feature(&f).unwrap();
+        assert_eq!(s.feature("p-f").unwrap().unwrap(), f);
+        assert_eq!(f.issues[1].key, "eng-7");
+        assert_eq!(f.issue_branch("ENG-7"), "orch/f/issue/eng-7");
+        let mut r = s.run("r").unwrap().unwrap();
+        r.prs = vec![crate::RunPr { issue: "#12".into(), number: 3, fork_sha: "abc".into(), ..Default::default() }];
+        s.upsert_run(&r).unwrap();
+        assert_eq!(s.run("r").unwrap().unwrap().prs, r.prs);
+        let t = crate::Task { issue: Some("#12".into()), reported_sha: Some("abc".into()), ..t };
+        s.upsert_task(&t).unwrap();
+        assert_eq!(s.task(1).unwrap().unwrap(), t);
     }
 
     #[test]

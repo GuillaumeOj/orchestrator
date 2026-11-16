@@ -795,6 +795,7 @@ impl Runtime {
             }
         }
         let mut c = TeamCache { changes: Some(changes), ..Default::default() };
+        let gates = self.pr_gates(true);
         for run in runs {
             let feature = self.db.feature(&run.feature_id).ok().flatten();
             let phase_since_ms = self
@@ -839,9 +840,14 @@ impl Runtime {
                     .collect();
                 attention::held_in(run.status, &moves)
             };
+            let prs_view = feature
+                .as_ref()
+                .map(|f| crate::issues::prs_view(&run, f, gates.get(&run.id).map_or(&[], Vec::as_slice)))
+                .unwrap_or_default();
             c.runs.push(RunFacts {
                 held_in,
                 nodes,
+                prs_view,
                 project: feature.as_ref().map(|f| f.project_id.clone()).unwrap_or_default(),
                 feature: feature.as_ref().map(|f| f.slug.clone()).unwrap_or_else(|| run.feature_id.clone()),
                 phase_since_ms,
@@ -998,6 +1004,7 @@ mod tests {
                 ended_at_ms: None,
                 pr_number: None,
                 pr: None,
+                prs: vec![],
             })
             .unwrap();
         let mut t = orch_store::Task::new("p1", "local", "x", 1);

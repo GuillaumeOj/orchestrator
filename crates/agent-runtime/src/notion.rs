@@ -820,6 +820,8 @@ mod tests {
                 allocation: None,
                 created_at_ms: 1,
                 archived: false,
+                issues: vec![],
+                pr_mode: Default::default(),
             })
             .unwrap();
         let e = rt.notion_publish("f1").unwrap_err().to_string();
@@ -996,6 +998,8 @@ mod tests {
                 allocation: None,
                 created_at_ms: 1,
                 archived: false,
+                issues: vec![],
+                pr_mode: Default::default(),
             })
             .unwrap();
         let settings = orch_store::ProjectSettings {

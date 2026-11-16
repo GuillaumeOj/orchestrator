@@ -255,6 +255,8 @@ pub struct RunAttention {
     pub tasks: TaskCounts,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pr: Option<RunPr>,
+    /// The run's PRs, one list for both modes (api-contract §2).
+    pub prs_view: Vec<crate::issues::PrView>,
     /// Paused, deferred or failed only: the step the run left.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub held_in: Option<RunState>,
@@ -351,6 +353,8 @@ pub struct RunFacts {
     pub nodes: Vec<String>,
     /// The step a paused, deferred or failed run left ([`held_in`]).
     pub held_in: Option<RunState>,
+    /// The run's PRs (allow-multiple-prs api-contract §2).
+    pub prs_view: Vec<crate::issues::PrView>,
 }
 
 /// The step a `status` run left: the `from` of the `run.state` move that
@@ -1360,6 +1364,7 @@ fn run_record(
             url: url.clone(),
             number: r.run.pr_number.or_else(|| orch_store::pr_number_from_url(url)),
         }),
+        prs_view: r.prs_view.clone(),
         held_in: r.held_in.filter(|_| matches!(r.run.status, RunState::Paused | RunState::Deferred | RunState::Failed)),
         until_ms: (r.run.status == RunState::Deferred).then_some(gov.week_resets_ms).flatten(),
         origin: None,

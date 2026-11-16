@@ -103,12 +103,35 @@ pub fn tools_for(is_lead: bool) -> Vec<String> {
 }
 
 /// The feature a team works on.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FeatureCtx {
     pub slug: String,
     pub title: String,
     /// Usually `main`.
     pub base: String,
+    /// The feature's issues (canonical refs, in order).
+    #[serde(default)]
+    pub issues: Vec<String>,
+    /// One PR per issue rather than one for the feature.
+    #[serde(default)]
+    pub per_issue: bool,
+}
+
+/// The lead's "Pull requests" line (allow-multiple-prs spec §3.7), also the
+/// text of the turn that tells it the user changed them.
+pub fn prs_line(issues: &[String], per_issue: bool) -> String {
+    if per_issue {
+        format!(
+            "One PR per issue: {}. Give every task its issue (create_task issue); tag your own commits (commit \
+             issue); untagged work goes into every PR. Ask for each PR with request_pr {{issue}} when that issue is \
+             done; the feature is done when every issue's PR is merged.",
+            issues.join(", ")
+        )
+    } else if issues.is_empty() {
+        "One PR for the feature.".into()
+    } else {
+        format!("One PR for the feature; it closes {}.", issues.join(", "))
+    }
 }
 
 impl FeatureCtx {
@@ -255,6 +278,7 @@ fn lead_protocol(team: &Team, f: &FeatureCtx) -> String {
          not done: you are told when CI fails or the PR falls behind or conflicts with its base. Fix it: tasks as \
          usual for CI; mcp__orch__rebase_base (once every task is merged) when it is behind or conflicts. Then \
          mcp__orch__request_pr again to push. The feature is done when the PR is merged.\n\
+         Pull requests: {}\n\
          Most specialists run a lighter model than you: give a hard task, or one that failed a review round, \
          `model: \"opus\"` in mcp__orch__create_task (or mcp__orch__update_task before it is sent back), and a \
          mechanical task on an Opus node (re-exporting UI frames, say) `model: \"sonnet\"`.\n\
@@ -264,7 +288,8 @@ fn lead_protocol(team: &Team, f: &FeatureCtx) -> String {
          git yourself.",
         if specialists.is_empty() { "yourself".to_string() } else { specialists.join(", ") },
         review_step(team.review),
-        f.integration_branch()
+        f.integration_branch(),
+        prs_line(&f.issues, f.per_issue)
     )
 }
 
@@ -320,7 +345,29 @@ mod tests {
     use crate::presets;
 
     fn ctx() -> FeatureCtx {
-        FeatureCtx { slug: "checkout-v2".into(), title: "Checkout v2".into(), base: "main".into() }
+        FeatureCtx {
+            slug: "checkout-v2".into(),
+            title: "Checkout v2".into(),
+            base: "main".into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn the_lead_is_told_how_many_prs() {
+        let (roles, t) = presets::full_stack();
+        let lead = |f: FeatureCtx| compile_node(&t, "lead", &roles, &f).unwrap().prompt;
+        assert!(lead(ctx()).contains("Pull requests: One PR for the feature.\n"));
+        let issues = vec!["#12".to_string(), "#15".to_string()];
+        let single = lead(FeatureCtx { issues: issues.clone(), ..ctx() });
+        assert!(single.contains("Pull requests: One PR for the feature; it closes #12, #15."), "{single}");
+        let per = lead(FeatureCtx { issues, per_issue: true, ..ctx() });
+        assert!(
+            per.contains("Pull requests: One PR per issue: #12, #15. Give every task its issue (create_task issue)"),
+            "{per}"
+        );
+        assert!(per.contains("the feature is done when every issue's PR is merged."));
+        assert!(!compile_node(&t, "back", &roles, &ctx()).unwrap().prompt.contains("Pull requests:"));
     }
 
     #[test]
