@@ -82,6 +82,7 @@ struct Fx {
     rt: Arc<Runtime>,
     hub: Arc<Mutex<Hub>>,
     run: String,
+    project: String,
     /// A clone of `origin` to move `main` from.
     other: PathBuf,
 }
@@ -149,6 +150,10 @@ fn infos(rt: &Runtime) -> Vec<InboxItem> {
 /// A `per_issue` feature (#1, #2) at its integration step, its spec
 /// committed by the lead (shared), with a bare `origin`.
 fn integrating() -> Fx {
+    integrating_with(&["#1", "#2"], PrMode::PerIssue)
+}
+
+fn integrating_with(issues: &[&str], mode: PrMode) -> Fx {
     let d = tempfile::Builder::new().prefix("orchpi").tempdir_in(orch_protocol::test_tmp()).unwrap();
     let (rd, repo) = scratch_repo();
     let origin = rd.path().join("origin.git");
@@ -171,12 +176,12 @@ fn integrating() -> Fx {
     rt.db.save_team(&team, &roles, 1).unwrap();
     let run = rt
         .launch(&LaunchSpec {
-            project_id: p.id,
+            project_id: p.id.clone(),
             team_id: "bugfix-squad".into(),
             slug: "fx".into(),
             title: "Fix X".into(),
-            issues: vec!["#1".into(), "#2".into()],
-            pr_mode: Some(PrMode::PerIssue),
+            issues: issues.iter().map(|i| i.to_string()).collect(),
+            pr_mode: Some(mode),
             ..Default::default()
         })
         .unwrap();
@@ -188,7 +193,31 @@ fn integrating() -> Fx {
     let spec = gates(&rt).pop().unwrap();
     rt.decide(spec.id, InboxDecision::Approve, None, None).unwrap();
     rt.set_run_state(&run.id, RunState::Integrating, "test").unwrap();
-    Fx { _d: d, _rd: rd, rt, hub, run: run.id, other }
+    Fx { _d: d, _rd: rd, rt, hub, run: run.id, project: p.id, other }
+}
+
+/// The run started from tracker item #1 of GitHub `o/r` (issues #1, #2 listed), write-back on.
+fn started_from_item_1(fx: &Fx) {
+    let rt = &fx.rt;
+    let project = fx.project.clone();
+    let mut t = rt.db.tracker(&project).unwrap();
+    t.tracker = orch_store::Tracker::Github { repo: Some("o/r".into()), project_board: None };
+    rt.db.set_tracker(&project, &t).unwrap();
+    let up = |n: u64| orch_store::IntakeUpsert {
+        node_id: format!("gh:o/r#{n}"),
+        reference: format!("#{n}"),
+        title: format!("Issue {n}"),
+        url: Some(format!("https://github.com/o/r/issues/{n}")),
+        rev: "r1".into(),
+        ..Default::default()
+    };
+    rt.db.intake_apply(&project, "github", vec![up(1), up(2)], true, now_ms()).unwrap();
+    let row = rt.db.work_node_rows("gh:o/r#1").unwrap().remove(0);
+    assert!(rt.db.intake_mark_started(row.id, "run", &fx.run).unwrap());
+}
+
+fn pr_bodies(fx: &Fx) -> Vec<String> {
+    fx.hub.lock().unwrap().prs.iter().map(|p| p.body.clone()).collect()
 }
 
 /// A task of `issue` on `node`: dispatched, `file` written, reported and merged.
@@ -500,4 +529,30 @@ fn github_s_update_branch_merge_on_an_issue_pr_is_replaced_by_a_force_push() {
     task(rt, "back", "#1", "api3.rs", "fn c() {}\n");
     let text = refused(rt, json!({"issue": "#1"}));
     assert!(text.contains("pushed outside the app") && text.contains("their fix"), "{text}");
+}
+
+#[test]
+fn a_per_issue_pr_skips_the_run_s_write_back_and_closes_only_its_own_issue() {
+    let fx = integrating();
+    started_from_item_1(&fx);
+    let rt = &fx.rt;
+    task(rt, "front", "#2", "ui.ts", "export {}\n");
+    ok(rt, LEAD, "request_pr", json!({"issue": "#2", "title": "Two"}));
+    approve(rt, "#2");
+    wait("the PR is open", || run(&fx).prs.iter().any(|p| p.pr.is_some()));
+    assert_eq!(pr_bodies(&fx), ["Closes #2"], "no `Closes #1` from the run's item");
+}
+
+#[test]
+fn a_single_pr_gets_the_write_back_without_saying_closes_twice() {
+    let fx = integrating_with(&["#1"], PrMode::Single);
+    started_from_item_1(&fx);
+    let rt = &fx.rt;
+    task(rt, "back", "#1", "api.rs", "fn api() {}\n");
+    ok(rt, LEAD, "request_pr", json!({"title": "One"}));
+    let gate = gates(rt).pop().unwrap();
+    rt.decide(gate.id, InboxDecision::Approve, None, None).unwrap();
+    wait("the PR is open", || !pr_bodies(&fx).is_empty());
+    let b = pr_bodies(&fx).remove(0);
+    assert_eq!(b.lines().filter(|l| l.trim() == "Closes #1").count(), 1, "{b}");
 }
