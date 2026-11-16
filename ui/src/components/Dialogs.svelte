@@ -14,6 +14,7 @@
   import { basisText, blockedLine, dialogEstimate, originChip, ranBeforeLine, staleBanner, staleOf, subIssuesLine, trackerName } from '../lib/intake.js';
   import { endStarting } from '../lib/intake.svelte.js';
   import { errText, invoke } from '../lib/ipc.js';
+  import { chipError, chipOf, chipOfIssue, issueErrorText, issueTexts, lockedIssues, markBad, modeFor, modeLockedBy, parseCoded } from '../lib/issues.js';
   import { counts, liveText } from '../lib/now.svelte.js';
   import { EFFORTS, MODEL_CHOICES, PERMISSION_MODES } from '../lib/options.js';
   import { nextOffHours, OFF_DISABLED, offHoursAllowed } from '../lib/pacing.js';
@@ -23,7 +24,9 @@
   import { openProgramPlan } from '../lib/work.js';
   import ConnBadge from './ConnBadge.svelte';
   import FloatingWindow from './FloatingWindow.svelte';
+  import IssuesField from './IssuesField.svelte';
   import PlanEditor from './PlanEditor.svelte';
+  import PrModeControl from './PrModeControl.svelte';
   import Select from './Select.svelte';
 
   const o = $derived(app.overlay);
@@ -54,6 +57,11 @@
   let roleId = $state('');
   // Launch on feature
   let launch = $state({ project_id: '', team_id: '', existing: '', slug: '', title: '', brief: '', base: '', off_hours: false });
+  // allow-multiple-prs: the Issues chips and the Pull requests choice (ux-brief §1).
+  let issueChips = $state([]);
+  let prMode = $state('single');
+  let issueError = $state(null);
+  const issuesInvalid = $derived(!!chipError(issueChips) || !!issueError);
   let offHours = $state(null); // planner_view.off_hours: the next window for "Run off-hours"
   let teamsView = $state(null);
   let registry = $state([]); // MCP servers the project sees (the Design tools line)
@@ -75,7 +83,7 @@
   }
   function setLaunchProject(project_id) {
     launch.project_id = project_id;
-    launch.existing = '';
+    pickExisting('');
     loadTeams(project_id);
   }
   $effect(() => {
@@ -92,6 +100,9 @@
       launch = pf
         ? { project_id, team_id: pf.team_id ?? '', existing: '', slug: pf.slug ?? '', title: pf.title ?? '', brief: pf.brief ?? '', base: pf.base ?? '', off_hours: !!pf.off_hours }
         : { project_id, team_id: ov.teamId ?? '', existing: '', slug: '', title: '', brief: '', base: '', off_hours: false };
+      issueChips = (pf?.issues ?? []).map((r) => chipOf(r));
+      prMode = pf?.pr_mode ?? 'single';
+      issueError = null;
       // The user reads an item's text first (focus on the primary button); Edit from a brief card focuses the brief.
       if (pf) queueMicrotask(() => (ov.focus === 'brief' ? briefEl : startBtn)?.focus());
       invoke('planner_view')
@@ -99,6 +110,12 @@
         .catch(() => (offHours = null));
       loadTeams(project_id);
     });
+  });
+  // An edit clears the server's message about the list or the mode.
+  $effect(() => {
+    issueChips;
+    prMode;
+    untrack(() => (issueError = null));
   });
   const projectOptions = $derived(projects().map((p) => ({ value: p.id, label: p.name })));
   const roleOptions = $derived([{ value: '', label: 'plain Claude' }, ...roles.filter((r) => r.id !== 'lead').map((r) => ({ value: r.id, label: r.name }))]);
@@ -113,6 +130,25 @@
   const launchTeam = $derived(teamsView?.teams.find((t) => t.team.id === launch.team_id));
   const launchTools = $derived(designTools(launchTeam?.team, teamsView?.roles, registry));
   const free = $derived(features().filter((f) => f.project_id === launch.project_id && (!f.run || runFinished(f.run.status))));
+  const existingFeature = $derived(launch.existing ? free.find((f) => f.id === launch.existing) : null);
+  // Relaunching an existing feature sends the full state: its issues and mode are the form's start (api-contract §3).
+  function pickExisting(id) {
+    launch.existing = id;
+    issueError = null;
+    const f = free.find((x) => x.id === id);
+    if (f) {
+      issueChips = (f.issues ?? []).map(chipOfIssue);
+      prMode = f.pr_mode ?? 'single';
+    } else {
+      issueChips = (o.prefill?.issues ?? []).map((r) => chipOf(r));
+      prMode = o.prefill?.pr_mode ?? 'single';
+    }
+  }
+  // An issue of the feature's last run with a PR cannot be dropped, nor the mode changed once it had one.
+  const existingLocked = $derived(existingFeature ? lockedIssues(existingFeature.run?.prs_view) : new Map());
+  const existingModeLocked = $derived(!!existingFeature?.run && modeLockedBy(existingFeature.run));
+  // A feature whose run had a PR keeps its mode, even under 2 issues (the core allows the drop); otherwise per issue falls back to One PR.
+  const mode = $derived(existingModeLocked ? (existingFeature.pr_mode ?? 'single') : modeFor(prMode, issueChips.length));
   const launchSlug = $derived(launch.existing ? (free.find((f) => f.id === launch.existing)?.slug ?? '') : launch.slug || slugify(launch.title));
 
   async function launchTeamOnFeature() {
@@ -123,14 +159,20 @@
     const teamName = launchTeam?.team.name ?? launch.team_id;
     try {
       const run = await invoke('team_launch', {
-        form: { project_id: launch.project_id, team_id: launch.team_id, slug, title: launch.title, brief: launch.brief, base: launch.base || null, off_hours: launch.off_hours || undefined, intake: o.intake ?? undefined },
+        form: { project_id: launch.project_id, team_id: launch.team_id, slug, title: launch.title, brief: launch.brief, base: launch.base || null, off_hours: launch.off_hours || undefined, intake: o.intake ?? undefined, issues: issueTexts(issueChips), pr_mode: mode },
       });
       close();
       await refresh();
       openFeature(run.feature_id);
       toast(`Launched ${teamName} on ${slug} · the lead starts when the Governor admits it`);
     } catch (e) {
-      failed(e);
+      const c = parseCoded(errText(e));
+      if (['bad_ref', 'too_many', 'per_issue_needs_two', 'issue_has_pr', 'pr_busy'].includes(c.code)) {
+        const msg = issueErrorText(c);
+        if (c.code === 'bad_ref') issueChips = markBad(issueChips, c.ref, msg);
+        else issueError = msg;
+        busy = false;
+      } else failed(e);
     }
   }
 
@@ -417,8 +459,8 @@
     <form onsubmit={(e) => (e.preventDefault(), launchTeamOnFeature())}>
       {@render fromIntake()}
       <div class="seg" role="radiogroup" aria-label="Feature">
-        <button type="button" class:on={!launch.existing} onclick={() => (launch.existing = '')}>New feature</button>
-        {#each free as f (f.id)}<button type="button" class:on={launch.existing === f.id} onclick={() => (launch.existing = f.id)}>Existing: {f.slug}</button>{/each}
+        <button type="button" class:on={!launch.existing} onclick={() => pickExisting('')}>New feature</button>
+        {#each free as f (f.id)}<button type="button" class:on={launch.existing === f.id} onclick={() => pickExisting(f.id)}>Existing: {f.slug}</button>{/each}
       </div>
       <div class="row">
         <label>Project
@@ -439,6 +481,14 @@
       <label>Brief <span class="muted">({o.prefill ? 'the item as markdown' : '3 lines'})</span>
         <textarea class="field" rows={o.prefill ? 12 : 3} bind:value={launch.brief} bind:this={briefEl} disabled={!!stale} placeholder="What to build, the constraints, where the designs are."></textarea>
       </label>
+      <div class="field-group">
+        <label for="launch-issues">Issues <span class="muted">(optional)</span></label>
+        <IssuesField id="launch-issues" bind:chips={issueChips} project={launch.project_id} locked={existingLocked} disabled={!!stale} error={issueError} />
+      </div>
+      <div class="field-group">
+        <span class="lbl" id="launch-prs">Pull requests</span>
+        <PrModeControl value={mode} refs={issueChips.map((c) => c.ref)} count={issueChips.length} locked={existingModeLocked} onchange={(m) => ((prMode = m), (issueError = null))} />
+      </div>
       {@render scopeNote()}
       <div class="note what">
         <span>• Creates <span class="mono">orch/{launchSlug || '…'}/integration</span> and the lead's worktree on it.</span>
@@ -463,7 +513,7 @@
         {#if stale}
           <button type="button" class="btn primary" bind:this={startBtn} onclick={close}>Close</button>
         {:else}
-          <button type="submit" class="btn primary" bind:this={startBtn} disabled={busy || !launch.team_id || !launchSlug || !launch.project_id} use:tooltip={{ label: 'Launch', key: '⌘⏎' }}>{busy ? 'Launching…' : 'Launch'}</button>
+          <button type="submit" class="btn primary" bind:this={startBtn} disabled={busy || issuesInvalid || !launch.team_id || !launchSlug || !launch.project_id} use:tooltip={{ label: 'Launch', key: '⌘⏎' }}>{busy ? 'Launching…' : 'Launch'}</button>
         {/if}
       </div>
     </form>
@@ -570,6 +620,16 @@
   .row {
     display: flex;
     gap: var(--space-md);
+  }
+  .field-group {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-xs);
+    color: var(--color-text-secondary);
+  }
+  .field-group label,
+  .lbl {
+    flex: none;
   }
   p {
     margin: 0;

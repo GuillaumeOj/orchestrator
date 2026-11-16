@@ -277,7 +277,12 @@ pub fn rev_sha(dir: &Path, rev: &str) -> Option<String> {
 
 /// The commits of `HEAD` not in `sha`, newest first: `(sha, subject)`.
 pub fn commits_since(dir: &Path, sha: &str) -> Result<Vec<(String, String)>> {
-    let out = git(dir, &["log", "--max-count=200", "--format=%H%x1f%s", &format!("{sha}..HEAD")])?;
+    commits_in(dir, &format!("{sha}..HEAD"))
+}
+
+/// The commits of `range` (`a..b`), newest first, at most 200: `(sha, subject)`.
+pub fn commits_in(dir: &Path, range: &str) -> Result<Vec<(String, String)>> {
+    let out = git(dir, &["log", "--max-count=200", "--format=%H%x1f%s", range, "--"])?;
     Ok(out.lines().filter_map(|l| l.split_once('\x1f')).map(|(h, s)| (h.to_string(), s.to_string())).collect())
 }
 

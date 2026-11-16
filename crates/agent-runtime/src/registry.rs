@@ -1232,7 +1232,8 @@ pub(crate) mod tests {
         // The starter UI role with registry refs, as a team node compiles it.
         let (mut roles, team) = orch_team::presets::design_sprint();
         roles.iter_mut().find(|r| r.id == "ui").unwrap().mcp_refs = vec!["penpot".into(), "figma-local".into()];
-        let f = orch_team::FeatureCtx { slug: "f".into(), title: "F".into(), base: "main".into() };
+        let f =
+            orch_team::FeatureCtx { slug: "f".into(), title: "F".into(), base: "main".into(), ..Default::default() };
         let node = orch_team::compile_node(&team, "ui", &roles, &f).unwrap();
         let role = rt.resolve_mcp(&Role::from_node(&node).unwrap(), None, true).unwrap();
         let mut cx = crate::compile::tests::ctx(crate::compile::SessionMode::New("u".into()));

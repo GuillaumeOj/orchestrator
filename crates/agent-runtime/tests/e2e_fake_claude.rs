@@ -547,6 +547,8 @@ fn a_team_run_end_to_end_with_fake_claude() {
             title: Some("Fix X".into()),
             brief: Some("Fix the X bug.".into()),
             base: None,
+            issues: vec![],
+            pr_mode: Default::default(),
         },
     )
     .unwrap();
@@ -805,6 +807,8 @@ fn a_team_run_where_the_user_only_uses_the_cards_has_no_pane_intervention() {
             title: Some("Fix X".into()),
             brief: Some("Fix the X bug.".into()),
             base: None,
+            issues: vec![],
+            pr_mode: Default::default(),
         },
     )
     .unwrap();

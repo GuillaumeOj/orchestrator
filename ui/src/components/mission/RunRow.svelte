@@ -2,11 +2,13 @@
   // Run row (notes §1.3, Penpot P4.2 Run row): project › feature, the phase
   // stepper and phase text; tasks, PR and the blocker line; member chips, lead
   // first (past 6: "+n more"). The chip at `chip` is the h/l target.
-  import { openUrl } from '../../lib/app.svelte.js';
+  import { features, openFeature, openUrl } from '../../lib/app.svelte.js';
   import { waited } from '../../lib/format.js';
   import { originOf } from '../../lib/intake.js';
   import { phaseFull, phaseText, prText, tasksText } from '../../lib/mission.js';
   import { attention } from '../../lib/now.svelte.js';
+  import { isPerIssue, prsDot, prsSummary, prsTooltip } from '../../lib/pr.js';
+  import { tooltip } from '../../lib/tooltip.js';
   import MemberChip from './MemberChip.svelte';
   import OriginChip from './OriginChip.svelte';
   import PhaseStepper from './PhaseStepper.svelte';
@@ -17,6 +19,10 @@
   let { run, now, target, busy = null, onchip = () => {} } = $props();
   const b = $derived(run.blocker);
   const error = $derived(run.level === 'error');
+  // allow-multiple-prs: per issue, the summary of every PR; a click opens the feature pane (ux-brief §4).
+  const perIssue = $derived(isPerIssue(run.prs_view));
+  const feature = $derived(perIssue ? features().find((f) => f.run?.id === run.run) : null);
+  const issueOf = (ref) => feature?.issues?.find((i) => i.ref === ref);
   // Past six chips the selected one is swapped in for the sixth (notes §1.3 Overflow).
   const shown = $derived.by(() => {
     const m = run.members.map((id, i) => ({ id, i }));
@@ -37,7 +43,10 @@
 </div>
 <div class="l2">
   <span>{tasksText(run.tasks)}</span>
-  {#if run.pr}<span class="muted">·</span><button class="link" tabindex="-1" onclick={(e) => (e.stopPropagation(), openUrl(run.pr.url))}>{prText(run.pr)}</button>{/if}
+  {#if perIssue}
+    {@const dot = prsDot(run.prs_view)}
+    <span class="muted">·</span><button class="link" tabindex="-1" data-prs use:tooltip={{ label: prsSummary(run.prs_view), detail: prsTooltip(run.prs_view, issueOf) }} onclick={(e) => (e.stopPropagation(), feature && openFeature(feature.id))}>{#if dot}<span class="dot" style:background={dot} aria-hidden="true"></span>{/if}{prsSummary(run.prs_view)}</button>
+  {:else if run.pr}<span class="muted">·</span><button class="link" tabindex="-1" onclick={(e) => (e.stopPropagation(), openUrl(run.pr.url))}>{prText(run.pr)}</button>{/if}
   {#if b}
     <span class="muted">·</span>
     <span class="blocker"><b class:error>{error ? 'error:' : 'blocker:'}</b> {b.agent} · {b.reason}{b.waiting_on?.since_ms ? ` · ${waited(b.waiting_on.since_ms, now)}` : ''}</span>
@@ -90,6 +99,17 @@
     color: var(--color-accent-default);
     font: inherit;
     cursor: pointer;
+  }
+  .link[data-prs] {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-xs);
+  }
+  .dot {
+    width: var(--size-status-dot, 8px);
+    height: var(--size-status-dot, 8px);
+    border-radius: 50%;
+    flex: none;
   }
   .chips {
     display: flex;

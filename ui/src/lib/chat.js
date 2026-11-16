@@ -4,7 +4,7 @@
 // the column renders what `thread()` returns.
 
 import { clock, plural } from './format.js';
-import { agentOf, cut, FILTERS } from './inbox.js';
+import { agentOf, cut, FILTERS, prGateTitle } from './inbox.js';
 import { isDeciding, sourceLabel, undoState } from './overwatch.js';
 import { decisionKind } from './status.js';
 
@@ -186,7 +186,7 @@ export function lineOfDecision(d, now = Date.now()) {
   return {
     verb: verbOf(d),
     agent: agentOf(d) ?? undefined,
-    what: cut(d.title, 48),
+    what: cut(prGateTitle(d) ?? d.title, 48),
     // The actor `rule:<id>` is a policy rule since P4.4 (api-contract §3.2).
     by: by.startsWith('rule:') ? 'policy' : (BY[by] ?? 'core'),
     // A core denial names its hard-list reason, as the core's line does.
@@ -523,7 +523,7 @@ function leftOpen(e) {
   return {
     verb: 'left open',
     agent: agentOf(d) ?? undefined,
-    what: cut(d.title ?? '', 48),
+    what: cut(prGateTitle(d) ?? d.title ?? '', 48),
     by: '',
     state: 'open',
     at_ms: e.at_ms,
@@ -557,6 +557,6 @@ export function resultText(r, decisions = {}) {
   if (e.kind === 'morning' || (e.text && !e.decision)) return { text: e.text ?? '', open: false };
   if (e.line) return { line: e.line, text: lineText(e.line), open: false };
   const d = decisions[e.decision];
-  if (d) return { text: `${decisionKind(d).label} · ${d.title}`, open: true };
+  if (d) return { text: `${decisionKind(d).label} · ${prGateTitle(d) ?? d.title}`, open: true };
   return { text: lineText(leftOpen(e)), open: false };
 }

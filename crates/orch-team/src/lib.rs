@@ -10,7 +10,7 @@ pub mod rules;
 pub mod run;
 pub mod validate;
 
-pub use compile::{FeatureCtx, NodeConfig, compile_node, tools_for};
+pub use compile::{FeatureCtx, NodeConfig, compile_node, prs_line, tools_for};
 pub use export::{ImportError, TeamFile};
 pub use model::{
     AgentNode, Edge, EdgeKind, PermissionProfile, ReviewMode, RoleDef, RoleOverrides, Scope, StarterOrigin, Team,

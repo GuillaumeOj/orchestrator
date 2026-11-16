@@ -420,3 +420,46 @@ export function marker(d, pending = null, now = Date.now()) {
 export function due(pending, now) {
   return pending.filter((p) => !p.sent && now - p.at >= UNDO_MS);
 }
+
+// ---------------------------------------------------------------- PR gates (allow-multiple-prs ux-brief §3)
+
+const isPrGate = (d) => d?.kind === 'gate' && ['push_pr', 'push_pr_update'].includes(d.payload?.action);
+
+/**
+ * The title of a PR gate in per-issue mode: `Open PR for #12 "<title>"`, or
+ * `Push to PR #34 (#12)`; null for anything else (the core's title stays).
+ * `issueTitle` is the feature issue's title when known.
+ */
+export function prGateTitle(d, issueTitle = null) {
+  const p = d?.payload;
+  if (!isPrGate(d) || !p.issue) return null;
+  if (p.action === 'push_pr_update') return `Push to PR #${p.pr_number} (${p.issue})`;
+  return `Open PR for ${p.issue}${issueTitle ? ` "${issueTitle}"` : ''}`;
+}
+
+/**
+ * What a PR gate card adds under its title (ux-brief §3): the issue branch
+ * line and the built-from note per issue; `Closes #12, ENG-7` in single mode
+ * when the feature lists issues. `feature` is the gate's feature (its issues).
+ * Returns `{ title, sub, note, closes }`, null for another card.
+ */
+export function prGate(d, feature = null) {
+  if (!isPrGate(d)) return null;
+  const p = d.payload;
+  const issues = feature?.issues ?? [];
+  if (p.issue) {
+    const title = issues.find((i) => i.ref === p.issue)?.title ?? null;
+    return {
+      title: prGateTitle(d, title),
+      sub: p.branch ? `${p.branch} → ${p.base ?? 'main'}` : null,
+      note: p.action === 'push_pr' ? `Built from the integration branch: tasks of ${p.issue} and shared work.` : null,
+      closes: null,
+    };
+  }
+  return {
+    title: null,
+    sub: null,
+    note: null,
+    closes: p.action === 'push_pr' && issues.length ? `Closes ${issues.map((i) => i.ref).join(', ')}` : null,
+  };
+}

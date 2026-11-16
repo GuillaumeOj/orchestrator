@@ -217,6 +217,14 @@ describe('Feature pane: Tasks', () => {
     expect(t.textContent).toContain('blocked by T-2');
     expect(t.textContent).toContain('No tasks');
   });
+  it('a task tagged with an issue shows its ref chip next to the title; untagged cards have none', async () => {
+    const v = view();
+    v.tasks[0].issue = '#12';
+    const { container } = await pane(v);
+    const chip = container.querySelector('[data-task="1"] .titlerow [data-issue-chip]');
+    expect(chip?.textContent).toBe('#12');
+    expect(container.querySelectorAll('[data-issue-chip]')).toHaveLength(1);
+  });
   it('not synced and conflict marks; conflict menu has Resolve conflict…', async () => {
     const v = view();
     v.tasks[2].sync_state = 'pending';

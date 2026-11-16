@@ -182,10 +182,18 @@ pub(crate) fn diff_summary(wt: &std::path::Path, base: &str, branch: &str) -> Va
     json!({"files": files, "added": added, "removed": removed})
 }
 
+/// `request_pr`'s title (required, ≤ 256 chars), body (≤ 20 000) and draft flag.
+pub(crate) fn pr_text(args: &Value) -> Result<(String, String, bool)> {
+    let title = crate::team::str_arg(args, "title").ok_or_else(|| anyhow!("title is required"))?;
+    let body = args.get("body").and_then(Value::as_str).unwrap_or("").chars().take(20_000).collect();
+    Ok((title.chars().take(256).collect(), body, args.get("draft").and_then(Value::as_bool).unwrap_or(false)))
+}
+
 /// The PR gate's patch is cut past this (the gate preview's limit).
 const PATCH_MAX: usize = 2 << 20;
 
-fn short(sha: &str) -> &str {
+/// A sha cut to 12 characters for messages.
+pub(crate) fn short(sha: &str) -> &str {
     &sha[..sha.len().min(12)]
 }
 
@@ -997,18 +1005,7 @@ impl Runtime {
                 // The user approves the commits they saw: a branch that moved
                 // since is not pushed (the agent asks again).
                 if let Some(why) = self.pr_branch_moved(&item.payload) {
-                    self.advance(id, Stage::Stale("the branch moved"));
-                    if let Some(a) = agent {
-                        let _ = self.deliver_user(
-                            a,
-                            "ORCH: PR gate stale: the branch moved since you asked; call request_pr again.",
-                        );
-                    }
-                    result["effect"] = json!("stale");
-                    result["stale_why"] = json!(why);
-                    result["lifecycle"] = self.lifecycle(id);
-                    self.outcome(&item, by, "stale");
-                    return Ok(result);
+                    return Ok(self.stale_pr_gate(&item, agent, by, &why, result));
                 }
                 // Sent before the push starts: `open_pr` may end (pr_opened or
                 // failed) before this call returns, and must not be overwritten.
@@ -1024,6 +1021,12 @@ impl Runtime {
                 return Ok(result);
             }
             ("gate", "push_pr_update", InboxDecision::Approve) => {
+                // A per-issue update is the build the user saw: rebuilt since, it is not pushed.
+                if item.payload.get("issue").and_then(Value::as_str).is_some()
+                    && let Some(why) = self.pr_branch_moved(&item.payload)
+                {
+                    return Ok(self.stale_pr_gate(&item, agent, by, &why, result));
+                }
                 if let Some(me) = self.me.upgrade() {
                     let payload = item.payload.clone();
                     std::thread::spawn(move || me.push_pr_update(id, &payload));
@@ -1049,7 +1052,7 @@ impl Runtime {
             }
             ("gate", "push_pr", InboxDecision::Reject | InboxDecision::Reply) => {
                 if let Some(a) = agent {
-                    self.pr_declined(a);
+                    self.pr_declined(a, id);
                     let why = message.map(|m| format!(" They said: {m}")).unwrap_or_default();
                     let _ = self.deliver_user(a, &format!("ORCH: the user declined your pull request request.{why}"));
                     effect = self.delivered_effect(a);
@@ -1146,7 +1149,7 @@ impl Runtime {
         self.store.read(|s| {
             s.inbox.iter().any(|i| {
                 i.pending()
-                    && matches!(i.payload.get("action").and_then(Value::as_str), Some("push_pr" | "push_pr_update"))
+                    && crate::feature_prs::is_pr_gate(&i.payload)
                     && (i.agent_id.as_deref() == Some(agent)
                         || run.is_some_and(|r| i.payload.get("run").and_then(Value::as_str) == Some(r)))
             })
@@ -1155,6 +1158,13 @@ impl Runtime {
 
     /// `request_pr` from orch-mcp: an Inbox gate (the agent can't push).
     pub(crate) fn request_pr(&self, rec: &AgentRecord, args: &Value) -> Result<String> {
+        let cx = rec.team.as_ref().and_then(|t| self.run_ctx(&t.run_id).ok());
+        if let Some(cx) = cx.as_ref().filter(|cx| cx.feature.pr_mode == orch_store::PrMode::PerIssue) {
+            return self.request_pr_issue(rec, cx, args);
+        }
+        if args.get("issue").and_then(Value::as_str).is_some_and(|i| !i.trim().is_empty()) {
+            bail!("this feature has one PR: call request_pr without `issue`");
+        }
         if self.pending_pr_gate(&rec.id, None) {
             bail!("a pull request request is already waiting for the user");
         }
@@ -1162,10 +1172,12 @@ impl Runtime {
         if let Some(run) = self.open_pr_run(rec) {
             return self.request_pr_update(rec, &run);
         }
-        let title = args.get("title").and_then(Value::as_str).map(str::trim).filter(|t| !t.is_empty());
-        let title = title.ok_or_else(|| anyhow!("title is required"))?.chars().take(256).collect::<String>();
-        let body = args.get("body").and_then(Value::as_str).unwrap_or("").chars().take(20_000).collect::<String>();
-        let draft = args.get("draft").and_then(Value::as_bool).unwrap_or(false);
+        let (title, body, draft) = pr_text(args)?;
+        // The feature's issues are closed by its PR (spec §3.1).
+        let body = match &cx {
+            Some(cx) => crate::issues::with_closes(&body, &cx.feature.issue_refs()),
+            None => body,
+        };
         let row = self.store.read(|s| s.worktrees.get(&rec.worktree).cloned());
         let branch = orch_git::worktree::current_branch(&rec.worktree)?;
         let base = row.map(|r| r.base).unwrap_or_else(|| "main".into());
@@ -1174,7 +1186,8 @@ impl Runtime {
             Some(&rec.id),
             "gate",
             format!("{}: open a PR \"{title}\" ({branch} → {base})", rec.id),
-            json!({"action": "push_pr", "branch": branch, "base": base, "title": title, "body": body, "draft": draft,
+            json!({"action": "push_pr", "run": cx.as_ref().map(|cx| cx.run.id.clone()), "issue": null,
+                   "branch": branch, "base": base, "title": title, "body": body, "draft": draft,
                    "worktree": rec.worktree, "head": head, "diff": diff_summary(&rec.worktree, &base, &branch)}),
             PRIORITY_GATE,
         )?;
@@ -1201,7 +1214,9 @@ impl Runtime {
             bail!("gate {id} has no patch");
         }
         let s = |k: &str| p.get(k).and_then(Value::as_str).unwrap_or("").to_string();
-        let range = format!("{}...{}", s("base"), s("branch"));
+        // A per-issue gate diffs against the base it was built on.
+        let base = Some(s("diff_base")).filter(|b| !b.is_empty()).unwrap_or_else(|| s("base"));
+        let range = format!("{base}...{}", s("branch"));
         let mut args = vec!["diff", range.as_str()];
         if let Some(f) = path {
             args.extend(["--", f]);
@@ -1216,12 +1231,39 @@ impl Runtime {
     }
 
     /// The PR gate's branch is no longer at the commit the user was shown.
+    /// A per-issue gate also stores the integration head it was built from.
     fn pr_branch_moved(&self, p: &Value) -> Option<String> {
-        let head = p.get("head").and_then(Value::as_str)?;
         let wt = std::path::PathBuf::from(p.get("worktree").and_then(Value::as_str)?);
-        let branch = p.get("branch").and_then(Value::as_str)?;
-        let now = orch_git::git(&wt, &["rev-parse", branch]).ok()?.trim().to_string();
-        (now != head).then(|| format!("{branch} is at {} now, not {}", short(&now), short(head)))
+        let moved = |branch: &str, was: &str| {
+            let now = orch_git::git(&wt, &["rev-parse", branch]).ok()?.trim().to_string();
+            (now != was).then(|| format!("{branch} is at {} now, not {}", short(&now), short(was)))
+        };
+        let s = |k: &str| p.get(k).and_then(Value::as_str);
+        if let (Some(b), Some(was)) = (s("integration"), s("integration_head"))
+            && let Some(why) = moved(b, was)
+        {
+            return Some(why);
+        }
+        moved(s("branch")?, s("head")?)
+    }
+
+    /// A PR gate approved after its branch moved: stale, the agent asks
+    /// again; a `per_issue` run follows its other PRs and gates.
+    fn stale_pr_gate(&self, item: &InboxItem, agent: Option<&str>, by: &str, why: &str, mut result: Value) -> Value {
+        let id = item.id;
+        self.advance(id, Stage::Stale("the branch moved"));
+        if let Some(run) = item.payload.get("run").and_then(Value::as_str) {
+            let _ = self.reevaluate_run_prs(run, Some(id));
+        }
+        if let Some(a) = agent {
+            let _ =
+                self.deliver_user(a, "ORCH: PR gate stale: the branch moved since you asked; call request_pr again.");
+        }
+        result["effect"] = json!("stale");
+        result["stale_why"] = json!(why);
+        result["lifecycle"] = self.lifecycle(id);
+        self.outcome(item, by, "stale");
+        result
     }
 
     /// After the PR gate is approved: push with the user's credentials, open
@@ -1231,15 +1273,30 @@ impl Runtime {
         let s = |k: &str| p.get(k).and_then(Value::as_str).unwrap_or("").to_string();
         let wt = std::path::PathBuf::from(s("worktree"));
         let (branch, base) = (s("branch"), s("base"));
-        // Read before the push: a commit landing after it is not taken as pushed.
-        let pushed = orch_git::gh::rev_sha(&wt, &branch);
+        let issue = p.get("issue").and_then(Value::as_str).map(str::to_string);
+        // What is pushed: a per-issue gate's approved build; else the branch,
+        // read before the push (a commit landing after it is not taken as pushed).
+        let pushed = match &issue {
+            Some(_) => Some(s("head")),
+            None => orch_git::gh::rev_sha(&wt, &branch),
+        };
         let draft = p["draft"].as_bool().unwrap_or(false);
         // Write-back (contract §5): `Closes #n` for the items of the run, the Linear identifier in the title.
-        let (title, body) = self.pr_write_back(agent.as_deref(), &branch, &s("title"), &s("body"));
+        // Not on a per-issue PR: it closes its own issue only (its body has `Closes <ref>` already), not
+        // the items the whole run came from.
+        let (title, body) = match &issue {
+            Some(_) => (s("title"), s("body")),
+            None => self.pr_write_back(agent.as_deref(), &branch, &s("title"), &s("body")),
+        };
         let r = match &self.cfg.open_pr {
             Some(f) => (f.0)(&wt, &base, &branch, &title, &body, draft),
-            None => orch_git::gh::push(&wt, "origin", &branch)
-                .and_then(|_| self.gh_create_pr(&wt, &base, &branch, &title, &body, draft)),
+            None => match (&issue, p.get("lease_sha").and_then(Value::as_str)) {
+                // The branch of a closed PR is replaced, under its lease.
+                (Some(_), Some(lease)) => orch_git::gh::push_with_lease(&wt, "origin", &s("head"), &branch, lease),
+                (Some(_), None) => orch_git::gh::push_rev(&wt, "origin", &s("head"), &branch),
+                (None, _) => orch_git::gh::push(&wt, "origin", &branch),
+            }
+            .and_then(|_| self.gh_create_pr(&wt, &base, &branch, &title, &body, draft)),
         };
         let (decision, msg) = match &r {
             Ok(url) => ("ok", format!("ORCH: the user approved; the orchestrator pushed {branch} and opened {url}")),
@@ -1268,10 +1325,14 @@ impl Runtime {
             }
             // The run moves first, then the lead is told, then the first check
             // (whose news, CI already red, comes after "opened").
-            let check = self.pr_opened(&a, r.as_ref().ok().map(String::as_str));
+            let url = r.as_ref().ok().map(String::as_str);
+            let check = match &issue {
+                Some(_) => self.issue_pr_opened(&a, p, url),
+                None => self.pr_opened(&a, url),
+            };
             let _ = self.deliver_user(&a, &msg);
             if let Some(run_id) = check {
-                self.pr_check_now(&run_id, pushed);
+                self.pr_check_now(&run_id, issue.as_deref(), pushed);
             }
         }
     }

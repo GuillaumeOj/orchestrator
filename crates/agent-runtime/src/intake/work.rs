@@ -1002,8 +1002,20 @@ impl Runtime {
         let blocked_open = deps("blocked_by");
         let text = work_brief(&ctx, i, &full, &kids, &p, self);
         let url = full.url.clone().unwrap_or_else(|| full.reference.clone());
-        let mut out =
-            self.prefill_forms(&p, &full.title, &text, &suggested, full.meta["team"].as_str(), None, Some(url), mode)?;
+        // A GitHub or Linear item is the feature's first issue (allow-multiple-prs).
+        let repo = crate::github_issue::known_repo(&p);
+        let issues: Vec<String> = crate::issues::row_ref(&full, repo.as_deref()).into_iter().collect();
+        let mut out = self.prefill_forms(
+            &p,
+            &full.title,
+            &text,
+            &suggested,
+            full.meta["team"].as_str(),
+            None,
+            Some(url),
+            issues,
+            mode,
+        )?;
         let ran_before = match &ctx.apps[i] {
             (v, Class::Merged) => json!({"feature": v["feature"], "merged_at_ms": v["merged_at_ms"]}),
             _ => Value::Null,
@@ -1026,7 +1038,7 @@ impl Runtime {
         let s = |k: &str| pl[k].as_str().map(str::to_string);
         let (title, text) = (s("title").unwrap_or_default(), s("brief").unwrap_or_default());
         let suggested = s("mode").unwrap_or_else(|| "team".into());
-        self.prefill_forms(&p, &title, &text, &suggested, s("team").as_deref(), s("slug"), None, mode)
+        self.prefill_forms(&p, &title, &text, &suggested, s("team").as_deref(), s("slug"), None, vec![], mode)
     }
 
     /// Resolves who `@me` is for the project's tracker (the GitHub login, the Linear user name), once.

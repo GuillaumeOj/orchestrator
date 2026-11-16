@@ -1199,7 +1199,8 @@ impl Core {
 
     /// Checks the PR of a feature's latest team run now; the updated run.
     pub fn pr_refresh(&self, feature: &str) -> Result<Value> {
-        Ok(json!(self.runtime()?.pr_refresh(feature)?))
+        let rt = self.runtime()?;
+        Ok(rt.run_value_of(&rt.pr_refresh(feature)?))
     }
 
     /// FR-104: one worktree of the project, the app's or the user's own (the
@@ -1683,6 +1684,8 @@ pub(crate) mod tests {
                 base: None,
                 off_hours: false,
                 intake: None,
+                issues: vec![],
+                pr_mode: Default::default(),
             })
             .unwrap();
         let s = core.state();
@@ -2229,6 +2232,8 @@ pub(crate) mod tests {
             base: None,
             off_hours: false,
             intake: None,
+            issues: vec![],
+            pr_mode: Default::default(),
         })
         .unwrap();
         let team = rt.store.read(|s| s.agents["fx-lead-1"].allocation.clone());

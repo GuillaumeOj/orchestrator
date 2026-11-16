@@ -677,6 +677,8 @@ fn mentionable(rt: &Runtime, d: &std::path::Path, status: RunState) -> std::path
         allocation: None,
         created_at_ms: 1,
         archived: false,
+        issues: vec![],
+        pr_mode: Default::default(),
     };
     rt.db.upsert_feature(&f).unwrap();
     set_run(rt, status);
@@ -698,6 +700,7 @@ fn set_run(rt: &Runtime, status: RunState) {
             ended_at_ms: None,
             pr_number: None,
             pr: None,
+            prs: vec![],
         })
         .unwrap();
 }

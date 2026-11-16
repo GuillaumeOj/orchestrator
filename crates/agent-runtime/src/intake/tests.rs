@@ -540,6 +540,11 @@ fn prefill_builds_the_launch_and_session_forms() {
     assert!(b.starts_with("# Issue 12 (#12)\n\nIn acme/shop. https://github.com/acme/shop/issues/12"), "{b}");
     assert!(b.contains("Body of 12"));
     assert_eq!((l["base"].clone(), l["off_hours"].as_bool()), (Value::Null, Some(false)));
+    assert_eq!(
+        (l["issues"].clone(), l["pr_mode"].as_str()),
+        (json!(["#12"]), Some("single")),
+        "the item is the first issue"
+    );
     let s = f.rt.work_prefill("gh:acme/shop#12", Some("solo")).unwrap();
     let s = &s["session"];
     assert_eq!(s["name"], "issue-12");
@@ -746,6 +751,8 @@ impl Fx {
                 allocation: None,
                 created_at_ms: 1,
                 archived: false,
+                issues: vec![],
+                pr_mode: Default::default(),
             })
             .unwrap();
     }
@@ -1279,6 +1286,8 @@ fn app_state_rollup_and_actions_follow_what_runs() {
         allocation: None,
         created_at_ms: 1,
         archived: false,
+        issues: vec![],
+        pr_mode: Default::default(),
     };
     f.rt.db.upsert_feature(&feature).unwrap();
     let run = |rid: &str, status, pr: Option<&str>| orch_store::TeamRun {
@@ -1294,6 +1303,7 @@ fn app_state_rollup_and_actions_follow_what_runs() {
         ended_at_ms: Some(9),
         pr_number: pr.map(|_| 61),
         pr: None,
+        prs: vec![],
     };
     f.rt.db.upsert_run(&run("r4", orch_team::RunState::PrOpen, Some("https://github.com/acme/shop/pull/61"))).unwrap();
     f.rt.db.upsert_run(&run("r1", orch_team::RunState::Done, None)).unwrap();
@@ -1534,6 +1544,8 @@ fn a_node_starts_with_its_source_and_leaves_its_history_and_run_source() {
         allocation: None,
         created_at_ms: 1,
         archived: false,
+        issues: vec![],
+        pr_mode: Default::default(),
     };
     f.rt.db.upsert_feature(&feature).unwrap();
     f.rt.db
@@ -1550,6 +1562,7 @@ fn a_node_starts_with_its_source_and_leaves_its_history_and_run_source() {
             ended_at_ms: None,
             pr_number: None,
             pr: None,
+            prs: vec![],
         })
         .unwrap();
     f.rt.db.intake_mark_started(id(4).id, "run", "r9").unwrap();
@@ -1792,6 +1805,8 @@ fn fake_start(f: &Fx) {
             allocation: None,
             created_at_ms: 1,
             archived: false,
+            issues: vec![],
+            pr_mode: Default::default(),
         })?;
         rt.db.upsert_run(&orch_store::TeamRun {
             id: id.clone(),
@@ -1806,6 +1821,7 @@ fn fake_start(f: &Fx) {
             ended_at_ms: None,
             pr_number: None,
             pr: None,
+            prs: vec![],
         })?;
         let first = rt.db.work_node_rows(&feat.items[0])?.remove(0);
         rt.db.intake_mark_started(first.id, "run", &id)?;
@@ -2292,6 +2308,9 @@ fn the_pr_closes_the_items_on_github_and_names_the_identifier_on_linear_unless_t
         "team": {"key": "ENG"}, "project": null, "state": {"name": "Todo", "type": "unstarted"},
         "updatedAt": "2026-11-01T00:00:00Z", "labels": {"nodes": []}})]);
     l.refresh();
+    // The form of a Linear item lists its identifier as the feature's first issue.
+    l.with_team();
+    assert_eq!(l.rt.work_prefill("lin:ENG-42", Some("team")).unwrap()["launch"]["issues"], json!(["ENG-42"]));
     start_node(&l, "lin:ENG-42", "lin-solo");
     let rec = crate::runtime::tests::test_agent(l._d.path());
     l.rt.store
@@ -2453,6 +2472,8 @@ fn a_leads_first_turn_names_its_source_item_and_the_open_children() {
             allocation: None,
             created_at_ms: 1,
             archived: false,
+            issues: vec![],
+            pr_mode: Default::default(),
         })
         .unwrap();
     f.rt.db
@@ -2469,6 +2490,7 @@ fn a_leads_first_turn_names_its_source_item_and_the_open_children() {
             ended_at_ms: None,
             pr_number: None,
             pr: None,
+            prs: vec![],
         })
         .unwrap();
     f.rt.db.intake_mark_started(id(1), "run", "r1").unwrap();
@@ -2521,6 +2543,8 @@ fn fake_start_run(f: &Fx, slug: &str, node_row: u64) {
             allocation: None,
             created_at_ms: 1,
             archived: false,
+            issues: vec![],
+            pr_mode: Default::default(),
         })
         .unwrap();
     f.rt.db
@@ -2537,6 +2561,7 @@ fn fake_start_run(f: &Fx, slug: &str, node_row: u64) {
             ended_at_ms: None,
             pr_number: None,
             pr: None,
+            prs: vec![],
         })
         .unwrap();
     f.rt.db.intake_mark_started(node_row, "run", &format!("run-{slug}")).unwrap();

@@ -735,7 +735,8 @@ pub(crate) mod tests {
     #[test]
     fn a_team_specialist_gets_its_tools_and_denies() {
         let (roles, team) = orch_team::presets::full_stack();
-        let f = orch_team::FeatureCtx { slug: "f".into(), title: "F".into(), base: "main".into() };
+        let f =
+            orch_team::FeatureCtx { slug: "f".into(), title: "F".into(), base: "main".into(), ..Default::default() };
         let node = orch_team::compile_node(&team, "back", &roles, &f).unwrap();
         let role = Role::from_node(&node).unwrap();
         let c = compile(&role, &ctx(SessionMode::New("u".into())));
@@ -776,7 +777,8 @@ pub(crate) mod tests {
         cx.app_root = "/Users/u/Library/Application Support/Orchestrator".into();
         cx.agent_dir = cx.app_root.join("agents/a1");
         let (roles, team) = orch_team::presets::full_stack();
-        let f = orch_team::FeatureCtx { slug: "f".into(), title: "F".into(), base: "main".into() };
+        let f =
+            orch_team::FeatureCtx { slug: "f".into(), title: "F".into(), base: "main".into(), ..Default::default() };
         let back = Role::from_node(&orch_team::compile_node(&team, "back", &roles, &f).unwrap()).unwrap();
         for role in [Role::solo(), back] {
             let allow = strs(&compile(&role, &cx).settings["permissions"]["allow"]);

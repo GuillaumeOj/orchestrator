@@ -999,7 +999,10 @@ mod tests {
                started_ref TEXT, hidden_at_ms INTEGER, hidden_rev TEXT, UNIQUE(project_id, source, ref));
              INSERT INTO intake_items(id, project_id, source, ref, title, updated_at, fetched_at_ms, state, hidden_at_ms, hidden_rev)
                SELECT id, project_id, source, ref, title, updated_at, fetched_at_ms, state, hidden_at_ms, hidden_rev FROM work_nodes;
-             DROP TABLE work_nodes; DROP TABLE work_history; DROP TABLE programs;",
+             DROP TABLE work_nodes; DROP TABLE work_history; DROP TABLE programs;
+             ALTER TABLE features DROP COLUMN issues; ALTER TABLE features DROP COLUMN pr_mode;
+             ALTER TABLE tasks DROP COLUMN issue; ALTER TABLE tasks DROP COLUMN reported_sha;
+             ALTER TABLE team_runs DROP COLUMN prs;",
         )
         .unwrap();
         c.execute(

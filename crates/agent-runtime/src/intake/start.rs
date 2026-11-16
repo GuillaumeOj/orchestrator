@@ -220,6 +220,7 @@ impl Runtime {
         team: Option<&str>,
         slug: Option<String>,
         url: Option<String>,
+        issues: Vec<String>,
         mode: Option<&str>,
     ) -> Result<Value> {
         let mode = mode.unwrap_or(suggested);
@@ -234,6 +235,7 @@ impl Runtime {
                     "project_id": project.id,
                     "team_id": self.intake_team(project, team),
                     "slug": slug, "title": title, "brief": text, "base": null, "off_hours": false,
+                    "issues": issues, "pr_mode": "single",
                 }})
             }
             "solo" => {
