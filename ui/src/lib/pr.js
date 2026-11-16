@@ -176,3 +176,86 @@ export function lineState(run) {
 
 /** Toast when a refresh fails (the contract has no offline code: the core's text is shown). */
 export const refreshError = (run, err) => `Couldn't check PR #${run?.pr_number ?? ''}: ${err}`;
+
+// ---------------------------------------------------------------- per issue (allow-multiple-prs ux-brief §2.2, §4)
+
+/** Whether a run's `prs_view` is the per-issue list (single mode has one entry with `issue: null`). */
+export const isPerIssue = (prsView) => (prsView ?? []).some((p) => p.issue != null);
+
+const count = (list, state) => list.filter((p) => p.state === state).length;
+const prs = (n) => `${n} PR${n === 1 ? '' : 's'}`;
+
+/**
+ * The compact summary of a per-issue run (mission row, run inspector header),
+ * from `prs_view` (ux-brief §4): every issue merged → `3 PRs merged`; some open
+ * → `2 PRs open · 1 merged`; none open and some merged → `1 of 3 merged`; else
+ * `no PR yet` (a pending gate or a closed PR adds nothing).
+ */
+export function prsSummary(prsView) {
+  const list = prsView ?? [];
+  const open = count(list, 'open');
+  const merged = count(list, 'merged');
+  if (list.length && merged === list.length) return `${prs(merged)} merged`;
+  if (open) return `${prs(open)} open${merged ? ` · ${merged} merged` : ''}`;
+  if (merged) return `${merged} of ${list.length} merged`;
+  return 'no PR yet';
+}
+
+/** The card head's count: `2 open · 1 merged`; empty text when no PR is open or merged. */
+export function prsCounts(prsView) {
+  const list = prsView ?? [];
+  return [
+    [count(list, 'open'), 'open'],
+    [count(list, 'merged'), 'merged'],
+  ]
+    .filter(([n]) => n)
+    .map(([n, w]) => `${n} ${w}`)
+    .join(' · ');
+}
+
+const WORST = ['error', 'running', 'waiting', 'ok'];
+
+/** The CI dot of a per-issue run: the worst open PR (error > running > waiting > ok); null when no PR is open. */
+export function prsDot(prsView) {
+  const open = (prsView ?? []).filter((p) => p.state === 'open');
+  if (!open.length) return null;
+  const overalls = open.map((p) => p.pr?.ci?.overall);
+  return ciColor(WORST.find((w) => overalls.includes(w)));
+}
+
+/**
+ * One line of the tooltip per PR of the run: `#12 · PR #34 open · CI 4/6`.
+ * @param {any[]} prsView
+ * @param {(ref: string) => any} [issueOf] the feature's issue of a ref (for its title)
+ */
+export function prsTooltip(prsView, issueOf = () => null) {
+  return (prsView ?? [])
+    .map((p) => {
+      const issue = p.issue ? (issueOf(p.issue)?.title ? `${p.issue} ${issueOf(p.issue).title}` : p.issue) : 'PR';
+      if (p.state === 'open') return `${issue} · PR #${p.number} open · CI ${ciCount(p.pr?.ci)}`;
+      if (p.state === 'merged' || p.state === 'closed') return `${issue} · PR #${p.number} ${p.state}`;
+      if (p.state === 'pending') return `${issue} · waiting for your approval`;
+      return `${issue} · no PR yet`;
+    })
+    .join('\n');
+}
+
+/**
+ * A PR row's text and tone for the states that are not an open PR (the open
+ * one is PrLine's content): `{ text, tone }`, tone `muted` | `waiting` | `done`.
+ */
+export function prRowState(p, tasks = null) {
+  switch (p.state) {
+    case 'pending':
+      return { text: 'Waiting for your approval', tone: 'waiting' };
+    case 'merged':
+      return { text: `PR #${p.number} merged`, tone: 'done' };
+    case 'closed':
+      return { text: `PR #${p.number} closed`, tone: 'muted' };
+    default:
+      return { text: `No PR yet${tasks ? ` · ${tasks} task${tasks === 1 ? '' : 's'}` : ''}`, tone: 'muted' };
+  }
+}
+
+/** The `run` a PR row's PrLine reads: the view's PR as the single-mode fields (`pr_url`, `pr_number`, `pr`). */
+export const runOfPr = (run, p) => ({ ...run, pr_url: p.url, pr_number: p.number, pr: p.pr });

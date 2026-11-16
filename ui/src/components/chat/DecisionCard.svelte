@@ -5,10 +5,10 @@
   // while the decision is listed; read-only (`line` given) when a collapsed
   // line expands: no actions but the ones that open something.
   import { untrack } from 'svelte';
-  import { app, now30, openUrl, projectName, undoSandboxAllow } from '../../lib/app.svelte.js';
+  import { app, features, now30, openUrl, projectName, undoSandboxAllow } from '../../lib/app.svelte.js';
   import { byWords, lineMarker, verbText } from '../../lib/chat.js';
   import { clock, dayTime, waited } from '../../lib/format.js';
-  import { agentOf, blockOf, deliveryPrimary, isProgramCard, keyless, parked, restarted, subjectLine } from '../../lib/inbox.js';
+  import { agentOf, blockOf, deliveryPrimary, isProgramCard, keyless, parked, prGate, restarted, subjectLine } from '../../lib/inbox.js';
   import {
     decidingName,
     decidingShare,
@@ -60,8 +60,11 @@
   const brief = $derived(d.kind === 'brief');
   // A brief's Launch / Edit opened the dialog: the card stays open meanwhile, its actions off (notes §8.4).
   const opening = $derived(live && brief && app.overlay?.intake?.brief_decision === d.id);
+  // A PR gate's feature (its issues): the run the gate names.
+  const gateFeature = $derived(d.kind === 'gate' && d.payload?.run ? features().find((f) => f.run?.id === d.payload.run) : null);
+  const pg = $derived(prGate(d, gateFeature));
   const sandbox = $derived(d.kind === 'sandbox');
-  const cardTitle = $derived(sandbox ? sandboxTitle(d) : brief ? [d.title ?? d.payload?.title, projectName(d.project ?? d.payload?.project) ?? d.payload?.project_name ?? d.project].filter(Boolean).join(' · ') : d.title);
+  const cardTitle = $derived(sandbox ? sandboxTitle(d) : (pg?.title ?? (brief ? [d.title ?? d.payload?.title, projectName(d.project ?? d.payload?.project) ?? d.payload?.project_name ?? d.project].filter(Boolean).join(' · ') : d.title)));
   // "Permission · by rule" on an expanded line settled without you.
   const kindBy = $derived(line?.by && line.by !== 'you' ? ` · ${byWords({ ...line, by_detail: undefined })}` : '');
   const k = $derived(decisionKind(d));
@@ -217,8 +220,11 @@
   </div>
   <div class="title">{cardTitle}</div>
   {#if tag}<div class="ptag" data-program-tag><span aria-hidden="true">{'\u{F0328}'}</span> {tag}</div>{/if}
+  {#if pg?.sub}<div class="subject secondary mono" data-pr-branch>{pg.sub}</div>{/if}
+  {#if pg?.closes}<div class="subject secondary" data-pr-closes>{pg.closes}</div>{/if}
   {#if sandbox}<div class="subject secondary">{cardSubject(d, projectName)}</div>
   {:else if subjectLine(d)}<div class="subject secondary">{subjectLine(d)}</div>{/if}
+  {#if pg?.note}<div class="why muted" data-pr-note>{pg.note}</div>{/if}
   {#if askText}<div class="why muted" data-asks>{askText}</div>{/if}
   {#if d.summary && !d.context?.length}<p class="summary">{d.summary}</p>{/if}
   {#if brief}
