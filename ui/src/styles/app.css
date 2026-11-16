@@ -158,6 +158,7 @@ textarea {
   color: var(--color-text-muted);
 }
 .tooltip .tip-detail {
+  white-space: pre-line;
   color: var(--color-text-muted);
   font: var(--text-caption);
 }

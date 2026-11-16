@@ -28,7 +28,8 @@
   } from '../lib/pr.js';
   import { tooltip } from '../lib/tooltip.js';
 
-  let { run, feature, onrun = () => {} } = $props();
+  /** `bare`: a per-issue row's content (allow-multiple-prs ux-brief §2.2): no checked-ago and no refresh, the card head has them. */
+  let { run, feature, onrun = () => {}, bare = false } = $props();
   const now = $derived(now30());
 
   const pr = $derived(run.pr);
@@ -215,14 +216,14 @@
     {#if stale}
       <span class="err" aria-hidden="true">{ERRG}</span>
     {/if}
-    {#if checked && st !== 'checking'}
+    {#if checked && st !== 'checking' && !bare}
       {#if level < 2}
         <span class="cap muted" use:tooltip={stale ? `Last check failed: ${pr.error}. Showing the last known status.` : checked.clock}>
           {busy ? 'checking…' : level >= 1 ? checked.short : checked.text}
         </span>
       {/if}
     {/if}
-    {#if watched}
+    {#if watched && !bare}
       <button
         class="refresh"
         class:spin={busy || st === 'checking'}

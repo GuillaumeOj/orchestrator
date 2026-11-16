@@ -9,11 +9,14 @@
   import { onMount, untrack } from 'svelte';
   import AgentChip from '../components/AgentChip.svelte';
   import DesignSection from '../components/DesignSection.svelte';
+  import FeatureIssues from '../components/FeatureIssues.svelte';
   import SourceHeader from '../components/feature/SourceHeader.svelte';
   import TasksSection from '../components/feature/TasksSection.svelte';
   import Markdown from '../components/Markdown.svelte';
   import Menu from '../components/Menu.svelte';
   import PrLine from '../components/PrLine.svelte';
+  import PrRefresh from '../components/PrRefresh.svelte';
+  import PrRows from '../components/PrRows.svelte';
   import Select from '../components/Select.svelte';
   import StatusBadge from '../components/StatusBadge.svelte';
   import HintRow from '../components/work/HintRow.svelte';
@@ -24,6 +27,7 @@
   import { errText, invoke } from '../lib/ipc.js';
   import { isTypingTarget } from '../lib/keyboard.js';
   import { onTopics, runAttention, runPhase, statusOf } from '../lib/now.svelte.js';
+  import { isPerIssue, prsCounts } from '../lib/pr.js';
   import { docRepoPath, runFinished, runStateColor, runStateLabel, TL_FILTERS, timelineFilter, timelineText } from '../lib/teams.js';
   import { ifCut, tooltip } from '../lib/tooltip.js';
   import { openWork } from '../lib/work.js';
@@ -74,6 +78,11 @@
       : '',
   );
 
+  // allow-multiple-prs: the card lists one row per issue in that mode (the view keeps `issue: null` in single mode).
+  const perIssue = $derived(v?.feature?.pr_mode === 'per_issue' || isPerIssue(run?.prs_view));
+  const taskCounts = $derived(
+    (v?.tasks ?? []).reduce((acc, t) => (t.issue ? { ...acc, [t.issue]: (acc[t.issue] ?? 0) + 1 } : acc), {}),
+  );
   const events = $derived((v?.timeline ?? []).filter(timelineFilter(tl)).slice(0, 60));
   const lead = $derived(v?.team?.nodes?.find((n) => n.is_lead)?.id ?? 'lead');
   /** An agent's role from the run's own team (app_state may not list a new agent yet). */
@@ -338,6 +347,7 @@
         </span>
       </div>
       <div class="row2 muted" use:tooltip={ifCut(metaText)}>{metaText}</div>
+      <FeatureIssues feature={v.feature} {run} onsaved={(f) => (v = { ...v, feature: f })} />
     </header>
 
     <SourceHeader {run} brief={v.run?.brief ?? v.feature?.brief ?? null} project={v.feature.project_id} reload={load} />
@@ -410,8 +420,10 @@
         </section>
 
         <section class="card">
-          <div class="cardh"><b>PR and artifacts</b></div>
-          {#if run?.pr_url}<PrLine {run} feature={spec.featureId} onrun={(r) => (v = { ...v, run: r })} />
+          <div class="cardh"><b>PR and artifacts</b>{#if perIssue}<span class="muted">{prsCounts(run?.prs_view)}</span><span class="grow"></span><PrRefresh {run} feature={spec.featureId} onrun={(r) => (v = { ...v, run: r })} />{/if}</div>
+          {#if perIssue && run?.prs_view?.length}<PrRows {run} feature={v.feature} {taskCounts} onrun={(r) => (v = { ...v, run: r })} />
+          {:else if perIssue}<p class="muted">No PR yet: the lead asks with request_pr per issue after integration (PR gate).</p>
+          {:else if run?.pr_url}<PrLine {run} feature={spec.featureId} onrun={(r) => (v = { ...v, run: r })} />
           {:else}<p class="muted">No PR yet: the lead asks with request_pr after integration (PR gate).</p>{/if}
           {#each v.artifacts.filter((a) => !isDesign(a)) as a (a.id)}
             <div class="art"><span class="muted">{a.kind}</span> <span class="ell">{a.uri}</span> <span class="muted">({a.from_node}{a.to_node ? ` → ${a.to_node}` : ''})</span></div>

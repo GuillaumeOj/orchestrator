@@ -7,6 +7,7 @@
   import { originLine, originOf } from '../../lib/intake.js';
   import { phaseFull, phaseName, prText, shortWait, tasksDetail } from '../../lib/mission.js';
   import { attention, runAttention } from '../../lib/now.svelte.js';
+  import { isPerIssue, prsDot, prsSummary } from '../../lib/pr.js';
   import { STATUS } from '../../lib/status.js';
   import { openWork } from '../../lib/work.js';
   import AgentChip from '../AgentChip.svelte';
@@ -14,12 +15,16 @@
   import OriginChip from '../mission/OriginChip.svelte';
   import PhaseStepper from '../mission/PhaseStepper.svelte';
   import PrLine from '../PrLine.svelte';
+  import PrRows from '../PrRows.svelte';
 
   let { id } = $props();
   const r = $derived(runAttention(id));
   const now = $derived(Math.max(now30(), Date.now()));
   const f = $derived(features().find((x) => x.run?.id === id) ?? null);
   const b = $derived(r?.blocker);
+  // allow-multiple-prs: the run's PRs per issue (the Mission snapshot's, else the feature's).
+  const prsView = $derived(r?.prs_view ?? f?.run?.prs_view ?? []);
+  const perIssue = $derived(isPerIssue(prsView));
   const origin = $derived(originOf(r));
 </script>
 
@@ -58,7 +63,14 @@
     <h4>Tasks</h4>
     <div>{tasksDetail(r.tasks)}</div>
   </section>
-  {#if r.pr}
+  {#if f?.run && perIssue}
+    {@const dot = prsDot(prsView)}
+    <section>
+      <h4>Pull requests</h4>
+      <div class="sum">{#if dot}<span class="dot" style:background={dot} aria-hidden="true"></span>{/if}{prsSummary(prsView)}</div>
+      <PrRows run={{ ...f.run, prs_view: prsView }} feature={f} />
+    </section>
+  {:else if r.pr}
     <section>
       <h4>PR</h4>
       {#if f?.run?.pr_url}<PrLine run={f.run} feature={f.id} />{:else}<button class="link" onclick={() => openUrl(r.pr.url)}>{prText(r.pr)}</button>{/if}
@@ -107,6 +119,17 @@
     color: var(--color-text-primary);
     font: var(--text-label);
     text-align: left;
+  }
+  .sum {
+    display: flex;
+    align-items: center;
+    gap: var(--space-xs);
+  }
+  .dot {
+    width: var(--size-status-dot, 8px);
+    height: var(--size-status-dot, 8px);
+    border-radius: 50%;
+    flex: none;
   }
   .link {
     padding: 0;

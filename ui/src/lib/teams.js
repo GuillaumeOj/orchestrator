@@ -59,7 +59,14 @@ export const TL_FILTERS = [
 
 const DELIVERY_KINDS = new Set(['redelivered', 'delivery_failed', 'recovered', 'stuck', 'tick_panic']);
 
-const RUN_KINDS = new Set(['run.state', 'run.launched', 'run.team_changed', 'agent.added', 'agent.fresh_session']);
+const RUN_KINDS = new Set([
+  'feature.prs',
+  'run.state',
+  'run.launched',
+  'run.team_changed',
+  'agent.added',
+  'agent.fresh_session',
+]);
 
 const FAMILY = (k) =>
   DELIVERY_KINDS.has(k)
@@ -102,7 +109,30 @@ function prStatusText(d) {
     else if (to === 'conflicts') parts.push(`conflicts with ${d.base ?? 'main'}`);
     else if (to === 'up_to_date') parts.push('up to date');
   }
-  return `PR #${d.number}${parts.length ? ` ${parts.join(' · ')}` : ''}`;
+  return `PR #${d.number}${forIssue(d)}${parts.length ? ` ${parts.join(' · ')}` : ''}`;
+}
+
+/** ` (#12)` after a PR number in per-issue mode; the key is absent in single mode. */
+const forIssue = (d) => (d.issue ? ` (${d.issue})` : '');
+
+/** `feature.prs` (ux-brief §6): what the user set, from the full state the event carries. */
+function featurePrsText(d) {
+  const list = (d.issues ?? []).join(', ');
+  if (d.pr_mode === 'per_issue') return `You set one PR per issue${list ? ` (${list})` : ''}`;
+  return list ? `You changed the issues: ${list}` : 'You set one PR for the feature';
+}
+
+/** `pr.build` (api-contract §5): a failed build names the conflict; a good one says what it replayed. */
+function prBuildText(d) {
+  const c = d.conflict;
+  if (!d.ok || c) {
+    const who = c?.task != null ? `T-${c.task}` : c?.commit ? String(c.commit).slice(0, 7) : 'a commit';
+    return `PR for ${d.issue} can't be built: ${who} conflicts in ${(c?.files ?? []).join(', ')}`;
+  }
+  const bits = [plural(d.commits ?? 0, 'commit')];
+  if (d.shared) bits.push(`${d.shared} shared`);
+  if (d.skipped) bits.push(`${d.skipped} already there`);
+  return `built the PR branch for ${d.issue} (${bits.join(', ')})`;
 }
 
 /** One line per timeline event. */
@@ -158,17 +188,21 @@ export function timelineText(e) {
       return `rebased the feature onto ${base} (${n} new commit${n === 1 ? '' : 's'} from ${base})${moved ? ` · moved ${moved} branch${moved === 1 ? '' : 'es'}` : ''}`;
     }
     case 'pr.opened':
-      return `opened PR #${d.number}`;
+      return `opened PR #${d.number}${forIssue(d)}`;
     case 'pr.status':
       return prStatusText(d);
     case 'pr.pushed':
       return d.force
-        ? `force-pushed PR #${d.number} (rebased)`
-        : `pushed ${d.commits} commit${d.commits === 1 ? '' : 's'} to PR #${d.number}`;
+        ? `force-pushed PR #${d.number}${forIssue(d)} (rebased)`
+        : `pushed ${d.commits} commit${d.commits === 1 ? '' : 's'} to PR #${d.number}${forIssue(d)}`;
     case 'pr.merged':
-      return `PR #${d.number} merged`;
+      return `PR #${d.number}${forIssue(d)} merged`;
     case 'pr.closed':
-      return `PR #${d.number} closed without merge`;
+      return `PR #${d.number}${forIssue(d)} closed without merge`;
+    case 'feature.prs':
+      return featurePrsText(d);
+    case 'pr.build':
+      return prBuildText(d);
     case 'pr.error':
       return `PR check failed: ${d}`;
     case 'asked_user':
