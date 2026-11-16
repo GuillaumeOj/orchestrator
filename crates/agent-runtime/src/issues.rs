@@ -39,8 +39,11 @@ pub fn parse_ref(text: &str, repo: Option<&str>) -> Result<String> {
     if let Some(r) = linear_ref(t) {
         return Ok(r);
     }
+    // A pull request URL names no issue to close.
     let r = crate::github_issue::parse_issue_ref(t)
-        .map_err(|_| bad("not an issue (#12, owner/repo#12, an issue URL or a Linear id like ABC-123)"))?;
+        .ok()
+        .filter(|_| !(t.contains("github.com/") && t.contains("/pull/")))
+        .ok_or_else(|| bad("not an issue (#12, owner/repo#12, an issue URL or a Linear id like ABC-123)"))?;
     match (&r.repo, repo) {
         (None, _) => Ok(format!("#{}", r.number)),
         (Some(other), Some(mine)) if other.eq_ignore_ascii_case(mine) => Ok(format!("#{}", r.number)),
@@ -74,12 +77,12 @@ pub fn check_mode(mode: PrMode, issues: usize) -> Result<()> {
 }
 
 /// The links of `refs`, with title and URL from the project's intake rows
-/// when it lists them (no network).
-pub fn links(refs: &[String], rows: &[IntakeRow]) -> Vec<IssueLink> {
+/// when it lists them (no network). `repo`: the project's GitHub repository.
+pub fn links(refs: &[String], rows: &[IntakeRow], repo: Option<&str>) -> Vec<IssueLink> {
     refs.iter()
         .map(|r| {
             let mut l = IssueLink::new(r);
-            if let Some(row) = rows.iter().find(|row| row_ref(row).as_deref() == Some(r.as_str())) {
+            if let Some(row) = rows.iter().find(|row| row_ref(row, repo).as_deref() == Some(r.as_str())) {
                 l.title = Some(row.title.clone()).filter(|t| !t.is_empty());
                 l.url = row.url.clone();
             }
@@ -89,22 +92,35 @@ pub fn links(refs: &[String], rows: &[IntakeRow]) -> Vec<IssueLink> {
 }
 
 /// The canonical ref of an intake row (GitHub or Linear; a repo doc has none).
-pub fn row_ref(row: &IntakeRow) -> Option<String> {
+/// A GitHub item of another repository than `repo` (the project's) has none:
+/// an intake source or a project board may list other repositories' issues,
+/// and `#12` names the project's own.
+pub fn row_ref(row: &IntakeRow, repo: Option<&str>) -> Option<String> {
     match row.source.as_str() {
-        "github" => crate::github_issue::parse_issue_ref(&row.reference).ok().map(|r| format!("#{}", r.number)),
+        "github" => {
+            let r = crate::github_issue::parse_issue_ref(&row.reference).ok()?;
+            let of_url = || row.url.as_deref().and_then(|u| crate::github_issue::parse_issue_ref(u).ok())?.repo;
+            match (r.repo.clone().or_else(of_url), repo) {
+                (Some(other), Some(mine)) if !other.eq_ignore_ascii_case(mine) => None,
+                // `owner/repo#12` with no project repository to match.
+                (Some(_), None) if r.repo.is_some() => None,
+                _ => Some(format!("#{}", r.number)),
+            }
+        }
         "linear" => linear_ref(row.reference.trim()),
         _ => None,
     }
 }
 
 /// `issue_suggest`: the intake rows whose ref or title matches `text`
-/// (case-insensitive), at most 8, as links.
-pub fn suggest(text: &str, rows: &[IntakeRow]) -> Vec<IssueLink> {
+/// (case-insensitive), at most 8, as links. `repo`: the project's GitHub
+/// repository.
+pub fn suggest(text: &str, rows: &[IntakeRow], repo: Option<&str>) -> Vec<IssueLink> {
     let q = text.trim().to_lowercase();
     let q_ref = q.trim_start_matches('#');
     let mut out: Vec<IssueLink> = vec![];
     for row in rows {
-        let Some(r) = row_ref(row) else { continue };
+        let Some(r) = row_ref(row, repo) else { continue };
         let hit = q.is_empty()
             || issue_key(&r).starts_with(q_ref)
             || r.to_lowercase() == q
@@ -297,7 +313,15 @@ mod tests {
         assert_eq!(parse_ref("eng-7", REPO).unwrap(), "ENG-7");
         assert_eq!(parse_ref("A1-23", None).unwrap(), "A1-23");
         assert_eq!(parse_ref("#3", None).unwrap(), "#3");
-        for t in ["x/y#12", "https://github.com/x/y/issues/12", "nope", "1-2", "ENG-", "#0"] {
+        for t in [
+            "x/y#12",
+            "https://github.com/x/y/issues/12",
+            "https://github.com/o/r/pull/12",
+            "nope",
+            "1-2",
+            "ENG-",
+            "#0",
+        ] {
             assert_eq!(code(parse_ref(t, REPO).unwrap_err()), "bad_ref", "{t}");
         }
         let e = parse_ref("x/y#1", REPO).unwrap_err().to_string();
@@ -350,18 +374,28 @@ mod tests {
             row("linear", "ENG-7", "Faster boot"),
             row("repo_docs", "docs/x.md", "Crash doc"),
         ];
-        let ls = links(&["#12".into(), "ENG-8".into()], &rows);
+        let ls = links(&["#12".into(), "ENG-8".into()], &rows, REPO);
         assert_eq!(ls[0].title.as_deref(), Some("Crash on empty brief"));
         assert_eq!(ls[0].url.as_deref(), Some("https://x/#12"));
         assert_eq!((ls[1].key.as_str(), ls[1].title.clone()), ("eng-8", None));
-        let refs = |q: &str| suggest(q, &rows).into_iter().map(|l| l.reference).collect::<Vec<_>>();
+        let refs = |q: &str| suggest(q, &rows, REPO).into_iter().map(|l| l.reference).collect::<Vec<_>>();
         assert_eq!(refs("crash"), ["#12"], "a repo doc has no ref");
         assert_eq!(refs("#1"), ["#12"]);
         assert_eq!(refs("eng"), ["ENG-7"]);
         assert_eq!(refs("boot"), ["ENG-7"]);
         assert!(refs("zzz").is_empty());
         let many: Vec<IntakeRow> = (1..20).map(|n| row("github", &format!("#{n}"), "t")).collect();
-        assert_eq!(suggest("t", &many).len(), 8);
+        assert_eq!(suggest("t", &many, REPO).len(), 8);
+        // Another repository's issue is not the project's `#12`.
+        let foreign = vec![
+            row("github", "x/y#12", "Other repo"),
+            IntakeRow { url: Some("https://github.com/x/y/issues/13".into()), ..row("github", "#13", "Other source") },
+            IntakeRow { url: Some("https://github.com/o/r/issues/14".into()), ..row("github", "#14", "Ours") },
+        ];
+        let refs = |q: &str| suggest(q, &foreign, REPO).into_iter().map(|l| l.reference).collect::<Vec<_>>();
+        assert_eq!(refs(""), ["#14"]);
+        assert_eq!(row_ref(&foreign[1], None).as_deref(), Some("#13"), "no project repository to tell");
+        assert_eq!(row_ref(&foreign[0], None), None);
     }
 
     #[test]

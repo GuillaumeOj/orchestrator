@@ -839,9 +839,14 @@ impl Runtime {
                     .collect();
                 attention::held_in(run.status, &moves)
             };
+            let prs_view = feature
+                .as_ref()
+                .map(|f| crate::issues::prs_view(&run, f, &self.run_pr_gates(&run.id)))
+                .unwrap_or_default();
             c.runs.push(RunFacts {
                 held_in,
                 nodes,
+                prs_view,
                 project: feature.as_ref().map(|f| f.project_id.clone()).unwrap_or_default(),
                 feature: feature.as_ref().map(|f| f.slug.clone()).unwrap_or_else(|| run.feature_id.clone()),
                 phase_since_ms,

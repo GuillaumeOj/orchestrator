@@ -78,10 +78,15 @@ impl Runtime {
             || !self.run_pr_gate_items(&run.id, false).is_empty()
     }
 
+    /// The run's `prs_view` (api-contract §2) as JSON.
+    pub fn prs_view_value(&self, run: &TeamRun, feature: &Feature) -> Value {
+        json!(issues::prs_view(run, feature, &self.run_pr_gates(&run.id)))
+    }
+
     /// A run as the UI reads it: the stored run plus `prs_view`.
     pub fn run_value(&self, run: &TeamRun, feature: &Feature) -> Value {
         let mut v = json!(run);
-        v["prs_view"] = json!(issues::prs_view(run, feature, &self.run_pr_gates(&run.id)));
+        v["prs_view"] = self.prs_view_value(run, feature);
         v
     }
 
@@ -121,8 +126,9 @@ impl Runtime {
         if run.as_ref().is_some_and(|r| r.status == RunState::Done) {
             return Err(coded("finished", "the feature is done: its issues and PRs can no longer change", None));
         }
+        let repo = crate::github_issue::known_repo(&project);
         let refs = match &issues_in {
-            Some(list) => issues::normalize(list, crate::github_issue::known_repo(&project).as_deref())?,
+            Some(list) => issues::normalize(list, repo.as_deref())?,
             None => f.issue_refs(),
         };
         let new_mode = mode.unwrap_or(f.pr_mode);
@@ -132,6 +138,11 @@ impl Runtime {
         }
         if new_mode != f.pr_mode || !had_pr {
             issues::check_mode(new_mode, refs.len())?;
+        }
+        // Once a PR exists the list may drop to one issue, never to none: a
+        // per-issue feature with no issue could ask for no PR at all.
+        if new_mode == PrMode::PerIssue && refs.is_empty() {
+            return Err(coded("per_issue_needs_two", "one PR per issue keeps at least 1 issue", None));
         }
         // An issue with a PR pending, open or merged stays.
         if let Some(r) = &run
@@ -154,7 +165,7 @@ impl Runtime {
         }
         let rows = self.db.intake_items(Some(&project.id)).unwrap_or_default();
         // Known issues keep what was stored about them; new ones read the cache.
-        let links = issues::links(&refs, &rows)
+        let links = issues::links(&refs, &rows, repo.as_deref())
             .into_iter()
             .map(|l| match f.issues.iter().find(|o| o.reference == l.reference) {
                 Some(o) => orch_store::IssueLink {
@@ -223,8 +234,9 @@ impl Runtime {
     /// `issue_suggest` (api-contract §3): the project's intake issues whose
     /// ref or title matches `text`, at most 8. No network.
     pub fn issue_suggest(&self, project: &str, text: &str) -> Result<Value> {
-        let rows = self.db.intake_items(Some(project))?;
-        let out: Vec<Value> = issues::suggest(text, &rows)
+        let p = self.db.project(project)?.ok_or_else(|| anyhow!("no project {project}"))?;
+        let rows = self.db.intake_items(Some(&p.id))?;
+        let out: Vec<Value> = issues::suggest(text, &rows, crate::github_issue::known_repo(&p).as_deref())
             .into_iter()
             .map(|l| json!({"ref": l.reference, "key": l.key, "title": l.title, "url": l.url}))
             .collect();

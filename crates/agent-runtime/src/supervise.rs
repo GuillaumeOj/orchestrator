@@ -8,6 +8,8 @@ use anyhow::{Result, anyhow, bail};
 use orch_protocol::now_ms;
 use orch_store::PrMode;
 
+use crate::issues::PrView;
+
 use serde_json::{Value, json};
 
 use crate::attention::{Level, Status, WaitKind, WaitingOn};
@@ -237,21 +239,18 @@ impl Runtime {
         Ok((format!("{agent} resumes when admitted."), json!({"turn": turn}), if held { "queued" } else { "resumed" }))
     }
 
-    /// The lead's tools on its team.
     /// `team_status`'s issues: per feature issue its tasks and PR (data),
     /// and the lines that say so (none for a feature without issues).
     fn issues_status(&self, cx: &RunCtx) -> Result<(Vec<Value>, Vec<String>)> {
         let f = &cx.feature;
+        if f.issues.is_empty() {
+            return Ok((vec![], vec![]));
+        }
         let tasks = self.db.tasks(None, None, Some(&cx.run.id))?;
         let view = crate::issues::prs_view(&cx.run, f, &self.run_pr_gates(&cx.run.id));
         let mut data = vec![];
         let mut lines = vec![];
-        if !f.issues.is_empty() {
-            lines.push(format!(
-                "Pull requests: {}",
-                orch_team::prs_line(&f.issue_refs(), f.pr_mode == PrMode::PerIssue)
-            ));
-        }
+        lines.push(format!("Pull requests: {}", orch_team::prs_line(&f.issue_refs(), f.pr_mode == PrMode::PerIssue)));
         for i in &f.issues {
             let handles: Vec<String> =
                 tasks.iter().filter(|t| t.issue.as_deref() == Some(&i.reference)).map(|t| t.handle()).collect();
@@ -261,7 +260,7 @@ impl Runtime {
                 PrMode::Single => view.first(),
             };
             let pr_text = match pr {
-                Some(v) if v.number.is_some() => format!("PR #{} {}", v.number.unwrap_or_default(), v.state),
+                Some(PrView { number: Some(n), state, .. }) => format!("PR #{n} {state}"),
                 Some(v) if v.state == "pending" => "PR waiting for the user".into(),
                 _ => "no PR yet".into(),
             };
@@ -278,6 +277,7 @@ impl Runtime {
         Ok((data, lines))
     }
 
+    /// The lead's tools on its team.
     pub(crate) fn lead_tool(&self, cx: &RunCtx, tool: &str, args: &Value) -> Result<(String, Value)> {
         let now = now_ms();
         let member = |args: &Value| -> Result<MemberStatus> {

@@ -361,10 +361,14 @@ impl Runtime {
             bail!("feature slug {:?} is too long", spec.slug);
         }
         // The issues and mode, checked before anything is created.
-        let issues = crate::issues::normalize(&spec.issues, crate::github_issue::known_repo(&project).as_deref())?;
+        let repo = crate::github_issue::known_repo(&project);
+        let issues = crate::issues::normalize(&spec.issues, repo.as_deref())?;
         let set_prs = !issues.is_empty() || spec.pr_mode.is_some();
-        let pr_mode = spec.pr_mode.unwrap_or_default();
-        let links = crate::issues::links(&issues, &self.db.intake_items(Some(&project.id)).unwrap_or_default());
+        let links = crate::issues::links(
+            &issues,
+            &self.db.intake_items(Some(&project.id)).unwrap_or_default(),
+            repo.as_deref(),
+        );
         let now = now_ms();
         let feature = match self.db.feature_by_slug(&project.id, &spec.slug)? {
             Some(f) => {
@@ -396,8 +400,13 @@ impl Runtime {
                 }
             }
         };
-        // A feature launched again keeps its issues unless the launch names them.
-        let feature = if set_prs { Feature { issues: links, pr_mode, ..feature } } else { feature };
+        // A feature launched again keeps its issues unless the launch names
+        // them, and its mode unless the launch gives one.
+        let feature = if set_prs {
+            Feature { issues: links, pr_mode: spec.pr_mode.unwrap_or(feature.pr_mode), ..feature }
+        } else {
+            feature
+        };
         crate::issues::check_mode(feature.pr_mode, feature.issues.len())?;
         // The snapshot this run uses (FR-308). A snapshot of this version
         // taken earlier with other roles (a role edited since, or created
@@ -1934,11 +1943,13 @@ impl Runtime {
                 if let Some(why) = gated.iter().find_map(|t| self.review_missing(&cx, t)) {
                     bail!("{why}");
                 }
+                // A task of another run is refused before anything is merged:
+                // its id would go into the merge commit's `Orch-Task` trailer.
+                let task_row = task_id.map(|id| self.run_task(&cx, id)).transpose()?;
                 // per_issue: one merge = one task, its reported head (spec §3.2).
-                let at = match task_id.filter(|_| per_issue) {
+                let at = match task_row.filter(|_| per_issue) {
                     None => None,
-                    Some(id) => {
-                        let t = self.run_task(&cx, id)?;
+                    Some(t) => {
                         if t.branch.as_deref().is_some_and(|b| b != branch) {
                             bail!("task {} is on {}, not {branch}", t.handle(), t.branch.unwrap_or_default());
                         }
@@ -2144,6 +2155,9 @@ impl Runtime {
     /// Run summaries for the UI and orchd.
     pub fn runs_json(&self) -> Value {
         let runs = self.db.runs(None, false).unwrap_or_default();
+        // One read for the features of every run (their `prs_view`).
+        let features: BTreeMap<String, Feature> =
+            self.db.features(None).unwrap_or_default().into_iter().map(|f| (f.id.clone(), f)).collect();
         let mut by_feature: BTreeMap<String, Vec<Value>> = BTreeMap::new();
         for r in runs.iter().take(50) {
             let agents: Vec<Value> = self
@@ -2151,10 +2165,10 @@ impl Runtime {
                 .into_iter()
                 .map(|a| json!({"id": a.id, "node": a.team.as_ref().map(|s| s.node.clone()), "state": a.tracker.state, "task": a.team.as_ref().and_then(|s| s.task)}))
                 .collect();
-            by_feature
-                .entry(r.feature_id.clone())
-                .or_default()
-                .push(json!({"run": self.run_value_of(r), "agents": agents}));
+            by_feature.entry(r.feature_id.clone()).or_default().push(json!({"run": match features.get(&r.feature_id) {
+                    Some(f) => self.run_value(r, f),
+                    None => self.run_value_of(r),
+                }, "agents": agents}));
         }
         json!(by_feature)
     }

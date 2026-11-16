@@ -148,7 +148,7 @@ impl Runtime {
         if let Some(issue) = args.get("issue").and_then(Value::as_str).filter(|i| !i.trim().is_empty()) {
             let seat = rec.team.as_ref().ok_or_else(|| anyhow!("`issue` is for the lead of a team"))?;
             let cx = self.run_ctx(&seat.run_id)?;
-            if !cx.team.node(&seat.node).is_some_and(|n| n.is_lead) {
+            if !cx.team.is_lead(&seat.node) {
                 bail!("only the lead tags its commits with an issue; your task carries its issue");
             }
             let r = self.feature_issue(&cx, issue)?;
