@@ -13,6 +13,7 @@
   import AgentChip from '../AgentChip.svelte';
   import Menu from '../Menu.svelte';
   import Select from '../Select.svelte';
+  import TaskIssueChip from '../TaskIssueChip.svelte';
   import TaskModelChip from '../TaskModelChip.svelte';
 
   /**
@@ -263,7 +264,10 @@
                 <span class="cmenu" onclick={(e) => e.stopPropagation()}><Menu bind:this={cardMenu} items={menuItems(t)} label="Task menu" bounds={root} /></span>
               {/if}
             </div>
-            <div class="title" use:tooltip={ifCut(t.title)}>{t.title}</div>
+            <div class="titlerow">
+              <div class="title" use:tooltip={ifCut(t.title)}>{t.title}</div>
+              <TaskIssueChip task={t} />
+            </div>
             <div class="chipsrow">
               <TaskModelChip task={t} />
               {#if t.node}<AgentChip id={t.node} role={roleOf(t)} />{/if}
@@ -340,7 +344,15 @@
   .task.flash {
     background: var(--color-surface-selected);
   }
+  .titlerow {
+    display: flex;
+    align-items: center;
+    gap: var(--space-xs);
+    min-width: 0;
+  }
   .title {
+    flex: 1;
+    min-width: 0;
     font: var(--text-body);
     color: var(--color-text-primary);
     overflow: hidden;
