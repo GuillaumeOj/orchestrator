@@ -540,6 +540,11 @@ fn prefill_builds_the_launch_and_session_forms() {
     assert!(b.starts_with("# Issue 12 (#12)\n\nIn acme/shop. https://github.com/acme/shop/issues/12"), "{b}");
     assert!(b.contains("Body of 12"));
     assert_eq!((l["base"].clone(), l["off_hours"].as_bool()), (Value::Null, Some(false)));
+    assert_eq!(
+        (l["issues"].clone(), l["pr_mode"].as_str()),
+        (json!(["#12"]), Some("single")),
+        "the item is the first issue"
+    );
     let s = f.rt.work_prefill("gh:acme/shop#12", Some("solo")).unwrap();
     let s = &s["session"];
     assert_eq!(s["name"], "issue-12");

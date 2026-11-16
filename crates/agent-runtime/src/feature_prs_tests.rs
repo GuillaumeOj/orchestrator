@@ -32,7 +32,9 @@ fn approved(rt: &Runtime, pid: &str, issues: &[&str], mode: PrMode) -> orch_stor
 }
 
 fn code(e: anyhow::Error) -> String {
-    serde_json::from_str::<Value>(&e.to_string()).map(|v| v["code"].as_str().unwrap_or("").to_string()).unwrap_or_else(|_| e.to_string())
+    serde_json::from_str::<Value>(&e.to_string())
+        .map(|v| v["code"].as_str().unwrap_or("").to_string())
+        .unwrap_or_else(|_| e.to_string())
 }
 
 fn create(rt: &Runtime, args: Value) -> Task {
@@ -144,7 +146,11 @@ fn tasks_and_lead_commits_carry_a_feature_issue() {
     approved(&rt, &pid, &["#1", "ENG-2"], PrMode::Single);
     let t = create(&rt, json!({"title": "API", "node": "back", "issue": "1"}));
     assert_eq!(t.issue.as_deref(), Some("#1"));
-    assert!(call(&rt, LEAD, "create_task", json!({"title": "x", "node": "back", "issue": "#9"})).1.contains("not an issue of this feature"));
+    assert!(
+        call(&rt, LEAD, "create_task", json!({"title": "x", "node": "back", "issue": "#9"}))
+            .1
+            .contains("not an issue of this feature")
+    );
     ok(&rt, LEAD, "update_task", json!({"id": t.id, "issue": "eng-2"}));
     assert_eq!(rt.db.task(t.id).unwrap().unwrap().issue.as_deref(), Some("ENG-2"));
     ok(&rt, LEAD, "update_task", json!({"id": t.id, "issue": ""}));
@@ -152,7 +158,9 @@ fn tasks_and_lead_commits_carry_a_feature_issue() {
     // The lead's commit gets the trailer; a ref not on the feature is refused.
     let wt = rt.store.read(|s| s.agents[LEAD].worktree.clone());
     std::fs::write(wt.join("docs.md"), "x").unwrap();
-    assert!(call(&rt, LEAD, "commit", json!({"message": "docs", "issue": "#5"})).1.contains("not an issue of this feature"));
+    assert!(
+        call(&rt, LEAD, "commit", json!({"message": "docs", "issue": "#5"})).1.contains("not an issue of this feature")
+    );
     ok(&rt, LEAD, "commit", json!({"message": "docs", "issue": "#1"}));
     let msg = head_message(&rt, LEAD);
     assert!(trailers(&msg).lines().any(|l| l == "Orch-Issue: #1"), "{msg:?}");
@@ -176,15 +184,27 @@ fn request_pr_in_single_mode_closes_the_issues_and_locks_the_mode() {
     assert_eq!(gate.payload["body"], "Fixes #1\n\nCloses #2");
     assert_eq!((gate.payload["run"].as_str(), gate.payload["issue"].clone()), (Some(run.id.as_str()), Value::Null));
     let v = rt.run_json(&run.id).unwrap();
-    assert_eq!(v["run"]["prs_view"], json!([{"issue": null, "branch": "orch/fx/integration", "state": "pending",
-        "number": null, "url": null, "pr": null, "gate": gate.id}]));
+    assert_eq!(
+        v["run"]["prs_view"],
+        json!([{"issue": null, "branch": "orch/fx/integration", "state": "pending",
+        "number": null, "url": null, "pr": null, "gate": gate.id}])
+    );
     // team_status names the issues and their PR.
     let (err, text, data) = rt.on_mcp(
-        &orch_protocol::McpMsg { agent_id: LEAD.into(), tool: "team_status".into(), arguments: json!({}), deadline_ms: 1 },
+        &orch_protocol::McpMsg {
+            agent_id: LEAD.into(),
+            tool: "team_status".into(),
+            arguments: json!({}),
+            deadline_ms: 1,
+        },
         None,
     );
     assert!(!err, "{text}");
-    assert!(text.contains("Pull requests: One PR for the feature; it closes #1, #2.") && text.contains("- #2: no task · PR waiting for the user"), "{text}");
+    assert!(
+        text.contains("Pull requests: One PR for the feature; it closes #1, #2.")
+            && text.contains("- #2: no task · PR waiting for the user"),
+        "{text}"
+    );
     assert_eq!(data["pr_mode"], "single");
     assert_eq!(data["issues"][0], json!({"ref": "#1", "tasks": [], "pr": {"number": null, "state": "pending"}}));
     assert!(data["members"].is_array());
