@@ -24,6 +24,7 @@ uuid.workspace = true
 notify.workspace = true
 toml_edit.workspace = true
 shlex.workspace = true
+vt100.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

@@ -32,6 +32,9 @@ struct Buf {
     total: u64,
     tail_text: String,
     closed: bool,
+    /// The screen as a terminal shows it, while the trust watch is on: the
+    /// dialog is read from its rows, whatever cursor moves drew it.
+    screen: Option<vt100::Parser>,
 }
 
 pub struct Output {
@@ -43,9 +46,14 @@ pub struct Output {
 }
 
 impl Output {
+    /// The screen model starts at the PTY's default size (`RuntimeConfig`'s 50 × 160).
     pub(crate) fn new() -> Self {
+        Self::with_size(50, 160)
+    }
+
+    pub(crate) fn with_size(rows: u16, cols: u16) -> Self {
         Output {
-            buf: Mutex::new(Buf::default()),
+            buf: Mutex::new(Buf { screen: Some(vt100::Parser::new(rows, cols, 0)), ..Default::default() }),
             cv: Condvar::new(),
             trust_dialog: AtomicBool::new(false),
             watch_trust: AtomicBool::new(true),
@@ -78,7 +86,13 @@ impl Output {
             b.tail_text.drain(..cut);
         }
         if self.watch_trust.load(Ordering::Relaxed) {
-            self.trust_dialog.store(squash(&b.tail_text).contains(TRUST_DIALOG_TEXT), Ordering::Relaxed);
+            // On the screen too: drawn cell by cell, the tail may not hold the header whole.
+            let on_screen = b.screen.as_mut().is_some_and(|p| {
+                p.process(data);
+                squash(&p.screen().contents()).contains(TRUST_DIALOG_TEXT)
+            });
+            let seen = on_screen || squash(&b.tail_text).contains(TRUST_DIALOG_TEXT);
+            self.trust_dialog.store(seen, Ordering::Relaxed);
         }
         self.cv.notify_all();
         let mut answers = vec![];
@@ -135,11 +149,28 @@ impl Output {
         self.lock().tail_text.clone()
     }
 
+    /// The screen's rows (one line each), while the trust watch is on.
+    pub fn screen_text(&self) -> Option<String> {
+        let b = self.lock();
+        let s = b.screen.as_ref()?.screen();
+        Some(s.rows(0, s.size().1).collect::<Vec<_>>().join("\n"))
+    }
+
+    /// The PTY was resized: so is the screen model.
+    pub(crate) fn set_size(&self, rows: u16, cols: u16) {
+        if let Some(p) = self.lock().screen.as_mut() {
+            p.set_size(rows, cols);
+        }
+    }
+
     /// SessionStart fired, so the trust dialog is gone (no hook fires before
     /// it is answered): forget the screen text that showed it.
     pub fn clear_trust_dialog(&self) {
         self.watch_trust.store(false, Ordering::Relaxed);
-        self.lock().tail_text.clear();
+        let mut b = self.lock();
+        b.tail_text.clear();
+        b.screen = None;
+        drop(b);
         self.trust_dialog.store(false, Ordering::Relaxed);
     }
 
@@ -255,7 +286,7 @@ impl PtyProcess {
         let pgid = if pgid > 0 { pgid } else { pid };
         let mut reader = pair.master.try_clone_reader().context("pty reader")?;
         let writer = pair.master.take_writer().context("pty writer")?;
-        let output = Arc::new(Output::new());
+        let output = Arc::new(Output::with_size(rows, cols));
         let exited = Arc::new(AtomicBool::new(false));
         let proc = PtyProcess {
             pid,
@@ -336,6 +367,7 @@ impl PtyProcess {
         if let Some(m) = m.as_ref() {
             m.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })?;
         }
+        self.output.set_size(rows, cols);
         Ok(())
     }
 

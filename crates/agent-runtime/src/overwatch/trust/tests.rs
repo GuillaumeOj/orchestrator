@@ -44,6 +44,44 @@ fn the_parser_reads_the_latest_render() {
     assert_eq!(next_key(&split), Some(Key::Up), "{split:?}");
 }
 
+/// A frame drawn the way a diff renderer draws it: absolute cursor moves
+/// (CSI row;col H), no newline anywhere.
+fn diff_frame(selected: u32) -> Vec<u8> {
+    let mark = |n| if n == selected { "❯" } else { " " };
+    format!(
+        "\x1b[2J\x1b[2;3H\x1b[1mQuick safety check:\x1b[0m Is this a project you created or one you trust?\
+         \x1b[4;3H{} 1. Yes, I trust this folder\x1b[5;3H{} 2. No, exit\x1b[7;3HEnter to confirm · Esc to cancel",
+        mark(1),
+        mark(2)
+    )
+    .into_bytes()
+}
+
+/// The re-render after Up: only the two mark cells change.
+const UP_CELLS: &[u8] = "\x1b[4;3H❯\x1b[5;3H \x1b[8;1H".as_bytes();
+
+#[test]
+fn the_screen_model_reads_a_diff_render() {
+    let out = Output::new();
+    out.push(&diff_frame(2));
+    assert!(out.trust_dialog.load(std::sync::atomic::Ordering::Relaxed), "detected");
+    let screen = out.screen_text().unwrap();
+    assert_eq!(read_dialog(&screen), Some(Dialog { selected: 2, on_yes: false, yes: 1 }), "{screen}");
+    assert_eq!(next_key(&screen), Some(Key::Up));
+    // Only the mark cells redrawn: the screen shows Yes selected.
+    out.push(UP_CELLS);
+    let screen = out.screen_text().unwrap();
+    assert_eq!(next_key(&screen), Some(Key::Enter), "{screen}");
+    // The stripped tail of the same bytes has no such rows.
+    assert_ne!(next_key(&out.tail_text()), Some(Key::Enter));
+    // The dialog cleared: off the screen (the tail still has its text).
+    out.push(b"\x1b[2J\x1b[H");
+    assert!(!on_screen(&out.screen_text().unwrap()));
+    // SessionStart: no screen model any more.
+    out.clear_trust_dialog();
+    assert_eq!(out.screen_text(), None);
+}
+
 #[test]
 fn an_unknown_layout_sends_no_key() {
     let none = |tail: &str| assert_eq!(next_key(tail), None, "{tail:?}");
@@ -91,68 +129,84 @@ fn only_the_overwatch_day_folder_is_auto_trusted() {
 
 #[test]
 fn the_answer_moves_up_then_enters_within_its_budget() {
+    let (no, yes, gone) = (render(2), render(1), "\n  FAKE CLAUDE\n".to_string());
     let mut a = Answer::new(0, true);
-    assert_eq!(a.step(0, &render(2), 100), Step::Send(Key::Up));
-    assert_eq!(a.step(200, &render(2), 100), Step::Wait, "waits for the re-render");
-    let tail = format!("{}{}", render(2), render(1));
-    assert_eq!(a.step(400, &tail, 180), Step::Send(Key::Enter), "re-rendered on Yes");
-    assert_eq!(a.step(600, &tail, 180), Step::Wait, "one Enter");
-    assert_eq!(a.step(WINDOW_MS, &tail, 180), Step::Fail(failed::NOT_TAKEN));
-    assert_eq!(a.step(WINDOW_MS + 200, &tail, 180), Step::Raise);
+    assert_eq!(a.step(0, &no), Step::Send(Key::Up));
+    assert_eq!(a.step(200, &no), Step::Wait, "waits for the selection to move");
+    assert_eq!(a.step(400, &yes), Step::Send(Key::Enter), "re-rendered on Yes");
+    assert_eq!(a.step(600, &yes), Step::Wait, "one Enter");
+    assert_eq!(a.step(WINDOW_MS, &yes), Step::Fail(failed::NOT_TAKEN), "still on screen at the end");
+    assert_eq!(a.step(WINDOW_MS + 200, &gone), Step::Raise);
 
-    // No re-render: an arrow a second, three at most.
+    // Gone from the screen after Enter: it took, however slow SessionStart is.
     let mut a = Answer::new(0, true);
-    assert_eq!(a.step(0, &render(2), 100), Step::Send(Key::Up));
-    assert_eq!(a.step(999, &render(2), 100), Step::Wait);
-    assert_eq!(a.step(1_000, &render(2), 100), Step::Send(Key::Up));
-    assert_eq!(a.step(2_000, &render(2), 100), Step::Send(Key::Up));
-    assert_eq!(a.step(3_000, &render(2), 100), Step::Fail(failed::ARROWS));
-    assert_eq!(a.step(3_200, &render(1), 100), Step::Raise, "gave up: never Enter after");
+    assert_eq!(a.step(0, &yes), Step::Send(Key::Enter));
+    assert_eq!(a.step(500, &gone), Step::Wait, "the re-render's time first");
+    assert_eq!(a.step(RERENDER_MS, &gone), Step::Took);
+    assert_eq!(a.step(WINDOW_MS, &gone), Step::Wait, "never NOT_TAKEN");
+
+    // The selection never moves: an arrow a second, three at most. Other
+    // output (the same screen) does not count as the re-render.
+    let mut a = Answer::new(0, true);
+    assert_eq!(a.step(0, &no), Step::Send(Key::Up));
+    assert_eq!(a.step(999, &format!("{no}\nsomething else")), Step::Wait);
+    assert_eq!(a.step(1_000, &no), Step::Send(Key::Up));
+    assert_eq!(a.step(2_000, &no), Step::Send(Key::Up));
+    assert_eq!(a.step(3_000, &no), Step::Fail(failed::ARROWS));
+    assert_eq!(a.step(3_200, &yes), Step::Raise, "gave up: never Enter after");
 
     // An unknown layout: no key, then the fallback when the window ends.
     let mut a = Answer::new(0, true);
-    assert_eq!(a.step(0, "Quick safety check\n", 10), Step::Wait);
-    assert_eq!(a.step(WINDOW_MS - 1, "Quick safety check\n", 10), Step::Wait);
-    assert_eq!(a.step(WINDOW_MS, "Quick safety check\n", 10), Step::Fail(failed::TIMEOUT));
+    assert_eq!(a.step(0, "Quick safety check\n"), Step::Wait);
+    assert_eq!(a.step(WINDOW_MS - 1, "Quick safety check\n"), Step::Wait);
+    assert_eq!(a.step(WINDOW_MS, "Quick safety check\n"), Step::Fail(failed::TIMEOUT));
 
     // Not the Overwatch's day folder: J0, the flag at once.
-    assert_eq!(Answer::new(0, false).step(0, &render(1), 10), Step::Raise);
+    assert_eq!(Answer::new(0, false).step(0, &yes), Step::Raise);
 }
 
 // ------------------------------------------------------------ on the pump
 
-/// Claude Code's dialog on a fake terminal: "No, exit" selected; Up selects
-/// "Yes" (and re-renders) unless `stuck`; Enter on "Yes" starts it.
-struct Dialog {
+/// Claude Code's dialog on a fake terminal, drawn diff-style: "No, exit"
+/// selected; Up selects "Yes" (redrawing the mark cells) unless `stuck`;
+/// Enter clears it.
+struct FakeDialog {
     out: Arc<Mutex<Option<Arc<Output>>>>,
     keys: Arc<Mutex<Vec<Vec<u8>>>>,
 }
 
-impl Dialog {
-    fn spawn(rt: &Runtime, id: &str, stuck: bool) -> Dialog {
+impl FakeDialog {
+    fn spawn(rt: &Runtime, id: &str, stuck: bool) -> FakeDialog {
         let out: Arc<Mutex<Option<Arc<Output>>>> = Arc::default();
         let keys: Arc<Mutex<Vec<Vec<u8>>>> = Arc::default();
         let (o2, k2) = (out.clone(), keys.clone());
         let pty = PtyProcess::fake(
             Box::new(move |bytes| {
                 k2.lock().unwrap().push(bytes.to_vec());
-                if bytes == Key::Up.bytes()
-                    && !stuck
-                    && let Some(o) = o2.lock().unwrap().as_ref()
-                {
-                    o.push(render(1).as_bytes());
+                let redraw: &[u8] = match bytes {
+                    _ if stuck => b"",
+                    b"\x1b[A" => UP_CELLS,
+                    b"\r" => b"\x1b[2J\x1b[H",
+                    _ => b"",
+                };
+                if let Some(o) = o2.lock().unwrap().as_ref() {
+                    o.push(redraw);
                 }
             }),
             Box::new(|_| {}),
         );
-        pty.output.push(render(2).as_bytes());
+        pty.output.push(&diff_frame(2));
         *out.lock().unwrap() = Some(pty.output.clone());
         insert_test_live_with(rt, id, pty);
-        Dialog { out, keys }
+        FakeDialog { out, keys }
     }
 
     fn keys(&self) -> Vec<Vec<u8>> {
         self.keys.lock().unwrap().clone()
+    }
+
+    fn pty_flag(&self) -> bool {
+        self.out.lock().unwrap().as_ref().unwrap().trust_dialog.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// SessionStart: the dialog is gone.
@@ -188,7 +242,7 @@ fn the_overwatch_answers_its_own_dialog_and_nobody_sees_it() {
     let (_d, rt) = manual();
     let day = rt.overwatch_day_dir("2026-11-05");
     overwatch(&rt, &day);
-    let dialog = Dialog::spawn(&rt, ID, false);
+    let dialog = FakeDialog::spawn(&rt, ID, false);
     rt.deliver(ID, "ORCH: Read briefing.md").unwrap();
     let t = now_ms();
     rt.pump_trust(t);
@@ -203,9 +257,13 @@ fn the_overwatch_answers_its_own_dialog_and_nobody_sees_it() {
     let answered = events(&rt, "overwatch.trust_answered");
     assert_eq!(answered.len(), 1);
     assert_eq!(answered[0]["dir"], day.display().to_string());
-    // Started: the window ending afterwards changes nothing.
-    dialog.started();
+    // The dialog left the screen: it took, the trust watch ends (a later
+    // block is the startup watch's), though SessionStart has not come.
+    assert!(dialog.pty_flag());
+    rt.pump_trust(t + 200 + RERENDER_MS);
+    assert!(!dialog.pty_flag(), "the PTY flag down");
     rt.pump_trust(t + WINDOW_MS + 1);
+    dialog.started();
     assert!(!flag(&rt, ID));
     assert!(events(&rt, "overwatch.trust_failed").is_empty());
     assert_eq!(dialog.keys().len(), 2, "no key after the answer");
@@ -217,7 +275,7 @@ fn a_dialog_that_never_takes_the_answer_falls_back_to_the_user() {
     let (_d, rt) = manual();
     at(&rt, t0());
     overwatch(&rt, &rt.overwatch_day_dir("2026-11-05"));
-    let dialog = Dialog::spawn(&rt, ID, true);
+    let dialog = FakeDialog::spawn(&rt, ID, true);
     let t = now_ms();
     for dt in [0, 200, 1_000, 2_000] {
         rt.pump_trust(t + dt);
@@ -267,9 +325,9 @@ fn any_other_session_keeps_j0() {
     let (d, rt) = manual();
     // The Overwatch's record in a folder that is not its day folder.
     overwatch(&rt, &d.path().join("repo"));
-    let ow = Dialog::spawn(&rt, ID, false);
+    let ow = FakeDialog::spawn(&rt, ID, false);
     // A regular agent.
-    let a1 = Dialog::spawn(&rt, "a1", false);
+    let a1 = FakeDialog::spawn(&rt, "a1", false);
     rt.pump_trust(now_ms());
     assert!(flag(&rt, ID) && flag(&rt, "a1"), "the flag at once");
     assert!(ow.keys().is_empty() && a1.keys().is_empty(), "no key");

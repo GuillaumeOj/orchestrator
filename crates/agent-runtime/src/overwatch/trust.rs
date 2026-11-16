@@ -45,16 +45,23 @@ impl Key {
     }
 }
 
-/// The key that moves the latest render of the dialog in `tail` (the PTY's
-/// plain-text tail) towards trusting: Enter when "Yes, I trust this folder"
-/// is selected, Up when an option below it is. `None` for anything else (no
-/// dialog, a partial render, no or several selections, an unknown layout):
-/// no key is sent then.
-pub fn next_key(tail: &str) -> Option<Key> {
-    // Squashed per line, like the detection (pty.rs): a stripped escape
-    // leaves a run of spaces, even inside the header.
-    let tail = tail.lines().map(squash).collect::<Vec<_>>().join("\n");
-    let render = &tail[tail.rfind(TRUST_DIALOG_TEXT)?..];
+/// The dialog as the screen shows it: the selected option's number and
+/// whether it is "Yes, I trust this folder", and Yes's number.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Dialog {
+    pub selected: u32,
+    pub on_yes: bool,
+    pub yes: u32,
+}
+
+/// Reads the dialog from `screen` (the screen model's rows, one line each;
+/// the last render when several are given). `None` for anything else (no
+/// dialog, a partial render, no or several selections, an unknown layout).
+pub fn read_dialog(screen: &str) -> Option<Dialog> {
+    // Squashed per line, like the detection (pty.rs): a stripped escape or a
+    // skipped cell leaves a run of spaces, even inside the header.
+    let screen = screen.lines().map(squash).collect::<Vec<_>>().join("\n");
+    let render = &screen[screen.rfind(TRUST_DIALOG_TEXT)?..];
     let mut yes = None;
     let mut selected = None;
     for line in render.lines() {
@@ -78,11 +85,26 @@ pub fn next_key(tail: &str) -> Option<Key> {
             return None;
         }
     }
-    match (selected?, yes?) {
-        ((_, true), _) => Some(Key::Enter),
-        ((n, false), yes) if n > yes => Some(Key::Up),
-        _ => None,
+    let ((selected, on_yes), yes) = (selected?, yes?);
+    Some(Dialog { selected, on_yes, yes })
+}
+
+/// Whether the dialog's header is on `screen`.
+pub fn on_screen(screen: &str) -> bool {
+    screen.lines().any(|l| squash(l).contains(TRUST_DIALOG_TEXT))
+}
+
+impl Dialog {
+    /// The key that moves it towards trusting: Enter when "Yes, I trust this
+    /// folder" is selected, Up when an option below it is, else none.
+    pub fn key(self) -> Option<Key> {
+        if self.on_yes { Some(Key::Enter) } else { (self.selected > self.yes).then_some(Key::Up) }
     }
+}
+
+/// [`Dialog::key`] of the dialog on `screen`.
+pub fn next_key(screen: &str) -> Option<Key> {
+    read_dialog(screen)?.key()
 }
 
 /// §3.1: the Overwatch's own day folder, `<root>/overwatch/<YYYY-MM-DD>`,
@@ -101,6 +123,9 @@ pub enum Step {
     /// Nothing yet: the record flag stays down.
     Wait,
     Send(Key),
+    /// The dialog left the screen after Enter: the answer took, the trust
+    /// watch can end (a later block is FR-415's).
+    Took,
     /// The answer gave up (or the window ended): raise the flag, once.
     Fail(&'static str),
     /// Not auto-answered, or already failed: the flag is up, as J0.
@@ -110,8 +135,10 @@ pub enum Step {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Phase {
     Answering,
-    /// Enter was sent: waiting for SessionStart.
-    Answered,
+    /// Enter was sent then.
+    Answered(u64),
+    /// The dialog left the screen after Enter.
+    Took,
     /// Not auto-answered, or given up: the flag is up.
     Raised,
 }
@@ -122,8 +149,8 @@ pub struct Answer {
     detected_ms: u64,
     phase: Phase,
     arrows: u32,
-    /// The last arrow: when, and the PTY's byte count then.
-    sent: Option<(u64, u64)>,
+    /// The last arrow: when, and the selection then (its re-render changes it).
+    sent: Option<(u64, Option<u32>)>,
     /// The Overwatch's folder, for the events.
     pub(crate) dir: String,
 }
@@ -139,32 +166,43 @@ impl Answer {
         self.phase == Phase::Raised
     }
 
-    /// `tail` and `total` are the PTY's plain-text tail and byte count now.
-    pub fn step(&mut self, now: u64, tail: &str, total: u64) -> Step {
-        if self.raised() {
-            return Step::Raise;
+    /// `screen` is the screen model's rows now.
+    pub fn step(&mut self, now: u64, screen: &str) -> Step {
+        match self.phase {
+            Phase::Raised => return Step::Raise,
+            Phase::Took => return Step::Wait,
+            // Gone from the screen once the re-render had time: it took,
+            // even if SessionStart is slow.
+            Phase::Answered(at) if now.saturating_sub(at) >= RERENDER_MS && !on_screen(screen) => {
+                self.phase = Phase::Took;
+                return Step::Took;
+            }
+            _ => {}
         }
         if now.saturating_sub(self.detected_ms) >= WINDOW_MS {
-            return self.fail(if self.phase == Phase::Answered { failed::NOT_TAKEN } else { failed::TIMEOUT });
+            let why = if matches!(self.phase, Phase::Answered(_)) { failed::NOT_TAKEN } else { failed::TIMEOUT };
+            return self.fail(why);
         }
-        if self.phase == Phase::Answered {
+        if matches!(self.phase, Phase::Answered(_)) {
             return Step::Wait;
         }
-        if let Some((at, seen)) = self.sent
-            && total == seen
+        let dialog = read_dialog(screen);
+        let selected = dialog.map(|d| d.selected);
+        if let Some((at, before)) = self.sent
+            && selected == before
             && now.saturating_sub(at) < RERENDER_MS
         {
             return Step::Wait;
         }
         self.sent = None;
-        match next_key(tail) {
+        match dialog.and_then(Dialog::key) {
             Some(Key::Enter) => {
-                self.phase = Phase::Answered;
+                self.phase = Phase::Answered(now);
                 Step::Send(Key::Enter)
             }
             Some(Key::Up) if self.arrows < MAX_ARROWS => {
                 self.arrows += 1;
-                self.sent = Some((now, total));
+                self.sent = Some((now, selected));
                 Step::Send(Key::Up)
             }
             Some(Key::Up) => self.fail(failed::ARROWS),
@@ -188,10 +226,11 @@ impl Runtime {
     /// holds. Returns whether its record flag goes up now (the Inbox card,
     /// the decision, `paused` / `why::TRUST`): only once the answer failed,
     /// or at once when it is not auto-answered. Delivery stays blocked on
-    /// the PTY flag meanwhile.
+    /// the PTY flag meanwhile. The dialog is read from the PTY's screen
+    /// model, so a diff render (cursor moves, changed cells) reads the same.
     pub(crate) fn overwatch_trust(&self, l: &Live, now: u64) -> bool {
         let mut answer = l.trust.lock().unwrap_or_else(|e| e.into_inner());
-        // Settled (often for long, in the fallback): no store read, no tail copy.
+        // Settled (often for long, in the fallback): no store read, no screen copy.
         if answer.as_ref().is_some_and(Answer::raised) {
             return true;
         }
@@ -201,7 +240,7 @@ impl Runtime {
             a.dir = dir.map(|d| d.display().to_string()).unwrap_or_default();
             a
         });
-        let step = answer.step(now, &l.pty.output.tail_text(), l.pty.output.total());
+        let step = answer.step(now, &l.pty.output.screen_text().unwrap_or_default());
         let dir = &answer.dir;
         match step {
             Step::Wait => false,
@@ -211,6 +250,11 @@ impl Runtime {
                 if sent && key == Key::Enter {
                     self.event(ID, "overwatch.trust_answered", json!({"dir": dir}));
                 }
+                false
+            }
+            Step::Took => {
+                // Its flag down now, so the FR-415 startup watch sees a later block.
+                l.pty.output.clear_trust_dialog();
                 false
             }
             Step::Fail(why) => {
