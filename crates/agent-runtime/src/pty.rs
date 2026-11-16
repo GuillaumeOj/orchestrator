@@ -21,7 +21,8 @@ pub const DETACHED_KEEP: usize = 256 * 1024;
 /// Plain-text tail kept for screen checks (trust dialog).
 const TAIL_TEXT: usize = 8 * 1024;
 
-/// The CLI's workspace trust dialog (J0): the app never answers it.
+/// The CLI's workspace trust dialog (J0): the app never answers it, but in
+/// the Overwatch's own day folder ([`crate::overwatch::trust`]).
 pub const TRUST_DIALOG_TEXT: &str = "Quick safety check";
 
 #[derive(Default)]
@@ -31,6 +32,9 @@ struct Buf {
     total: u64,
     tail_text: String,
     closed: bool,
+    /// The screen as a terminal shows it, while the trust watch is on: the
+    /// dialog is read from its rows, whatever cursor moves drew it.
+    screen: Option<vt100::Parser>,
 }
 
 pub struct Output {
@@ -42,9 +46,16 @@ pub struct Output {
 }
 
 impl Output {
+    /// The screen model starts at the PTY's default size.
     pub(crate) fn new() -> Self {
+        Self::with_size(DEFAULT_ROWS, DEFAULT_COLS)
+    }
+
+    pub(crate) fn with_size(rows: u16, cols: u16) -> Self {
+        let (rows, cols) = grid(rows, cols);
+        let screen = vt100::Parser::new(rows, cols, 0);
         Output {
-            buf: Mutex::new(Buf::default()),
+            buf: Mutex::new(Buf { screen: Some(screen), ..Default::default() }),
             cv: Condvar::new(),
             trust_dialog: AtomicBool::new(false),
             watch_trust: AtomicBool::new(true),
@@ -77,8 +88,16 @@ impl Output {
             b.tail_text.drain(..cut);
         }
         if self.watch_trust.load(Ordering::Relaxed) {
-            let squashed: String = b.tail_text.split_whitespace().collect::<Vec<_>>().join(" ");
-            self.trust_dialog.store(squashed.contains(TRUST_DIALOG_TEXT), Ordering::Relaxed);
+            // On the screen too: drawn cell by cell, the tail may not hold the header whole.
+            if let Some(p) = b.screen.as_mut() {
+                p.process(data);
+            }
+            let seen = squash(&b.tail_text).contains(TRUST_DIALOG_TEXT)
+                || b.screen.as_ref().is_some_and(|p| {
+                    let s = p.screen();
+                    s.rows(0, s.size().1).any(|r| shows_trust_header(&r))
+                });
+            self.trust_dialog.store(seen, Ordering::Relaxed);
         }
         self.cv.notify_all();
         let mut answers = vec![];
@@ -135,11 +154,30 @@ impl Output {
         self.lock().tail_text.clone()
     }
 
-    /// SessionStart fired, so the trust dialog is gone (no hook fires before
-    /// it is answered): forget the screen text that showed it.
+    /// The screen's rows (one line each), while the trust watch is on.
+    pub fn screen_text(&self) -> Option<String> {
+        let b = self.lock();
+        let s = b.screen.as_ref()?.screen();
+        Some(s.rows(0, s.size().1).collect::<Vec<_>>().join("\n"))
+    }
+
+    /// The PTY was resized: so is the screen model.
+    pub(crate) fn set_size(&self, rows: u16, cols: u16) {
+        if let Some(p) = self.lock().screen.as_mut() {
+            let (rows, cols) = grid(rows, cols);
+            p.set_size(rows, cols);
+        }
+    }
+
+    /// The trust watch ends: SessionStart fired (no hook fires before the
+    /// dialog is answered), or the Overwatch's own answer took. Forgets the
+    /// screen text that showed it.
     pub fn clear_trust_dialog(&self) {
         self.watch_trust.store(false, Ordering::Relaxed);
-        self.lock().tail_text.clear();
+        let mut b = self.lock();
+        b.tail_text.clear();
+        b.screen = None;
+        drop(b);
         self.trust_dialog.store(false, Ordering::Relaxed);
     }
 
@@ -147,6 +185,26 @@ impl Output {
         self.lock().closed = true;
         self.cv.notify_all();
     }
+}
+
+/// The PTY's default size (`RuntimeConfig::new`).
+pub const DEFAULT_ROWS: u16 = 50;
+pub const DEFAULT_COLS: u16 = 160;
+
+/// The screen model panics on an empty grid: one cell at least.
+fn grid(rows: u16, cols: u16) -> (u16, u16) {
+    (rows.max(1), cols.max(1))
+}
+
+/// One screen row (or line) holds the trust dialog's header.
+pub(crate) fn shows_trust_header(row: &str) -> bool {
+    squash(row).contains(TRUST_DIALOG_TEXT)
+}
+
+/// Runs of whitespace as one space: a stripped escape leaves a run of them,
+/// even inside a word sequence like the trust dialog's header.
+pub(crate) fn squash(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn contains(hay: &[u8], needle: &[u8]) -> bool {
@@ -249,7 +307,7 @@ impl PtyProcess {
         let pgid = if pgid > 0 { pgid } else { pid };
         let mut reader = pair.master.try_clone_reader().context("pty reader")?;
         let writer = pair.master.take_writer().context("pty writer")?;
-        let output = Arc::new(Output::new());
+        let output = Arc::new(Output::with_size(rows, cols));
         let exited = Arc::new(AtomicBool::new(false));
         let proc = PtyProcess {
             pid,
@@ -330,6 +388,7 @@ impl PtyProcess {
         if let Some(m) = m.as_ref() {
             m.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })?;
         }
+        self.output.set_size(rows, cols);
         Ok(())
     }
 

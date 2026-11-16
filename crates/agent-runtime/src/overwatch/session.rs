@@ -258,6 +258,10 @@ impl Runtime {
         if let Some(w) = self.overwatch_paused() {
             return (Status::Paused, Some(w.into()), events);
         }
+        // The record flag is only up once the auto-answer failed (§3.4).
+        if self.overwatch_trust_raised() {
+            return (Status::Paused, Some(why::TRUST.into()), events);
+        }
         let status = if in_flight {
             Status::Working
         } else if queued {

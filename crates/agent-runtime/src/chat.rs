@@ -223,10 +223,15 @@ pub fn render(entries: &[Value], tz: &TimeZone) -> String {
 
 /// A `YYYY-MM-DD` day, else `bad_request`.
 fn parse_day(day: &str) -> Result<jiff::civil::Date> {
-    match day.parse::<jiff::civil::Date>() {
-        Ok(d) if d.to_string() == day => Ok(d),
-        _ => bail!("bad_request: day must be YYYY-MM-DD (got {day:?})"),
+    match as_day(day) {
+        Some(d) => Ok(d),
+        None => bail!("bad_request: day must be YYYY-MM-DD (got {day:?})"),
     }
+}
+
+/// `day` as a date when it is exactly `YYYY-MM-DD`.
+pub(crate) fn as_day(day: &str) -> Option<jiff::civil::Date> {
+    day.parse::<jiff::civil::Date>().ok().filter(|d| d.to_string() == day)
 }
 
 /// Local midnight of `date` and of the day after.

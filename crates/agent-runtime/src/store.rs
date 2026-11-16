@@ -43,6 +43,7 @@ pub struct AgentRecord {
     #[serde(default)]
     pub flag: Option<String>,
     /// The CLI's trust dialog was seen on the PTY (J0): only the user answers it.
+    /// The Overwatch's goes up only once its own answer failed.
     #[serde(default)]
     pub trust_dialog: bool,
     /// Set for an agent of a team run (P2); `None` for a solo session.

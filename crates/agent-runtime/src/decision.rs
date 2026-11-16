@@ -740,13 +740,25 @@ pub fn build(cx: &Ctx) -> Vec<Decision> {
         let held =
             || cx.items.iter().any(|i| i.open() && i.kind == "permission" && i.agent_id.as_deref() == Some(&a.id));
         if a.trust_dialog {
+            // The Overwatch's only shows once its own answer failed (fix-overwatch-trust-folder §3.4).
+            let (title, detail) = if a.is_overwatch() {
+                (
+                    "Claude Code asks to trust today's Overwatch folder".into(),
+                    "The app could not answer it: answer it in its session".into(),
+                )
+            } else {
+                (
+                    "Claude Code asks to trust this folder".into(),
+                    format!("Answer it in {}'s pane: the app never does", a.id),
+                )
+            };
             out.push(synth(
                 cx,
                 format!("trust-{}", a.id),
                 "trust",
                 Some(&a.id),
-                "Claude Code asks to trust this folder".into(),
-                format!("Answer it in {}'s pane: the app never does", a.id),
+                title,
+                detail,
                 tail_block().into_iter().collect(),
                 vec![open],
                 since,
