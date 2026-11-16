@@ -64,3 +64,58 @@ fn launch_validates_and_stores_the_issues_and_mode() {
     assert_eq!(v["run"]["prs_view"][0]["state"], "none");
     assert_eq!(v["feature"]["issues"][0]["ref"], "#1");
 }
+
+#[test]
+fn feature_set_prs_follows_the_rules_and_tells_the_lead() {
+    let (_d, rt, _rd, _repo, pid) = setup();
+    let run = approved(&rt, &pid, &["#1"], PrMode::Single);
+    let t = create(&rt, json!({"title": "API", "node": "back"}));
+    let mut done = rt.db.task(t.id).unwrap().unwrap();
+    done.status = orch_team::TaskStatus::Done;
+    rt.db.upsert_task(&done).unwrap();
+    let set = |issues: Option<&[&str]>, mode: Option<PrMode>| {
+        rt.feature_set_prs("fx", issues.map(|l| l.iter().map(|s| s.to_string()).collect()), mode)
+    };
+    assert_eq!(code(set(None, Some(PrMode::PerIssue)).unwrap_err()), "per_issue_needs_two");
+    assert_eq!(code(set(Some(&["nope"]), None).unwrap_err()), "bad_ref");
+    // Two issues and one PR per issue: the lead is told, with the task to tag.
+    let f = set(Some(&["#1", "#2", "2"]), Some(PrMode::PerIssue)).unwrap();
+    assert_eq!((f["pr_mode"].as_str(), f["issues"].as_array().unwrap().len()), (Some("per_issue"), 2));
+    let turn = queued(&rt, LEAD).into_iter().find(|b| b.contains("changed the pull requests")).unwrap();
+    assert!(turn.contains("One PR per issue: #1, #2."), "{turn}");
+    assert!(turn.contains(&format!("{} (id {}, API)", t.handle(), t.id)), "{turn}");
+    rt.db.flush().unwrap();
+    let ev = rt.db.run_events(&run.id, 100).unwrap();
+    let e = ev.iter().find(|e| e.kind == "feature.prs").unwrap();
+    assert_eq!(e.detail, json!({"issues": ["#1", "#2"], "pr_mode": "per_issue", "by": "user"}));
+    // An issue with an open PR stays; the mode is locked once a PR exists.
+    let mut r = rt.db.run(&run.id).unwrap().unwrap();
+    r.prs = vec![RunPr {
+        issue: "#1".into(),
+        branch: "orch/fx/issue/1".into(),
+        number: 7,
+        url: "u".into(),
+        pr: Some(PrStatus { state: "open".into(), ..Default::default() }),
+        ..Default::default()
+    }];
+    rt.db.upsert_run(&r).unwrap();
+    let e = set(Some(&["#2"]), None).unwrap_err();
+    assert!(e.to_string().contains("\"ref\":\"#1\""), "{e}");
+    assert_eq!(code(e), "issue_has_pr");
+    assert_eq!(code(set(None, Some(PrMode::Single)).unwrap_err()), "pr_busy");
+    // Down to one issue is fine once a PR exists (the locked one stays).
+    let f = set(Some(&["#1"]), None).unwrap();
+    assert_eq!(f["issues"].as_array().unwrap().len(), 1);
+    assert!(set(Some(&["#1", "#3"]), None).is_ok(), "adding an issue is fine");
+    // A done run is finished.
+    let mut r = rt.db.run(&run.id).unwrap().unwrap();
+    r.status = RunState::Done;
+    rt.db.upsert_run(&r).unwrap();
+    assert_eq!(code(set(Some(&["#1"]), None).unwrap_err()), "finished");
+}
+
+#[test]
+fn issue_suggest_reads_the_intake_cache() {
+    let (_d, rt, _rd, _repo, pid) = setup();
+    assert_eq!(rt.issue_suggest(&pid, "x").unwrap(), json!([]));
+}
