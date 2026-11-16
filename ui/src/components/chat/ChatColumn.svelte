@@ -933,8 +933,12 @@
   {#if downStrip}
     <div class="strip down" data-ow-strip>
       <span class="l1">{downStrip.title}</span>
-      <span class="l2" class:bad={restartError}>{restartError ? `Could not restart: ${restartError}` : downStrip.detail}</span>
+      <span class="l2" class:bad={restartError && !downStrip.action}>{restartError && !downStrip.action ? `Could not restart: ${restartError}` : downStrip.detail}</span>
+      {#if downStrip.action === 'open-session'}
+        <button class="btn" data-ow-strip-open disabled={!canOpenSession(ow)} onclick={openOverwatch}>Open session</button>
+      {:else}
       <button class="btn" disabled={restarting || coreDown} use:tooltip={coreDown ? { label: 'Restart', detail: 'The core is not reachable' } : null} onclick={restart}>{restarting ? 'Restarting…' : 'Restart'}</button>
+      {/if}
     </div>
   {/if}
   {#if daysPop}

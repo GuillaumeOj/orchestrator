@@ -65,11 +65,24 @@ function baseTip(ow) {
 /** The status opens the Overwatch's session when there is one today; `off` never does (notes §1). */
 export const canOpenSession = (ow) => !!ow.has_session && ow.status !== 'off';
 
-/** The strip under the header, only while down: its two lines (notes §1). */
-export const stripText = (ow) =>
-  ow.status === 'down'
-    ? { title: 'Overwatch is down', detail: `${ow.why ? `${ow.why} · ` : ''}cards still work` }
-    : null;
+/** Why the core pauses the Overwatch while Claude Code asks to trust today's folder (api-contract). */
+export const TRUST_WHY = 'waiting for folder trust';
+
+/**
+ * The strip under the header: while down (Restart) and while paused for the folder trust
+ * (`action: 'open-session'`, the Overwatch's session holds the question); null otherwise.
+ */
+export function stripText(ow) {
+  if (ow.status === 'down')
+    return { title: 'Overwatch is down', detail: `${ow.why ? `${ow.why} · ` : ''}cards still work` };
+  if (ow.status === 'paused' && ow.why === TRUST_WHY)
+    return {
+      title: "Claude Code asks to trust today's Overwatch folder",
+      detail: 'Open its session and pick "Yes, I trust this folder" · cards still work',
+      action: 'open-session',
+    };
+  return null;
+}
 
 /** The hint under the input for the status (notes §2): `{ text, link }`, `link` the words that open Settings. */
 export function inputHint(ow) {

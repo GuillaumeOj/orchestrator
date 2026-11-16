@@ -205,6 +205,17 @@ describe('the status in the header (notes §1)', () => {
     expect(/** @type {HTMLButtonElement} */ (c.querySelector('[data-ow-strip] button')).disabled).toBe(true);
   });
 
+  it('paused for the folder trust: a strip whose Open session opens the Overwatch session', async () => {
+    setNow([], [], OW('paused', { why: ow.TRUST_WHY }));
+    const { container: c } = render(ChatColumn);
+    const strip = c.querySelector('[data-ow-strip]');
+    expect(text(strip.querySelector('.l1'))).toBe("Claude Code asks to trust today's Overwatch folder");
+    const btn = strip.querySelector('button');
+    expect(text(btn)).toBe('Open session');
+    await fireEvent.click(btn);
+    expect(Object.values(app.panes).some((p) => p.type === 'agent' && p.agentId === 'overwatch')).toBe(true);
+  });
+
   it('down and back are announced once; "Overwatch is back." is a toast', async () => {
     setNow([], [], OW('working', { events: 1 }));
     const { container: c } = render(ChatColumn);
@@ -1039,6 +1050,14 @@ describe('pure helpers', () => {
     expect(ow.stripText(OW('asleep'))).toBeNull();
     expect(ow.stripText(OW('down'))).toEqual({ title: 'Overwatch is down', detail: 'cards still work' });
     expect(ow.stripText(OW('down', { why: 'login expired' }))?.detail).toBe('login expired · cards still work');
+    const trust = ow.stripText(OW('paused', { why: ow.TRUST_WHY }));
+    expect(trust).toEqual({
+      title: "Claude Code asks to trust today's Overwatch folder",
+      detail: 'Open its session and pick "Yes, I trust this folder" · cards still work',
+      action: 'open-session',
+    });
+    expect(ow.stripText(OW('paused', { why: 'Pause all' }))).toBeNull();
+    expect(ow.stripText(OW('paused', { why: 'limit reached' }))).toBeNull();
     expect(ow.deliveryText({ delivery: 'delivered' }, OW('down'))).toBe('');
     expect(ow.deliveryText({ delivery: 'pending' }, OW('asleep'))).toBe('waking…');
     expect(ow.deliveryText({ delivery: 'waking' }, OW('paused'))).toBe('Sent when the Overwatch resumes');
