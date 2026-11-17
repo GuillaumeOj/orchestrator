@@ -479,12 +479,7 @@
     }
   }
 
-  async function copyCommand(e) {
-    try {
-      await navigator.clipboard.writeText(ghScopeCommand(scopeOf(e)));
-    } catch {}
-    toast('Copied. Run it in a terminal, then Preview again.');
-  }
+  const copyCommand = (e) => copyScope(scopeOf(e));
 
   /** The Fix of a Preview error (notes §10.7). */
   function fix(e) {
