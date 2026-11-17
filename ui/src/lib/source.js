@@ -32,7 +32,11 @@ export function sourceModel(run, brief = null) {
   const wb = s.writeback ?? null;
   let writeBack = null;
   if (wb?.status === 'failed')
-    writeBack = { state: 'failed', text: `Write-back failed: ${wb.message ?? `could not update ${s.ref}`}` };
+    writeBack = {
+      state: 'failed',
+      text: `Write-back failed: ${wb.message ?? `could not update ${s.ref}`}`,
+      fixable: wb.code === 'gh_scope',
+    };
   else if (s.tracker !== 'local')
     writeBack = {
       state: s.write_back === 'off' ? 'off' : 'on',
