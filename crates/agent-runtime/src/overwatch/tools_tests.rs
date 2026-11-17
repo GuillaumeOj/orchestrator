@@ -805,3 +805,196 @@ fn a_pending_message_re_resolves_its_mentions_on_rebuild() {
     assert!(rt.mentions_of_meta(Some(&json!({"mentions": [{"id": "f_gone"}]}))).is_none());
     assert!(rt.mentions_of_meta(None).is_none());
 }
+
+// ------------------------------------------------------------ chat_send pastes
+
+fn paste(n: u64, text: &str) -> Value {
+    json!({"n": n, "text": text})
+}
+
+fn bad_paste(rt: &Runtime, text: &str, pastes: Value, want: &str) {
+    let e = rt.chat_send_with(text, None, Some(&json!({"pastes": pastes}))).unwrap_err().to_string();
+    assert_eq!(e, format!("bad_request: {want}"), "{pastes}");
+}
+
+#[test]
+fn pastes_are_written_to_files_and_listed_in_meta_and_on_the_event_line() {
+    let (_d, rt) = manual();
+    let long = "héllo\nsecond line\n".repeat(300);
+    let text = "Why? [Pasted text #1 · 5 400 chars]\nand [Pasted text #12 · 3 chars]";
+    let ctx = json!({"pastes": [paste(1, &long), paste(12, "abc")]});
+    let e = rt.chat_send_with(text, None, Some(&ctx)).unwrap();
+    let m = e.meta.as_ref().unwrap()["pastes"].as_array().unwrap().clone();
+    assert_eq!(m.len(), 2);
+    let root = rt.overwatch_pastes_dir().join(&e.day);
+    let p1 = std::path::PathBuf::from(m[0]["path"].as_str().unwrap());
+    assert_eq!(p1.parent().unwrap(), root);
+    assert!(p1.file_name().unwrap().to_str().unwrap().ends_with("-1.md"));
+    assert_eq!(std::fs::read_to_string(&p1).unwrap(), long);
+    assert_eq!((m[0]["chars"].as_u64(), m[0]["lines"].as_u64()), (Some(long.chars().count() as u64), Some(600)));
+    assert_eq!((m[1]["n"].as_u64(), m[1]["chars"].as_u64(), m[1]["lines"].as_u64()), (Some(12), Some(3), Some(1)));
+    let audit = rt.db.audit_log(None, 5).unwrap();
+    let a = audit.iter().find(|a| a.action == "chat_send").unwrap();
+    assert_eq!((&a.detail["pastes"], &a.detail["paste_chars"]), (&json!(2), &json!(long.chars().count() + 3)));
+    rt.overwatch_pump_at(t0() + 1);
+    let turn = &super::tests::ow_turns(&rt)[0];
+    let line = turn.lines().find(|l| l.contains("user_message")).unwrap();
+    let v: Value = serde_json::from_str(line.split(" · pastes ").nth(1).expect("pastes on the line")).unwrap();
+    assert_eq!(v, json!(m));
+}
+
+#[test]
+fn a_paste_without_its_placeholder_is_dropped() {
+    let (_d, rt) = manual();
+    let ctx = json!({"pastes": [paste(1, "kept"), paste(2, "gone"), paste(3, "prefix only")]});
+    // `#1 ` matches, `#2` is absent, `#3` only as part of `#31 ` does not match (trailing space).
+    let e = rt.chat_send_with("[Pasted text #1 · 4 chars] and [Pasted text #31 · 1 chars]", None, Some(&ctx)).unwrap();
+    let m = e.meta.as_ref().unwrap()["pastes"].as_array().unwrap().clone();
+    assert_eq!(m.len(), 1);
+    assert_eq!(m[0]["n"], 1);
+    let files = std::fs::read_dir(rt.overwatch_pastes_dir().join(&e.day)).unwrap().count();
+    assert_eq!(files, 1);
+    // None kept: no meta, no event pastes.
+    let e = rt.chat_send_with("plain", None, Some(&ctx)).unwrap();
+    assert!(e.meta.as_ref().unwrap().get("pastes").is_none());
+}
+
+#[test]
+fn a_message_made_only_of_placeholders_is_valid() {
+    let (_d, rt) = manual();
+    let e =
+        rt.chat_send_with("  [Pasted text #1 · 2 chars]  ", None, Some(&json!({"pastes": [paste(1, "ab")]}))).unwrap();
+    assert_eq!(e.text.as_deref(), Some("[Pasted text #1 · 2 chars]"));
+    assert_eq!(e.meta.as_ref().unwrap()["pastes"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn a_bad_pastes_shape_is_refused() {
+    let (_d, rt) = manual();
+    let t = "[Pasted text #1 · 1 chars]";
+    bad_paste(&rt, t, json!("x"), "context.pastes is an array");
+    bad_paste(&rt, t, json!([{"n": 1}]), "a paste is {n, text}");
+    bad_paste(&rt, t, json!([{"text": "a"}]), "a paste is {n, text}");
+    bad_paste(&rt, t, json!([{"n": 1, "text": 3}]), "a paste is {n, text}");
+    bad_paste(&rt, t, json!(["a"]), "a paste is {n, text}");
+    bad_paste(&rt, t, json!([paste(0, "a")]), "paste n is 1..=99");
+    bad_paste(&rt, t, json!([paste(100, "a")]), "paste n is 1..=99");
+    bad_paste(&rt, t, json!([{"n": "1", "text": "a"}]), "paste n is 1..=99");
+    bad_paste(&rt, t, json!([paste(1, "a"), paste(1, "b")]), "paste n 1 is twice");
+    bad_paste(&rt, t, json!([paste(1, "")]), "paste #1 is empty");
+    bad_paste(&rt, t, json!((1..=11).map(|n| paste(n, "a")).collect::<Vec<_>>()), "at most 10 pastes");
+    bad_paste(&rt, t, json!([paste(1, &"x".repeat(200_001))]), "paste #1 is at most 200000 characters");
+    // The limits themselves pass, and a null is none.
+    let ok = rt.chat_send_with(t, None, Some(&json!({"pastes": [paste(1, &"é".repeat(200_000))]})));
+    assert!(ok.is_ok());
+    assert!(rt.chat_send_with("x", None, Some(&json!({"pastes": null}))).is_ok());
+    let ten: Vec<_> = (1..=10).map(|n| paste(n, "a")).collect();
+    assert!(rt.chat_send_with("x", None, Some(&json!({"pastes": ten}))).is_ok());
+    // Nothing was written by the refused sends.
+    let day = rt.overwatch_today().1;
+    let files = std::fs::read_dir(rt.overwatch_pastes_dir().join(day)).map(|d| d.count()).unwrap_or(0);
+    assert_eq!(files, 1, "only the 200 000-char paste of the accepted send");
+}
+
+#[test]
+fn send_max_counts_the_text_not_the_pastes() {
+    let (_d, rt) = manual();
+    let big = "y".repeat(super::chatw::SEND_MAX + 1);
+    let e = rt.chat_send_with(&big, None, Some(&json!({"pastes": [paste(1, "a")]}))).unwrap_err().to_string();
+    assert!(e.starts_with("bad_request"), "{e}");
+    let ok = rt.chat_send_with(
+        "[Pasted text #1 · 3000 chars]",
+        None,
+        Some(&json!({"pastes": [paste(1, &"a".repeat(3000))]})),
+    );
+    assert!(ok.is_ok());
+}
+
+#[test]
+fn pastes_ride_with_plan_and_mentions() {
+    let (d, rt) = manual();
+    mentionable(&rt, d.path(), RunState::Executing);
+    let ctx = json!({"plan": "p_1", "mentions": [mention("f_1")], "pastes": [paste(1, "log")]});
+    let e = rt.chat_send_with("see @checkout [Pasted text #1 · 3 chars]", None, Some(&ctx)).unwrap();
+    let m = e.meta.as_ref().unwrap();
+    assert!(m["plan"].is_object() && m["mentions"].is_array() && m["pastes"].is_array(), "{m}");
+    rt.overwatch_pump_at(t0() + 1);
+    let turn = &super::tests::ow_turns(&rt)[0];
+    let line = turn.lines().find(|l| l.contains("user_message")).unwrap();
+    let (a, b, c) =
+        (line.find(" · plan ").unwrap(), line.find(" · mentions ").unwrap(), line.find(" · pastes ").unwrap());
+    assert!(a < b && b < c, "{line}");
+}
+
+#[test]
+fn a_failed_write_fails_the_send_and_leaves_no_entry() {
+    let (_d, rt) = manual();
+    let day = rt.overwatch_today().1;
+    std::fs::create_dir_all(rt.overwatch_pastes_dir()).unwrap();
+    // The day's folder is a file: it cannot be created.
+    std::fs::write(rt.overwatch_pastes_dir().join(&day), "x").unwrap();
+    let before = rt.db.chat_pending_user().unwrap().len();
+    let ctx = json!({"pastes": [paste(1, "a")]});
+    assert!(rt.chat_send_with("[Pasted text #1 · 1 chars]", None, Some(&ctx)).is_err());
+    assert_eq!(rt.db.chat_pending_user().unwrap().len(), before);
+    assert!(rt.overwatch_status().events == 0);
+}
+
+#[test]
+fn a_pending_message_rebuilds_with_its_pastes() {
+    let (_d, rt) = manual();
+    let e = rt.chat_send_with("[Pasted text #1 · 3 chars]", None, Some(&json!({"pastes": [paste(1, "abc")]}))).unwrap();
+    rt.ow().queue.clear();
+    rt.overwatch_load_db_pending();
+    let ev = rt.ow().pending_user.last().cloned().expect("rebuilt");
+    assert_eq!(ev.pastes.as_ref().unwrap(), e.meta.as_ref().unwrap()["pastes"].as_array().unwrap());
+    assert!(super::chatw::pastes_of_meta(None).is_none());
+    assert!(super::chatw::pastes_of_meta(Some(&json!({"pastes": []}))).is_none());
+}
+
+#[test]
+fn the_overwatch_may_read_the_pastes_dir() {
+    let (_d, rt) = manual();
+    let day_dir = rt.overwatch_day_dir("2026-11-05");
+    let reads = rt.overwatch_reads(&day_dir);
+    assert!(reads.contains(&rt.overwatch_pastes_dir()), "{reads:?}");
+    assert!(!reads.contains(&day_dir.join("pastes")));
+}
+
+#[test]
+fn chat_paste_reads_the_file_of_the_entry() {
+    let (_d, rt) = manual();
+    let text = "one\ntwo\nthree";
+    let e = rt.chat_send_with("[Pasted text #2 · 13 chars]", None, Some(&json!({"pastes": [paste(2, text)]}))).unwrap();
+    let r = rt.chat_paste(&e.id(), 2).unwrap();
+    assert_eq!(r, json!({"n": 2, "text": text, "chars": 13, "lines": 3}));
+    let nf = |r: anyhow::Result<Value>| {
+        let e = r.unwrap_err().to_string();
+        assert!(e.starts_with("not_found"), "{e}");
+    };
+    nf(rt.chat_paste(&e.id(), 1));
+    nf(rt.chat_paste("c-9999", 1));
+    nf(rt.chat_paste("nope", 1));
+    let plain = rt.chat_send_with("plain", None, None).unwrap();
+    nf(rt.chat_paste(&plain.id(), 1));
+    // The file is gone.
+    let path = e.meta.as_ref().unwrap()["pastes"][0]["path"].as_str().unwrap().to_string();
+    std::fs::remove_file(path).unwrap();
+    nf(rt.chat_paste(&e.id(), 2));
+}
+
+#[test]
+fn chat_paste_refuses_a_path_outside_the_pastes_dir() {
+    let (d, rt) = manual();
+    let secret = d.path().join("secret.txt");
+    std::fs::write(&secret, "s").unwrap();
+    let day = rt.overwatch_today().1;
+    let sneaky = rt.overwatch_pastes_dir().join(&day).join("..").join("..").join("..").join("secret.txt");
+    for path in [secret.clone(), sneaky] {
+        let mut e = rt.chat_send_with("hi", None, None).unwrap();
+        e.meta.as_mut().unwrap()["pastes"] = json!([{"n": 1, "chars": 1, "lines": 1, "path": path}]);
+        let e = rt.db.chat_update(&e).unwrap();
+        let err = rt.chat_paste(&e.id(), 1).unwrap_err().to_string();
+        assert!(err.starts_with("not_found"), "{path:?}: {err}");
+    }
+}

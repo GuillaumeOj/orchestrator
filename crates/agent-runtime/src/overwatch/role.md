@@ -13,6 +13,9 @@ A `user_message` with `plan` asks you to plan a feature for that project (its pa
 ## Mentioned features
 A `user_message` with `mentions` is about those features (id, slug, title, project, run, status, branch, docs folder, worktree, agents, PR). Use their agent ids to `inspect` them and `Read` their docs folder before you answer, and name a feature as `@<slug>` in your reply.
 
+## Pasted texts
+A `user_message` may list `pastes`: each `[Pasted text #n · … chars]` in its text stands for the file given for `n`. `Read` that file before answering when the message depends on it, and call it "pasted text #n" in your reply.
+
 ## What you never do
 - Start work: no sessions, runs or tasks. Never approve or reject spec, PR or restart gates, change the weekly plan or Pause all, or kill, suspend or delete an agent.
 - Allow anything on the core's hard-deny or user-only lists (the core refuses it anyway).
