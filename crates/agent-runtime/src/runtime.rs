@@ -552,6 +552,21 @@ impl Runtime {
             warnings.push(e.to_string());
         }
         let pressure = cfg.pressure_filter;
+        // §3.1: each agent's current session and its last stored cost, so a
+        // resumed session's restored cost is not counted again. The restart
+        // that installs this has no session on its rows yet: the agent's last
+        // row then stands for the session it resumes (best-effort, as the
+        // migration's repair).
+        let mut usage = UsageCollector::new();
+        let agents =
+            store.read(|s| s.agents.values().map(|a| (a.id.clone(), a.session_id.clone())).collect::<Vec<_>>());
+        for (id, sid) in agents.into_iter().filter(|(_, sid)| !sid.is_empty()) {
+            let cost =
+                db.last_session_cost(&id, &sid).ok().flatten().or_else(|| db.last_untagged_cost(&id).ok().flatten());
+            if let Some(cost) = cost {
+                usage.seed(&id, &sid, cost);
+            }
+        }
         let rt = Arc::new_cyclic(|me| Runtime {
             user_statusline: crate::env::user_statusline_command(&home),
             git_identity,
@@ -563,7 +578,7 @@ impl Runtime {
             settings_gen: AtomicU64::new(0),
             settings_written: Mutex::new(BTreeMap::new()),
             base_cap: std::sync::atomic::AtomicU32::new(base_cap),
-            usage: Mutex::new(UsageCollector::new()),
+            usage: Mutex::new(usage),
             live: Mutex::new(BTreeMap::new()),
             decisions: Mutex::new(VecDeque::new()),
             login_path,
@@ -2192,7 +2207,11 @@ impl Runtime {
             return;
         }
         let sample = StatusSample::parse(&m.payload);
-        let g = self.usage.lock().unwrap_or_else(|e| e.into_inner()).ingest(&m.agent_id, m.ts_ms, &sample);
+        // A session the collector does not know: a resumed one counts from
+        // its last stored cost (one store read, on its first render only).
+        let baseline = |sid: &str| self.db.last_session_cost(&m.agent_id, sid).ok().flatten();
+        let g =
+            self.usage.lock().unwrap_or_else(|e| e.into_inner()).ingest_with(&m.agent_id, m.ts_ms, &sample, baseline);
         if let Some(g) = g {
             self.touch(orch_protocol::Topic::Usage);
             self.event(&m.agent_id, "usage_sample", serde_json::to_value(&g).unwrap_or(Value::Null));
@@ -3381,6 +3400,7 @@ fn usage_record(
         class: Some(tag(&class)),
         allocation,
         model_windows: g.model_windows.clone(),
+        session_id: s.session_id.clone(),
         ..Default::default()
     }
 }
@@ -3810,6 +3830,68 @@ pub(crate) mod tests {
         let samples = rt.db.usage_since(0, Some(orch_store::UsageSource::Statusline)).unwrap();
         assert_eq!(samples.len(), 2);
         assert_eq!(samples[0].class.as_deref(), Some("autonomous"));
+    }
+
+    /// One statusline render of a1's session `s` (weekly window 3 days out).
+    fn session_status(rt: &Runtime, cost: f64, pct: u32) {
+        let reset = (now_ms() / 1000) as i64 + 3 * 24 * 3600;
+        rt.on_status(&StatusMsg {
+            agent_id: "a1".into(),
+            ts_ms: now_ms(),
+            payload: json!({"session_id": "s", "cost": {"total_cost_usd": cost},
+                "rate_limits": {"seven_day": {"used_percentage": pct, "resets_at": reset}}}),
+        });
+    }
+
+    /// fix-week-usage-count §3.1, acceptance 2: `claude --resume` restores the
+    /// session's cost; after a core restart it is not counted a second time.
+    #[test]
+    fn a_resumed_sessions_restored_cost_is_not_counted_again_after_a_restart() {
+        let d = tempfile::Builder::new().prefix("orchrt").tempdir_in(orch_protocol::test_tmp()).unwrap();
+        {
+            let rt = Runtime::new(test_cfg(d.path(), false)).unwrap();
+            rt.store.write(|s| s.agents.insert("a1".into(), test_agent(d.path()))).unwrap();
+            session_status(&rt, 5.0, 30);
+            rt.db.flush().unwrap();
+        }
+        // The core restarts; the resumed process reports its restored cost, then more.
+        let rt = Runtime::new(test_cfg(d.path(), false)).unwrap();
+        session_status(&rt, 5.0, 30);
+        session_status(&rt, 5.5, 31);
+        rt.db.flush().unwrap();
+        let rows = rt.db.usage_since(0, Some(orch_store::UsageSource::Statusline)).unwrap();
+        let deltas: Vec<f64> = rows.iter().filter_map(|r| r.cost_delta).collect();
+        let sum: f64 = deltas.iter().sum();
+        assert!((sum - 5.5).abs() < 1e-9, "deltas {deltas:?} sum to {sum}, not 5.5");
+        assert!(rows.iter().all(|r| r.session_id.as_deref() == Some("s")), "{rows:?}");
+    }
+
+    /// The restart that installs the fix: the agent's rows have no session
+    /// yet, so its last row is the resumed session's baseline.
+    #[test]
+    fn the_upgrade_restart_counts_a_resumed_session_from_its_untagged_last_row() {
+        let d = tempfile::Builder::new().prefix("orchrt").tempdir_in(orch_protocol::test_tmp()).unwrap();
+        {
+            let rt = Runtime::new(test_cfg(d.path(), false)).unwrap();
+            rt.store.write(|s| s.agents.insert("a1".into(), test_agent(d.path()))).unwrap();
+            rt.db.add_usage(orch_store::UsageRecord {
+                ts_ms: now_ms() - 1_000,
+                agent_id: Some("a1".into()),
+                cost_estimate: Some(5.0),
+                cost_delta: Some(5.0),
+                provenance: "observed".into(),
+                source: Some(orch_store::UsageSource::Statusline),
+                ..Default::default()
+            });
+            rt.db.flush().unwrap();
+        }
+        let rt = Runtime::new(test_cfg(d.path(), false)).unwrap();
+        session_status(&rt, 5.5, 31);
+        rt.db.flush().unwrap();
+        let rows = rt.db.usage_since(0, Some(orch_store::UsageSource::Statusline)).unwrap();
+        let last = rows.last().unwrap();
+        assert_eq!(last.session_id.as_deref(), Some("s"));
+        assert!((last.cost_delta.unwrap() - 0.5).abs() < 1e-9, "{rows:?}");
     }
 
     #[test]
