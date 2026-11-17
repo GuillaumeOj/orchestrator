@@ -35,6 +35,26 @@ fn drain_after_exit(lines: &std::sync::mpsc::Receiver<String>, mut f: impl FnMut
     }
 }
 
+/// gh's output lines while it starts: the one-time code and the device URL once seen.
+#[derive(Default)]
+struct Scan {
+    code: Option<String>,
+    url: Option<String>,
+    seen: Vec<String>,
+}
+
+impl Scan {
+    fn push(&mut self, l: String) {
+        if self.code.is_none() {
+            self.code = device_code(&l);
+        }
+        if self.url.is_none() {
+            self.url = device_url(&l);
+        }
+        self.seen.push(l);
+    }
+}
+
 /// Told of every `gh.grant` outcome ([`Runtime::set_grant_sink`]).
 pub type GrantSink = Arc<dyn Fn(&Value) + Send + Sync>;
 
@@ -49,7 +69,7 @@ fn coded(code: &str, message: impl Into<String>) -> anyhow::Error {
 }
 
 /// What `gh auth status` says of the active github.com account.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Default, PartialEq)]
 pub(crate) struct GhStatus {
     pub account: Option<String>,
     /// `None`: gh lists no scopes (fine-grained token, `GH_TOKEN`).
@@ -98,25 +118,9 @@ pub(crate) fn parse_gh_status(text: &str) -> GhStatus {
 /// `gh` of `tracker_gh_access` for a failed `gh auth status`: `missing`, `offline` or `logged_out`.
 fn gh_state_of_failure(text: &str) -> &'static str {
     let l = text.to_ascii_lowercase();
-    if ["no such file", "not installed", "not found in path", "executable file not found"].iter().any(|p| l.contains(p))
-    {
+    if orch_tasks::intake::is_gh_missing_text(&l) {
         "missing"
-    } else if [
-        "could not resolve host",
-        "no such host",
-        "network is unreachable",
-        "no route to host",
-        "connection refused",
-        "dial tcp",
-        "error connecting to",
-        "i/o timeout",
-        "timeout trying to log in",
-        "tls handshake timeout",
-        "timed out",
-    ]
-    .iter()
-    .any(|p| l.contains(p))
-    {
+    } else if orch_tasks::intake::is_offline_text(&l) {
         "offline"
     } else {
         "logged_out"
@@ -179,14 +183,12 @@ impl Runtime {
             Err(e) => {
                 let text = format!("{e:#}");
                 // gh exits 1 when any account or host has a problem: the active github.com login can still be fine.
-                match parse_gh_status(&text) {
-                    s if s.account.is_some() => ("ok", s),
-                    _ => (gh_state_of_failure(&text), GhStatus { account: None, scopes: None }),
-                }
+                let s = parse_gh_status(&text);
+                if s.account.is_some() { ("ok", s) } else { (gh_state_of_failure(&text), GhStatus::default()) }
             }
         };
         let missing: Vec<&str> = match &status.scopes {
-            Some(g) if gh == "ok" => needed.iter().copied().filter(|n| !covers(g, n)).collect(),
+            Some(g) => needed.iter().copied().filter(|n| !covers(g, n)).collect(),
             _ => vec![],
         };
         let failed = self.wb_failed(project);
@@ -218,47 +220,31 @@ impl Runtime {
             return Ok(g.answer.clone());
         }
         let GhRefresh { lines, mut child } = self.cfg.net.gh_auth_refresh(scope).map_err(|e| {
-            let t = format!("{e:#}");
-            match gh_state_of_failure(&t) {
-                "missing" => coded("gh_missing", "the GitHub CLI (gh) is not installed"),
-                _ => coded("failed", t),
-            }
+            let se = orch_tasks::intake::gh_error(&e);
+            coded(if se.code == "gh_missing" { "gh_missing" } else { "failed" }, se.message)
         })?;
-        let (mut code, mut url, mut seen) = (None, None, vec![]);
+        let mut scan = Scan::default();
         let until = Instant::now() + CODE_WAIT;
         let mut exited = false;
-        while code.is_none() || url.is_none() {
+        while scan.code.is_none() || scan.url.is_none() {
             let left = until.saturating_duration_since(Instant::now());
             if left.is_zero() {
                 break;
             }
             match lines.recv_timeout(left.min(POLL)) {
-                Ok(l) => {
-                    code = code.or_else(|| device_code(&l));
-                    url = url.or_else(|| device_url(&l));
-                    seen.push(l);
-                }
+                Ok(l) => scan.push(l),
                 Err(RecvTimeoutError::Timeout) => {}
-                Err(RecvTimeoutError::Disconnected) => {
-                    // Both streams closed: wait for the exit (briefly), it has nothing more to say.
-                    exited = matches!(child.try_wait(), Ok(Some(_)));
-                    if exited || Instant::now() >= until {
-                        break;
-                    }
-                    std::thread::sleep(POLL);
-                }
+                // Both streams closed: only the exit is left to see.
+                Err(RecvTimeoutError::Disconnected) => std::thread::sleep(POLL),
             }
-            if !exited && matches!(child.try_wait(), Ok(Some(_))) {
+            if matches!(child.try_wait(), Ok(Some(_))) {
                 // (what gh printed before it exited may still be on its way through the reader threads)
                 exited = true;
-                drain_after_exit(&lines, |l| {
-                    code = code.take().or_else(|| device_code(&l));
-                    url = url.take().or_else(|| device_url(&l));
-                    seen.push(l);
-                });
+                drain_after_exit(&lines, |l| scan.push(l));
                 break;
             }
         }
+        let Scan { code, url, seen } = scan;
         // (a code without the URL line: github.com's device page is always the same)
         let url = url.or_else(|| code.as_ref().map(|_| DEVICE_URL.to_string()));
         let (Some(code), Some(url)) = (code, url) else {
@@ -327,8 +313,10 @@ impl Runtime {
             Ok(()) => {
                 let mut retried = serde_json::Map::new();
                 for p in self.db.projects(false).unwrap_or_default() {
-                    if !matches!(self.db.tracker(&p.id).map(|t| t.tracker), Ok(Tracker::Github { .. })) {
-                        continue;
+                    // (with write-back off there is nothing to retry)
+                    match self.db.tracker(&p.id) {
+                        Ok(t) if t.write_back.enabled && matches!(t.tracker, Tracker::Github { .. }) => {}
+                        _ => continue,
                     }
                     if let Ok(r) = self.writeback_retry_all(&p.id) {
                         retried.insert(p.id.clone(), json!({"ok": r["ok"], "failed": r["failed"]}));

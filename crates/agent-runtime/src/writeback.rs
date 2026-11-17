@@ -319,13 +319,17 @@ impl Runtime {
             json!({"node": row.node_id, "what": what, "code": code, "scope": scope}),
         );
         self.db.note([crate::intake::TOPIC]);
+        let open = self.store.read(|s| s.inbox.iter().any(|i| i.open() && is_failing_decision(i, &p.id)));
         if ok {
             let _ = self.db.set_setting(&fails_key(&p.id), &json!(0));
+            // Whatever made this write work again (a retry, a grant): the decision goes once nothing fails.
+            if open && self.wb_failed(&p.id).is_empty() {
+                self.wb_resolve(&p.id);
+            }
             return;
         }
         let n = self.db.setting(&fails_key(&p.id)).ok().flatten().and_then(|v| v.as_u64()).unwrap_or(0) + 1;
         let _ = self.db.set_setting(&fails_key(&p.id), &json!(n));
-        let open = self.store.read(|s| s.inbox.iter().any(|i| i.open() && is_failing_decision(i, &p.id)));
         if n >= FAILING_AFTER && !open {
             let payload = json!({"kind": "writeback_failing", "project": p.id, "key": "writeback",
                                  "title": format!("Write-back is failing for {}", p.name),
@@ -351,7 +355,6 @@ impl Runtime {
         let op: WbOp =
             serde_json::from_value(st["op"].clone()).map_err(|e| anyhow!("the failed write is not readable: {e}"))?;
         self.wb_run(&row.project_id, node, &op);
-        self.wb_resolve_if_clear(&row.project_id);
         Ok(self.db.setting(&status_key(&row.project_id, node))?.unwrap_or_default())
     }
 
@@ -380,47 +383,28 @@ impl Runtime {
 
     /// The failed write-backs of a project, in node order (`(node, status)`).
     pub(crate) fn wb_failed(&self, project: &str) -> Vec<(String, Value)> {
-        let prefix = status_key(project, "");
-        let mut v: Vec<(String, Value)> = self
-            .db
-            .settings_prefixed(&prefix)
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|(_, v)| v["status"] == "failed")
-            .filter_map(|(k, v)| Some((k.strip_prefix(&prefix)?.to_string(), v)))
-            .collect();
+        let mut v: Vec<(String, Value)> =
+            self.wb_statuses(project).into_iter().filter(|(_, v)| v["status"] == "failed").collect();
         v.sort_by(|a, b| a.0.cmp(&b.0));
         v
     }
 
-    /// Resolves the project's open `writeback_failing` decision when no write of it is failing.
-    fn wb_resolve_if_clear(&self, project: &str) {
-        if self.wb_failed(project).is_empty() {
-            self.wb_resolve(project);
-        }
-    }
-
     /// Resolves the project's open `writeback_failing` decision.
     fn wb_resolve(&self, project: &str) {
-        self.close_items_where(|i| is_failing_decision(i, project), "write-back works again");
-        self.touch("inbox");
+        if self.close_items_where(|i| is_failing_decision(i, project), "write-back works again") > 0 {
+            self.touch("inbox");
+        }
     }
 
     /// The write-back status of every node of a project, by node id (for `WorkNode.writeback`).
     pub(crate) fn wb_statuses(&self, project: &str) -> std::collections::HashMap<String, Value> {
+        // (the stored status whole: status, what, at_ms, message, code, scope, op)
         let prefix = status_key(project, "");
         self.db
             .settings_prefixed(&prefix)
             .unwrap_or_default()
             .into_iter()
-            .filter_map(|(k, v)| {
-                let node = k.strip_prefix(&prefix)?.to_string();
-                Some((
-                    node,
-                    json!({"status": v["status"], "what": v["what"], "at_ms": v["at_ms"], "message": v["message"],
-                           "code": v["code"], "scope": v["scope"], "op": v["op"]}),
-                ))
-            })
+            .filter_map(|(k, v)| Some((k.strip_prefix(&prefix)?.to_string(), v)))
             .collect()
     }
 
@@ -484,7 +468,7 @@ impl Runtime {
 }
 
 /// Whether `i` is the `writeback_failing` decision of `project`.
-fn is_failing_decision(i: &orch_store::InboxItem, project: &str) -> bool {
+pub(crate) fn is_failing_decision(i: &orch_store::InboxItem, project: &str) -> bool {
     i.kind == "program" && i.payload["kind"] == "writeback_failing" && i.payload["project"] == project
 }
 

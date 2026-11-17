@@ -409,7 +409,7 @@ mod tests {
 
     #[test]
     fn a_board_write_without_the_scope_asks_for_project() {
-        const ADD_ITEM_SCOPES: &str = "Your token has not been granted the required scopes to execute this query. The 'addProjectV2ItemById' field requires one of the following scopes: ['project'], but your token has only been granted the: ['gist', 'read:org', 'read:project', 'repo'] scopes.";
+        use crate::intake::tests::ADD_ITEM_SCOPES;
         let board = |a: &[String]| -> Result<String, String> {
             if has(a, "issues/13") {
                 return Ok(json!({"node_id": "I_13"}).to_string());

@@ -2276,7 +2276,7 @@ fn failing_decisions(f: &Fx) -> Vec<orch_store::InboxItem> {
     f.rt.store.read(|s| {
         s.inbox
             .iter()
-            .filter(|i| i.open() && i.kind == "program" && i.payload["kind"] == "writeback_failing")
+            .filter(|i| i.open() && crate::writeback::is_failing_decision(i, &f.project.id))
             .cloned()
             .collect()
     })
@@ -2362,7 +2362,6 @@ fn one_retry_that_leaves_nothing_failing_resolves_the_decision() {
 
 #[test]
 fn a_grant_answers_the_code_and_its_end_retries_the_failed_writes() {
-    use crate::net::fake::FakeRefresh;
     let f = work_fixture();
     scope_failures(&f);
     let (tx, rx) = std::sync::mpsc::channel();
@@ -2374,22 +2373,17 @@ fn a_grant_answers_the_code_and_its_end_retries_the_failed_writes() {
     // No gh.
     assert_eq!(err_code(f.rt.gh_grant_scope("project").unwrap_err()), "gh_missing");
     // A token from the environment: gh says so and exits.
-    let env = FakeRefresh {
-        lines: vec!["The value of the GH_TOKEN environment variable is being used for authentication.".into()],
-        ..Default::default()
-    };
+    let env = fake_refresh(&f, &["The value of the GH_TOKEN environment variable is being used for authentication."]);
     *env.exit.lock().unwrap() = Some(false);
-    *f.net.refresh.lock().unwrap() = Some(env);
     assert_eq!(err_code(f.rt.gh_grant_scope("project").unwrap_err()), "interactive_only");
     // The device flow: the code and the URL at once.
-    let fr = FakeRefresh {
-        lines: vec![
-            "! First copy your one-time code: ABCD-1234".into(),
-            "Open this URL to continue in your web browser: https://github.com/login/device".into(),
+    let fr = fake_refresh(
+        &f,
+        &[
+            "! First copy your one-time code: ABCD-1234",
+            "Open this URL to continue in your web browser: https://github.com/login/device",
         ],
-        ..Default::default()
-    };
-    *f.net.refresh.lock().unwrap() = Some(fr.clone());
+    );
     let a = f.rt.gh_grant_scope("project").unwrap();
     assert_eq!(
         a,
@@ -2397,8 +2391,7 @@ fn a_grant_answers_the_code_and_its_end_retries_the_failed_writes() {
     );
     // One at a time: a second call answers the running one.
     assert_eq!(f.rt.gh_grant_scope("read:project").unwrap(), a);
-    assert_eq!(f.net.refreshed.lock().unwrap().iter().filter(|s| *s == "project").count(), 3);
-    assert_eq!(f.net.refreshed.lock().unwrap().len(), 3, "the second call ran no gh");
+    assert_eq!(*f.net.refreshed.lock().unwrap(), ["project"; 3], "the second call ran no gh");
     // The user authorizes: done, and every failed write of the project is retried.
     scope_granted(&f);
     *fr.exit.lock().unwrap() = Some(true);
@@ -2410,8 +2403,7 @@ fn a_grant_answers_the_code_and_its_end_retries_the_failed_writes() {
     f.rt.db.flush().unwrap();
     assert_eq!(f.rt.db.events(0, None, Some("gh.grant"), 5).unwrap().len(), 1);
     // Cancelled: killed, `failed` posted, a new grant can start.
-    let fr = FakeRefresh { lines: a_code_lines(), ..Default::default() };
-    *f.net.refresh.lock().unwrap() = Some(fr.clone());
+    let fr = fake_refresh(&f, A_CODE);
     f.rt.gh_grant_scope("project").unwrap();
     assert_eq!(f.rt.gh_grant_cancel(), json!({"ok": true, "cancelled": true}));
     let ev = rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
@@ -2422,8 +2414,7 @@ fn a_grant_answers_the_code_and_its_end_retries_the_failed_writes() {
     assert!(fr.killed.load(std::sync::atomic::Ordering::SeqCst));
     assert_eq!(f.rt.gh_grant_cancel()["cancelled"], false);
     // gh fails at the end with nothing more said (its later stderr line would be the message).
-    let fr = FakeRefresh { lines: a_code_lines(), ..Default::default() };
-    *f.net.refresh.lock().unwrap() = Some(fr.clone());
+    let fr = fake_refresh(&f, A_CODE);
     f.rt.gh_grant_scope("project").unwrap();
     *fr.exit.lock().unwrap() = Some(false);
     let ev = rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
@@ -2431,8 +2422,14 @@ fn a_grant_answers_the_code_and_its_end_retries_the_failed_writes() {
     assert_eq!(ev["message"], "gh auth refresh failed");
 }
 
-fn a_code_lines() -> Vec<String> {
-    vec!["! First copy your one-time code: WXYZ-9876".into(), "https://github.com/login/device".into()]
+const A_CODE: &[&str] = &["! First copy your one-time code: WXYZ-9876", "https://github.com/login/device"];
+
+/// Installs a fake `gh auth refresh` printing `lines`; its handle (exit, killed).
+fn fake_refresh(f: &Fx, lines: &[&str]) -> crate::net::fake::FakeRefresh {
+    let fr =
+        crate::net::fake::FakeRefresh { lines: lines.iter().map(|l| l.to_string()).collect(), ..Default::default() };
+    *f.net.refresh.lock().unwrap() = Some(fr.clone());
+    fr
 }
 
 #[test]

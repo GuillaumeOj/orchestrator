@@ -225,18 +225,30 @@ pub fn enc(s: &str) -> String {
 
 // ------------------------------------------------------------------ GitHub
 
-/// The text of a failure that says the network is not reachable.
-fn is_offline_text(lower: &str) -> bool {
+/// The (lower-cased) text of a failure that says the network is not reachable.
+pub fn is_offline_text(lower: &str) -> bool {
     [
         "could not resolve host",
+        "no such host",
         "network is unreachable",
+        "network unreachable",
         "no route to host",
         "connection refused",
         "dial tcp",
-        "network unreachable",
+        "error connecting to",
+        "i/o timeout",
+        "tls handshake timeout",
+        "timeout trying to log in",
     ]
     .iter()
     .any(|p| lower.contains(p))
+}
+
+/// The (lower-cased) text of a failure that says gh is not installed.
+pub fn is_gh_missing_text(lower: &str) -> bool {
+    ["no such file", "not found in path", "program not found", "executable file not found", "not installed"]
+        .iter()
+        .any(|p| lower.contains(p))
 }
 
 /// The first scope GitHub names as *required* in an insufficient-scopes text
@@ -270,12 +282,11 @@ pub fn gh_error_or_scope(e: &anyhow::Error, default_scope: &str) -> SourceError 
     let l = m.to_ascii_lowercase();
     let code = if is_offline_text(&l) {
         "offline"
-    } else if l.contains("no such file") || l.contains("not found in path") || l.contains("program not found") {
+    } else if is_gh_missing_text(&l) {
         "gh_missing"
     } else if l.contains("insufficient_scopes")
         || l.contains("required scopes")
         || l.contains("requires one of the following scopes")
-        || l.contains("read:project")
     {
         "gh_scope"
     } else if l.contains("gh auth login")
@@ -291,15 +302,17 @@ pub fn gh_error_or_scope(e: &anyhow::Error, default_scope: &str) -> SourceError 
     } else {
         "failed"
     };
-    // (the scope is read from GitHub's whole text, before `SourceError::new` clips the message)
-    let scope = (code == "gh_scope").then(|| required_scope(&m).unwrap_or_else(|| default_scope.to_string()));
     let message = match code {
         "gh_missing" => "the GitHub CLI (gh) is not installed".to_string(),
         "gh_auth" => "gh is not logged in: run `gh auth login`".to_string(),
-        "gh_scope" => gh_scope_message(scope.as_deref().unwrap_or(default_scope)),
+        "gh_scope" => {
+            // (read from GitHub's whole text, before `SourceError::new` clips the message)
+            let scope = required_scope(&m).unwrap_or_else(|| default_scope.to_string());
+            return SourceError { scope: Some(scope.clone()), ..SourceError::new(code, gh_scope_message(&scope)) };
+        }
         _ => m,
     };
-    SourceError { scope, ..SourceError::new(code, message) }
+    SourceError::new(code, message)
 }
 
 fn gh_run(gh: &dyn Gh, args: &[&str]) -> R<String> {
@@ -673,7 +686,7 @@ pub fn repo_docs_matches(dir: &Path, glob: &str, branch: &str) -> R<usize> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::sync::Arc;
 
@@ -735,7 +748,7 @@ mod tests {
     }
 
     /// GitHub's real insufficient-scopes text for a board write (gh-notes §3).
-    const ADD_ITEM_SCOPES: &str = "Your token has not been granted the required scopes to execute this query. The 'addProjectV2ItemById' field requires one of the following scopes: ['project'], but your token has only been granted the: ['gist', 'read:org', 'read:project', 'repo'] scopes. Please modify your token's scopes at: https://github.com/settings/tokens.";
+    pub(crate) const ADD_ITEM_SCOPES: &str = "Your token has not been granted the required scopes to execute this query. The 'addProjectV2ItemById' field requires one of the following scopes: ['project'], but your token has only been granted the: ['gist', 'read:org', 'read:project', 'repo'] scopes. Please modify your token's scopes at: https://github.com/settings/tokens.";
 
     #[test]
     fn a_scope_error_names_the_required_scope_not_the_granted_ones() {
