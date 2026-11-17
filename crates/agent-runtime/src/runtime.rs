@@ -4027,7 +4027,7 @@ pub(crate) mod tests {
     }
 
     /// fix-week-usage-count §3.2 items 6–7, acceptance 3b: a store of the
-    /// old app (schema 17) with a double-counted spike in its oldest week.
+    /// old app (schema 22) with a double-counted spike in its oldest week.
     /// The start repairs the rows, rebuilds the week chain and the past
     /// reports once, and sends no digest.
     #[test]
@@ -4116,11 +4116,11 @@ pub(crate) mod tests {
             db.save_report(&id(w1), w1, reset(w1), Some(final1), &stored(w1, final1)).unwrap();
             // A report whose row lost its final %: the stored total stands.
             db.save_report(&id(w2), w2, reset(w2), None, &stored(w2, final2)).unwrap();
-            // Back to schema 17, before the row repair: migration 18 runs at the start.
+            // Back to schema 22, before the row repair: migration 23 runs at the start.
             db.write(|tx| {
                 tx.execute_batch(
                     "DROP INDEX usage_samples_session; ALTER TABLE usage_samples DROP COLUMN session_id;
-                     PRAGMA user_version = 17;",
+                     PRAGMA user_version = 22;",
                 )?;
                 Ok(())
             })
@@ -4131,7 +4131,7 @@ pub(crate) mod tests {
         rt.db.flush().unwrap();
         let spike =
             rt.db.usage_between(0, None, Some(orch_store::UsageSource::Statusline)).unwrap()[56 + 30].cost_delta;
-        assert_eq!(spike, Some(36.0), "migration 18 repaired the spike (row 30 costs 36)");
+        assert_eq!(spike, Some(36.0), "migration 23 repaired the spike (row 30 costs 36)");
         for (s, pct) in [(w1, final1), (w2, final2)] {
             let r = rt.report_view(&id(s)).unwrap();
             let outside = r["totals"]["outside_pp"].as_f64().unwrap();
