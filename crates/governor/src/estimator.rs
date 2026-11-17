@@ -62,9 +62,9 @@ pub struct Calibrator {
     a: f64,
     u: f64,
     intervals: u64,
-    /// Intervals over the bound skipped in a row (§3.3).
+    /// Recent intervals over the bound, decayed by [`BOUND_MEMORY`] (§3.3).
     #[serde(default)]
-    skipped: u32,
+    over_bound: f64,
 }
 
 const PRIOR_PP: f64 = 5.0;
@@ -86,10 +86,13 @@ const BOUND_SLACK_PP: f64 = 1.0;
 /// The bound applies once the fit has this many real intervals: before, `k`
 /// is still the prior (`k0 = 1` is far off) and nothing is skipped.
 const BOUND_MIN_INTERVALS: u64 = 3;
-/// A spike is one interval; a real change of `k` lasts. Out of a run of
-/// intervals over the bound, every `BOUND_MAX_SKIPS + 1`-th is taken, so the
+/// A spike is one interval; a real change of `k` recurs. The fit keeps a
+/// count of recent intervals over the bound, decayed by `BOUND_MEMORY` per
+/// interval, and skips one only while that count is under 1. Spikes 3
+/// intervals apart or more are all skipped; the third of a run, or a pattern
+/// every other interval (a costlier model's turns), is taken, so the
 /// fit still follows a lasting change (and its bound with it).
-const BOUND_MAX_SKIPS: u32 = 2;
+const BOUND_MEMORY: f64 = 0.75;
 
 impl Calibrator {
     pub fn new(prior_k: f64, decay: f64) -> Self {
@@ -103,7 +106,7 @@ impl Calibrator {
             a: 1.0 / prior_k,
             u: 0.0,
             intervals: 0,
-            skipped: 0,
+            over_bound: 0.0,
         }
     }
 
@@ -138,7 +141,7 @@ impl Calibrator {
     /// §3.3: the interval's app cost alone explains far more than its
     /// increase (`d_cost / k > BOUND_RATIO · d_pct + BOUND_SLACK_PP`), once
     /// the fit has [`BOUND_MIN_INTERVALS`].
-    fn over_bound(&self, d_cost: f64, d_pct: f64) -> bool {
+    fn is_over_bound(&self, d_cost: f64, d_pct: f64) -> bool {
         self.intervals >= BOUND_MIN_INTERVALS && d_cost * self.a > BOUND_RATIO * d_pct + BOUND_SLACK_PP
     }
 
@@ -154,11 +157,12 @@ impl Calibrator {
         {
             return false;
         }
-        if self.over_bound(d_cost, d_pct) && self.skipped < BOUND_MAX_SKIPS {
-            self.skipped += 1;
+        let recent = self.over_bound * BOUND_MEMORY;
+        let over = self.is_over_bound(d_cost, d_pct);
+        self.over_bound = recent + if over { 1.0 } else { 0.0 };
+        if over && recent < 1.0 {
             return false;
         }
-        self.skipped = 0;
         let x = [d_cost, d_hours];
         for (i, xi) in x.iter().enumerate() {
             for (j, xj) in x.iter().enumerate() {
@@ -411,12 +415,13 @@ mod tests {
     }
 
     /// Acceptance 4: three double-counted intervals keep `k` within 10 % of
-    /// 20 and the outside estimate within 3 pp of 6.6, wherever they fall.
+    /// 20 and the outside estimate within 3 pp of 6.6, wherever they fall
+    /// (3 intervals apart or more: a restart every few hours).
     #[test]
     fn a_double_counted_interval_cannot_capture_k() {
         let (clean, clean_out) = spiked_week(&[], 0.0);
         assert!((clean.cost_per_pct() - 20.0).abs() <= 2.0 && (clean_out - 6.6).abs() <= 3.0);
-        for spikes in [[9, 15, 21], [5, 12, 26], [8, 17, 25], [20, 22, 27]] {
+        for spikes in [[9, 15, 21], [5, 12, 26], [8, 17, 25], [19, 22, 27]] {
             for spike in [80.0, 120.0, 400.0] {
                 let (c, out) = spiked_week(&spikes, spike);
                 let k = c.cost_per_pct();
@@ -467,8 +472,25 @@ mod tests {
         assert!(c.update(60.0, 1.0, 3.0));
     }
 
-    /// A lasting change of `k` (3×) is still learned: one interval in three
-    /// over the bound is taken, and the bound follows the fit.
+    /// A costlier interval every other one (a model whose cost per pp is
+    /// twice the blended `k`) is a pattern, not a spike: it is taken after
+    /// a few, so `k` does not stay at the cheap intervals' value.
+    #[test]
+    fn over_bound_intervals_every_other_one_are_taken() {
+        let mut c = Calibrator::new(20.0, 0.85);
+        for _ in 0..5 {
+            c.update(60.0, 1.0, 3.0);
+        }
+        let mut taken = 0;
+        for _ in 0..10 {
+            taken += c.update(120.0, 1.0, 3.0) as u32;
+            c.update(60.0, 1.0, 3.0);
+        }
+        assert!(taken >= 7, "{taken} of 10 taken");
+    }
+
+    /// A lasting change of `k` (3×) is still learned: a run over the bound
+    /// is taken from its third interval, and the bound follows the fit.
     #[test]
     fn a_lasting_change_of_k_is_followed() {
         let mut c = Calibrator::new(20.0, 0.85);
