@@ -51,6 +51,8 @@ Nothing in Project settings › Tracker lets the user fix it. Running the comman
   other way out.
 - Linear write-back is unchanged (its `linear_write` errors keep their current copy).
 - No change to which ops write what (labels, comments, sub-issues, close).
+- GitHub Enterprise hosts: the host is `github.com` (as everywhere else in the tracker today).
+- Findings on gh's behaviour are in [gh-notes.md](gh-notes.md) (T-450); the implementation follows them.
 
 ## 4. Behaviour
 
@@ -61,7 +63,8 @@ Nothing in Project settings › Tracker lets the user fix it. Running the comman
   A text that merely *lists* `read:project` among the granted scopes is not a reason to say `read:project`.
 - The `SourceError` carries `scope` (api-contract §1); its `message` is
   `gh needs the <scope> scope: run \`gh auth refresh -h github.com -s <scope>\``.
-- The write-back node status (`WorkNode.writeback`, `run.source.writeback`) carries `code` (already) and `scope`.
+- The write-back node status (`WorkNode.writeback`, `run.source.writeback`) carries `code` and `scope`. The stored
+  setting has `code` already, but `wb_statuses` drops it (and `op`): it passes them through, and `wb_record` stores `scope`.
 - The decision text becomes `"<message>. Fix it in Project settings › Tracker or turn write-back off."`.
 
 ### 4.2 GitHub access check (back)
@@ -69,14 +72,16 @@ Nothing in Project settings › Tracker lets the user fix it. Running the comman
 `tracker_gh_access(project)` (api-contract §2) reads `gh auth status` (`Token scopes: …` line) and answers which scopes
 the project's tracker needs (`read:project` when a board is set; `project` when write-back is on with a board), which
 the login has, and which are missing. `granted: null` when gh does not list scopes (fine-grained token, `GH_TOKEN`
-env): the UI then says it cannot check and offers Retry only.
+env): the UI then says it cannot check, and offers Retry failed writes (and Copy command when a failure is `gh_scope`).
+`gh auth status` also fails offline: that is `offline`, not logged out.
 
 ### 4.3 Grant access (back)
 
 `gh_grant_scope(scope)` runs `gh auth refresh -h github.com -s <scope>` with no TTY (stdin closed), reads the one-time
 code and the device URL from its output, answers `{code, url}` at once, and posts `gh.grant` events as it ends
 (api-contract §3). One grant at a time (a second call while one runs answers the running one). Timeout 15 min, then
-the process is killed and `failed` posted. On `done` the core retries the project's failed writes (§4.4).
+the process is killed and `failed` posted. `scope` is validated (`project` | `read:project`). On `done` the core retries
+the failed writes of every GitHub-tracker project (§4.4); the event reports it by project.
 
 **Back must verify on the installed gh** that a non-TTY `gh auth refresh -h github.com -s project` prints the code and
 polls without waiting for Enter. If it does not, `gh_grant_scope` answers `{code: "interactive_only"}` and the UI shows
@@ -86,7 +91,9 @@ Copy command only. `gh auth refresh -s` adds scopes: existing ones are kept.
 
 `writeback_retry_all(project)` runs `writeback_retry` for every node of the project whose status is `failed`, in node
 order, and answers counts. A success resets the failure count (already). When none is left failing, the open
-`writeback_failing` decision of the project is resolved (closed as done, not as answered by the user).
+`writeback_failing` decision of the project is resolved (closed as done, not as answered by the user), also when no
+node was left to retry. A single `writeback_retry` that leaves no failed node resolves it too (today only Retry on every
+node by hand, then nothing, closes the loop: the decision stays open).
 
 ### 4.5 Tracker settings › Write back block (front)
 
@@ -95,11 +102,11 @@ Shown when the tracker is GitHub and write-back is on. Under the switch, before 
 | State | Copy | Actions |
 |---|---|---|
 | checking | "Checking GitHub access…" | — |
-| ok, nothing failing | "GitHub access OK (`project`)." muted | — |
+| ok, nothing failing | "GitHub access OK (<the scopes in `needed`>)." muted | — |
 | missing scope | ⚠ "GitHub needs the `project` scope to move items on the board." | **Grant access** · Copy command |
 | granting | "Enter **XXXX-XXXX** on GitHub." + code copy | **Open GitHub** · Cancel |
 | granted | "Access granted. Retrying n failed writes…" → result | — |
-| unknown (`granted: null`) | "Orchestrator can't check this gh login's scopes." muted | — |
+| unknown (`granted: null`) | "Orchestrator can't check this gh login's scopes." muted | Copy command when a failure is `gh_scope` |
 | failed writes (any state) | "n write-backs failed: <last message>." | **Retry failed writes** |
 | gh missing / not logged in | existing Integrations copy | Open Integrations |
 
