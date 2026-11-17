@@ -13,6 +13,8 @@ The UI writes, in the message text, one token per paste:
 - `<n>`: integer 1..=99, unique within the message.
 - `<chars>`: the paste's code-point count, display-formatted by the UI (`3 214`; the core never parses it).
 - The core matches a paste to the text by the prefix `[Pasted text #<n> ` (with the trailing space, so `#1` does not match `#12`).
+- The same token may appear more than once: every occurrence stands for the one paste `n` (one file).
+- Counting, the same on both sides so the placeholder, the chip and `meta` agree: the UI normalises the pasted text (CRLF and lone CR → LF) before counting and sending; `chars` = code points; `lines` = Rust `str::lines().count()` (`"a"` → 1, `"a\n"` → 1, `"a\nb"` → 2). The core counts the text it receives and does not normalise again.
 
 ## 1. UI → core
 
@@ -46,7 +48,7 @@ invoke('chat_paste', { entry: "c-412", n: 1 })
 // → { n: 1, text: "…", chars: 5000, lines: 120 }
 ```
 
-Errors: `not_found: …` when the entry is unknown, has no paste `n`, or its file is gone. Reads only under `<root>/overwatch/pastes`; any other path in meta is `not_found`.
+Errors: `not_found: …` when the entry is unknown, has no paste `n`, or its file is gone. The core canonicalises the meta path (`fs::canonicalize`) and reads it only if it is under the canonicalised `<root>/overwatch/pastes`; anything else is `not_found`.
 
 ## 2. The chat entry
 
@@ -59,7 +61,7 @@ Errors: `not_found: …` when the entry is unknown, has no paste `n`, or its fil
 ]
 ```
 
-- `chars`: code points; `lines`: `text.lines().count()` (a text without a newline is 1).
+- `chars`, `lines`: as §0.
 - File: `<root>/overwatch/pastes/<day>/<key>-<n>.md`, `<key>` a fresh short random id per send, the text written as pasted.
 
 ## 3. Core → Overwatch: the `user_message` event
