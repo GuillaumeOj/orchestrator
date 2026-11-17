@@ -4,12 +4,13 @@
   // fields of the kind, the Ready filter, Write back, Refresh, Preview (a dry run), the migration
   // notices and the errors per code. ⌘⏎ saves. Replaces the Intake and Task backend sections.
   import { onMount, tick, untrack } from 'svelte';
-  import { app, openSettings, projects, toast } from '../lib/app.svelte.js';
-  import { GH_SCOPE_COMMAND, integrationsRow } from '../lib/intake.js';
-  import { errText, invoke } from '../lib/ipc.js';
+  import { app, copyText, openSettings, openUrl, projects, toast } from '../lib/app.svelte.js';
+  import { ghScopeCommand, integrationsRow, scopeOf } from '../lib/intake.js';
+  import { errText, invoke, listen } from '../lib/ipc.js';
   import { BOARD_COLUMNS } from '../lib/options.js';
   import { ifCut, tooltip } from '../lib/tooltip.js';
   import {
+    accessView,
     CYCLES,
     DEFAULT_GLOB,
     fieldCopy,
@@ -49,6 +50,7 @@
   $effect(() => {
     if (block !== 'write_back' || !form || blockSeen === app.window) return;
     blockSeen = app.window;
+    if (wbOn) untrack(checkAccess);
     tick().then(() => {
       const el = /** @type {HTMLElement | null} */ (document.querySelector('[data-wb-switch]'));
       el?.scrollIntoView?.({ block: 'center' });
@@ -143,8 +145,89 @@
   }
   onMount(() => {
     load();
-    return () => clearTimeout(savedTimer);
+    let off = () => {};
+    let gone = false;
+    listen('gh_grant', (ev) => onGrant(ev.payload)).then((f) => (gone ? f() : (off = f)));
+    return () => {
+      gone = true;
+      off();
+      clearTimeout(savedTimer);
+    };
   });
+
+  // Write back access (spec §4.5): what the gh login can do for this tracker, and the one-click fix.
+  let access = $state(/** @type {any} */ (null)); // tracker_gh_access; null while checking
+  let grant = $state(/** @type {any} */ (null)); // { code, url, scope } while `gh auth refresh` waits for the code
+  let grantNote = $state(/** @type {any} */ (null)); // { ok, text, scope? } after a grant ended or a retry ran
+  let retrying = $state(false);
+  const accessRow = $derived(accessView(access));
+  const wbOn = $derived(kind === 'github' && !!form?.write_back.enabled);
+
+  // (an answer older than the latest check is dropped, as in loadOptions)
+  let accessSeq = 0;
+  async function checkAccess() {
+    const mine = ++accessSeq;
+    try {
+      const a = await invoke('tracker_gh_access', { project });
+      if (mine === accessSeq) access = a;
+    } catch (e) {
+      if (mine === accessSeq) access = { gh: 'error', message: parseErr(e, errText).message ?? errText(e) };
+    }
+  }
+  // Opening the section (or turning write-back on) checks again; so does Open settings from the decision.
+  $effect(() => {
+    if (wbOn) untrack(checkAccess);
+  });
+
+  const retriedText = (r) =>
+    r && r.ok + r.failed > 0 ? `Retried ${r.ok + r.failed}: ${r.ok} done${r.failed ? `, ${r.failed} still failing` : ''}.` : '';
+
+  function onGrant(p) {
+    if (!p) return;
+    grant = null;
+    if (p.state === 'done') {
+      grantNote = { ok: true, text: `Access granted. ${retriedText(p.retried?.[project])}`.trim() };
+      checkAccess();
+    } else if (p.message !== 'cancelled') grantNote = { ok: false, text: p.message || 'Could not grant access.', scope: p.scope };
+  }
+
+  async function grantAccess(scope) {
+    grantNote = null;
+    try {
+      grant = await invoke('gh_grant_scope', { scope });
+    } catch (e) {
+      const err = parseErr(e, errText);
+      grantNote = { ok: false, code: err.code, text: err.message ?? errText(e), scope };
+    }
+  }
+
+  async function openGrant() {
+    openUrl(grant.url);
+    await copyText(grant.code, 'the code');
+  }
+
+  async function cancelGrant() {
+    grant = null;
+    try {
+      await invoke('gh_grant_cancel');
+    } catch {}
+  }
+
+  async function retryAll() {
+    if (retrying) return;
+    retrying = true;
+    try {
+      const r = await invoke('writeback_retry_all', { project });
+      grantNote = { ok: !r?.failed, text: r?.retried ? retriedText(r) : 'Nothing to retry.' };
+      await checkAccess();
+    } catch (e) {
+      toast(errText(e), { kind: 'error' });
+    } finally {
+      retrying = false;
+    }
+  }
+
+  const copyScope = (scope) => copyText(ghScopeCommand(scope), 'the command');
 
   // A request counter: an answer older than the latest request is dropped.
   let seq = 0;
@@ -310,6 +393,8 @@
     if (r?.settings) adopt(r);
     else baseline = JSON.stringify(settings);
     if (was && !r?.migration_notice) notice = null;
+    // tracker_gh_access reads the saved settings: what write-back needs (the board, the switch) is known once saved.
+    if (wbOn) checkAccess();
     savedAt = Date.now();
     clearTimeout(savedTimer);
     savedTimer = setTimeout(() => (savedAt = 0), 5000);
@@ -394,12 +479,7 @@
     }
   }
 
-  async function copyCommand() {
-    try {
-      await navigator.clipboard.writeText(GH_SCOPE_COMMAND);
-    } catch {}
-    toast('Copied. Run it in a terminal, then Preview again.');
-  }
+  const copyCommand = (e) => copyScope(scopeOf(e));
 
   /** The Fix of a Preview error (notes §10.7). */
   function fix(e) {
@@ -412,7 +492,7 @@
       /** @type {HTMLElement | null | undefined} */ (root?.querySelector('[data-projects] input[type="radio"]'))?.focus();
     } else if (e.fix === 'turn_off_write_back') form.write_back.enabled = false;
     else if (e.fix === 'integrations') openSettings('integrations', integrationsRow(e.code));
-    else if (e.fix === 'gh_scope') copyCommand();
+    else if (e.fix === 'gh_scope') copyCommand(e);
     else if (e.fix === 'retry') runPreview();
   }
 
@@ -429,6 +509,42 @@
     }
   }
 </script>
+
+{#snippet accessLine()}
+  <div class="access" data-wb-access={grant ? 'granting' : accessRow.state}>
+    {#if grant}
+      <p>Enter <b class="mono" data-grant-code>{grant.code}</b> on GitHub.</p>
+      <div class="acts">
+        <button class="btn" onclick={openGrant}>Open GitHub</button>
+        <button class="btn" onclick={cancelGrant}>Cancel</button>
+      </div>
+    {:else}
+      <p class:muted={accessRow.state === 'ok' || accessRow.state === 'unknown' || accessRow.state === 'checking'} class:ferr={accessRow.state === 'missing' || accessRow.state === 'error'}>
+        {#if accessRow.state === 'missing'}<span aria-hidden="true">{'\u{F0026}'}</span> {/if}{accessRow.text}
+      </p>
+      <div class="acts">
+        {#if accessRow.state === 'missing'}
+          {#if accessRow.canGrant}<button class="btn" onclick={() => grantAccess(accessRow.scope)}>Grant access</button>{/if}
+          <button class="btn" onclick={() => copyScope(accessRow.scope)}>Copy command</button>
+        {:else if accessRow.state === 'gh'}
+          <button class="btn" onclick={() => openSettings('integrations', integrationsRow(accessRow.code))}>Open Integrations</button>
+        {:else if accessRow.state === 'unknown' && access?.last_failure?.code === 'gh_scope'}
+          <button class="btn" onclick={() => copyScope(scopeOf(access.last_failure))}>Copy command</button>
+        {/if}
+      </div>
+    {/if}
+    {#if grantNote}
+      <p class:muted={grantNote.ok} class:ferr={!grantNote.ok} data-grant-note>{grantNote.text}
+        {#if !grantNote.ok && grantNote.scope && grantNote.code !== 'gh_missing' && grantNote.code !== 'gh_auth'}<button class="link" onclick={() => copyScope(grantNote.scope)}>Copy command</button>{/if}
+        {#if grantNote.code === 'gh_missing' || grantNote.code === 'gh_auth'}<button class="link" onclick={() => openSettings('integrations', 'github')}>Open Integrations</button>{/if}
+      </p>
+    {/if}
+    {#if access?.failed_writes > 0}
+      <p class="ferr" data-failed-writes>{access.failed_writes} {access.failed_writes === 1 ? 'write-back' : 'write-backs'} failed{access.last_failure?.message ? `: ${access.last_failure.message}` : ''}.</p>
+      <div class="acts"><button class="btn" disabled={retrying} onclick={retryAll}>{retrying ? 'Retrying…' : 'Retry failed writes'}</button></div>
+    {/if}
+  </div>
+{/snippet}
 
 {#snippet err(key)}
   {#if errs[key]}<p class="ferr" role="alert"><span aria-hidden="true">{'\u{F0026}'}</span> {errs[key]}</p>{/if}
@@ -506,9 +622,9 @@
           <p class="muted hint">Shows its Status in Work and lets write-back move items on it.</p>
           {#if optsError?.code === 'gh_scope'}
             <div class="scope" data-gh-scope>
-              <p class="ferr" role="alert"><span aria-hidden="true">{'\u{F0026}'}</span> GitHub needs the read:project scope to read the board.</p>
-              <p class="muted hint">Run <code>{GH_SCOPE_COMMAND}</code>, then Preview.</p>
-              <div><button class="btn" onclick={copyCommand}>Copy command</button></div>
+              <p class="ferr" role="alert"><span aria-hidden="true">{'\u{F0026}'}</span> GitHub needs the {scopeOf(optsError)} scope to read the board.</p>
+              <p class="muted hint">Run <code>{ghScopeCommand(scopeOf(optsError))}</code>, then Preview.</p>
+              <div><button class="btn" onclick={() => copyCommand(optsError)}>Copy command</button></div>
             </div>
           {:else if optsError && !notSetUp}
             <p class="ferr">{trackerError(optsError, 'github', trkName).text}</p>
@@ -621,6 +737,9 @@
       <hr />
       <label class="switch" data-wb-switch><input type="checkbox" role="switch" class="pill" aria-checked={form.write_back.enabled} bind:checked={form.write_back.enabled} onchange={edit} /> <b>Update {wbName} as work runs</b></label>
       {#if form.write_back.enabled}
+        {#if kind === 'github'}
+          {@render accessLine()}
+        {/if}
         <ul class="wb" data-write-back>
           {#each lines as l (l)}<li>{l}</li>{/each}
         </ul>
@@ -817,6 +936,19 @@
   }
   .indent {
     margin-left: calc(180px + var(--space-md));
+  }
+  .access {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-xs);
+    margin: var(--space-xs) 0;
+  }
+  .access p {
+    margin: 0;
+  }
+  .acts {
+    display: flex;
+    gap: var(--space-xs);
   }
   .scope {
     display: flex;

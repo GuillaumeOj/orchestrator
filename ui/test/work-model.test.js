@@ -103,6 +103,11 @@ describe('row slots (§2.2)', () => {
       warn: true,
       text: 'write-back failed',
     });
+    expect(tailOf(wn('gh:x#1', { writeback: { status: 'failed', message: 'gh needs the project scope' } }))).toEqual({
+      warn: true,
+      text: 'write-back failed',
+      tip: 'gh needs the project scope',
+    });
     expect(
       tailOf(wn('gh:x#30', { upstream: { state: 'closed' }, children: { total: 3, open: 2, done: 1 } })).text,
     ).toBe('closed · 2 open sub-issues');
@@ -489,7 +494,11 @@ describe('states copy (§11)', () => {
     expect(statusLine(p, { status: 'error', error: { code: 'gh_scope' } }, now)).toMatchObject({
       text: 'shop-api · GitHub needs the read:project scope to read the board',
       fixLabel: 'Copy command',
-      command: 'gh auth refresh -s read:project',
+      command: 'gh auth refresh -h github.com -s read:project',
+    });
+    expect(statusLine(p, { status: 'error', error: { code: 'gh_scope', scope: 'project' } }, now)).toMatchObject({
+      command: 'gh auth refresh -h github.com -s project',
+      short: 'GitHub needs the project scope',
     });
     expect(statusLine(p, { status: 'ok' }, now)).toBeNull();
   });

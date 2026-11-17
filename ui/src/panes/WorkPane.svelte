@@ -423,6 +423,8 @@
         return n && view.retryWriteback(n);
       case 'tracker':
         return openProjectSettings(arg, 'tracker');
+      case 'fix-writeback':
+        return openProjectSettings(arg, 'tracker', null, 'write_back');
       case 'program-selected':
         return runSelected();
       case 'clear':
