@@ -460,8 +460,11 @@ fn stored(cx: &Ctx, i: &InboxItem) -> Decision {
             let q = if s(p, "question").is_empty() { body_line.as_str() } else { s(p, "question") };
             let n = p.get("questions").and_then(Value::as_array).map_or(1, Vec::len);
             let title = if n > 1 { format!("{} · {n} questions", cut(q, 60)) } else { cut(q, 80) };
-            let mut ctx = vec![markdown(q, None)];
-            ctx.extend(options_block(p));
+            // The options block carries the question text itself; a leading markdown block would repeat it.
+            let mut ctx = match options_block(p) {
+                Some(options) => vec![options],
+                None => vec![markdown(q, None)],
+            };
             ctx.extend(last_message(p));
             let actions = vec![act("answer", "Answer", Some("enter")), act("reject", "Dismiss", Some("r")), OPEN_PANE];
             (title, String::new(), ctx, actions)
