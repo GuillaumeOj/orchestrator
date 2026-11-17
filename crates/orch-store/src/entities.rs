@@ -426,21 +426,37 @@ impl Store {
     }
 
     /// The agent's last statusline cost: of `session`, or (`None`) of its
-    /// last row when that row is untagged.
+    /// last row when that row is untagged. Two statements, not one with
+    /// `?2 IS NULL OR session_id = ?2`: SQLite cannot pick an index on that
+    /// `OR`, and the session lookup would walk the agent's whole history
+    /// (all of it for a new session) instead of `usage_samples_session`.
     fn last_statusline_cost(&self, agent_id: &str, session: Option<&str>) -> Result<Option<f64>> {
         let (agent_id, session) = (agent_id.to_string(), session.map(str::to_string));
         self.read(move |c| {
-            Ok(c.query_row(
-                "SELECT cost_estimate, session_id FROM usage_samples
-                 WHERE agent_id = ?1 AND (?2 IS NULL OR session_id = ?2)
-                   AND source = 'statusline' AND cost_estimate IS NOT NULL
-                 ORDER BY ts_ms DESC, id DESC LIMIT 1",
-                params![agent_id, session],
-                |r| Ok((r.get::<_, f64>(0)?, r.get::<_, Option<String>>(1)?)),
-            )
-            .optional()?
-            .filter(|(_, sid)| session.is_some() || sid.is_none())
-            .map(|(cost, _)| cost))
+            const LAST: &str = "AND source = 'statusline' AND cost_estimate IS NOT NULL
+                 ORDER BY ts_ms DESC, id DESC LIMIT 1";
+            let row = |r: &rusqlite::Row| Ok((r.get::<_, f64>(0)?, r.get::<_, Option<String>>(1)?));
+            let last = match &session {
+                Some(sid) => c
+                    .query_row(
+                        &format!(
+                            "SELECT cost_estimate, session_id FROM usage_samples
+                             WHERE agent_id = ?1 AND session_id = ?2 {LAST}"
+                        ),
+                        params![agent_id, sid],
+                        row,
+                    )
+                    .optional()?,
+                None => c
+                    .query_row(
+                        &format!("SELECT cost_estimate, session_id FROM usage_samples WHERE agent_id = ?1 {LAST}"),
+                        params![agent_id],
+                        row,
+                    )
+                    .optional()?
+                    .filter(|(_, sid)| sid.is_none()),
+            };
+            Ok(last.map(|(cost, _)| cost))
         })
     }
 
@@ -894,6 +910,51 @@ pub(crate) mod tests {
         s.mark_rules_migrated(&[b.id]).unwrap();
         assert!(s.rules_to_migrate().unwrap().is_empty());
         s.mark_rules_migrated(&[]).unwrap();
+    }
+
+    /// T-429 follow-up: the session lookup uses `usage_samples_session`, and
+    /// both lookups pick the right row among other sessions and sources.
+    #[test]
+    fn session_cost_lookups_pick_the_right_row_and_use_the_index() {
+        let (_d, s) = store();
+        let row = |ts: u64, sid: Option<&str>, cost: f64, source: UsageSource| UsageRecord {
+            ts_ms: ts,
+            agent_id: Some("a".into()),
+            session_id: sid.map(Into::into),
+            cost_estimate: Some(cost),
+            provenance: "observed".into(),
+            source: Some(source),
+            ..Default::default()
+        };
+        // Untagged rows (before the column), then s1, s2, s1 again, an OTLP row last.
+        s.add_usage(row(1, None, 0.5, UsageSource::Statusline));
+        s.add_usage(row(2, Some("s1"), 1.0, UsageSource::Statusline));
+        s.add_usage(row(3, Some("s2"), 0.2, UsageSource::Statusline));
+        s.add_usage(row(4, Some("s1"), 1.4, UsageSource::Statusline));
+        s.add_usage(row(5, Some("s1"), 9.0, UsageSource::Otel));
+        s.add_usage(UsageRecord { cost_estimate: None, ..row(6, Some("s2"), 0.0, UsageSource::Statusline) });
+        s.flush().unwrap();
+        assert_eq!(s.last_session_cost("a", "s1").unwrap(), Some(1.4), "newest statusline row of s1");
+        assert_eq!(s.last_session_cost("a", "s2").unwrap(), Some(0.2), "a row with no cost is skipped");
+        assert_eq!(s.last_session_cost("a", "s3").unwrap(), None);
+        assert_eq!(s.last_untagged_cost("a").unwrap(), None, "the last row is tagged");
+        let (_d2, t) = store();
+        t.add_usage(row(1, Some("s1"), 1.0, UsageSource::Statusline));
+        t.add_usage(row(2, None, 0.7, UsageSource::Statusline));
+        t.add_usage(row(3, None, 5.0, UsageSource::Otel));
+        t.flush().unwrap();
+        assert_eq!(t.last_untagged_cost("a").unwrap(), Some(0.7), "the last statusline row, untagged");
+        let plan: Vec<String> = s
+            .read(|c| {
+                let mut st = c.prepare(
+                    "EXPLAIN QUERY PLAN SELECT cost_estimate, session_id FROM usage_samples
+                     WHERE agent_id = 'a' AND session_id = 's1' AND source = 'statusline'
+                       AND cost_estimate IS NOT NULL ORDER BY ts_ms DESC, id DESC LIMIT 1",
+                )?;
+                Ok(st.query_map([], |r| r.get::<_, String>(3))?.collect::<rusqlite::Result<_>>()?)
+            })
+            .unwrap();
+        assert!(plan.iter().any(|d| d.contains("usage_samples_session")), "{plan:?}");
     }
 
     #[test]
