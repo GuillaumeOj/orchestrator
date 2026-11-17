@@ -9,7 +9,7 @@
 use serde_json::{Value, json};
 
 use crate::github::Gh;
-use crate::intake::{SourceError, enc, gh_error, linear_error};
+use crate::intake::{SourceError, enc, gh_error_or_scope, linear_error};
 use crate::linear::Graphql;
 
 type R<T> = Result<T, SourceError>;
@@ -19,7 +19,8 @@ fn gh_write_error(e: &anyhow::Error) -> SourceError {
     let m = format!("{e:#}");
     // Offline, auth, scope, rate limit and not found keep their own codes (a 403 for a rate limit is not a
     // refusal); what is left is GitHub saying no.
-    let base = gh_error(e);
+    // A scope GitHub does not name is `project`: a write needs it.
+    let base = gh_error_or_scope(e, "project");
     if base.code == "failed" {
         let first = m.lines().next().unwrap_or(&m).trim().to_string();
         SourceError::new("gh_write", format!("GitHub refused the change: {first}"))
@@ -404,6 +405,43 @@ mod tests {
             has(set, "item=IT1") && has(set, "field=F1") && has(set, "option=o2") && has(set, "project=P1"),
             "{set:?}"
         );
+    }
+
+    #[test]
+    fn a_board_write_without_the_scope_asks_for_project() {
+        use crate::intake::tests::ADD_ITEM_SCOPES;
+        let board = |a: &[String]| -> Result<String, String> {
+            if has(a, "issues/13") {
+                return Ok(json!({"node_id": "I_13"}).to_string());
+            }
+            Ok(json!({"data": {"repositoryOwner": {"projectV2": {"id": "P1", "field": {"id": "F1",
+                "options": [{"id": "o2", "name": "In progress"}]}}}}})
+            .to_string())
+        };
+        // gh exits 1 with the first message on stderr…
+        let exit1 = rec(move |a| {
+            if has(a, "addProjectV2ItemById") {
+                return Err(format!("gh: {ADD_ITEM_SCOPES}"));
+            }
+            board(a)
+        });
+        // …or (older gh) exits 0 with `errors[]`.
+        let errors = rec(move |a| {
+            if has(a, "addProjectV2ItemById") {
+                return Ok(json!({"data": {"addProjectV2ItemById": null},
+                    "errors": [{"type": "INSUFFICIENT_SCOPES", "message": ADD_ITEM_SCOPES}]})
+                .to_string());
+            }
+            board(a)
+        });
+        for g in [&exit1, &errors] {
+            let e = gh_board_status(g, "a/b", 13, "acme", 4, None).unwrap_err();
+            assert_eq!((e.code, e.scope.as_deref()), ("gh_scope", Some("project")));
+            assert!(e.message.contains("-s project"), "{}", e.message);
+        }
+        // A scope text naming nothing, on a write: `project`.
+        let e = gh_write_error(&anyhow::anyhow!("INSUFFICIENT_SCOPES"));
+        assert_eq!(e.scope.as_deref(), Some("project"));
     }
 
     #[test]

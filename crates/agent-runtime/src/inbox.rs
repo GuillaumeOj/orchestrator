@@ -274,8 +274,8 @@ impl Runtime {
     }
 
     /// Closes every open item that `pick` selects as the core's, with `why`
-    /// as the decision.
-    pub(crate) fn close_items_where(&self, pick: impl Fn(&InboxItem) -> bool, why: &str) {
+    /// as the decision; how many it closed.
+    pub(crate) fn close_items_where(&self, pick: impl Fn(&InboxItem) -> bool, why: &str) -> usize {
         let closed = self
             .store
             .write(|s| {
@@ -285,10 +285,12 @@ impl Runtime {
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
+        let n = closed.len();
         for i in closed {
             self.advance(i.id, Stage::Effect("dismissed", None));
             self.closed_by(&i, "core", why, "dismissed");
         }
+        n
     }
 
     pub(crate) fn add_item(

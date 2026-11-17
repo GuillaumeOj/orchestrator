@@ -144,6 +144,11 @@ pub fn run() {
                 rt.subscribe_now(Arc::new(move |v| {
                     let _ = h.emit("now", v);
                 }));
+                // fix-write-back-github contract §3: a grant's end (`gh.grant`; a Tauri event name has no dot).
+                let h = app.handle().clone();
+                rt.set_grant_sink(Arc::new(move |v| {
+                    let _ = h.emit("gh_grant", v);
+                }));
             }
             Ok(())
         })
@@ -234,6 +239,10 @@ pub fn run() {
             commands::notion_publish,
             commands::notion_status,
             commands::writeback_retry,
+            commands::writeback_retry_all,
+            commands::tracker_gh_access,
+            commands::gh_grant_scope,
+            commands::gh_grant_cancel,
             commands::program_plan,
             commands::program_start,
             commands::program_update,
