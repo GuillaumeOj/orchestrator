@@ -413,36 +413,34 @@ impl Store {
     /// The last cumulative cost stored for an agent's statusline session:
     /// the baseline of a resumed session, whose CLI restores that cost.
     pub fn last_session_cost(&self, agent_id: &str, session_id: &str) -> Result<Option<f64>> {
-        let (agent_id, session_id) = (agent_id.to_string(), session_id.to_string());
-        self.read(move |c| {
-            Ok(c.query_row(
-                "SELECT cost_estimate FROM usage_samples
-                 WHERE agent_id = ?1 AND session_id = ?2 AND source = 'statusline' AND cost_estimate IS NOT NULL
-                 ORDER BY ts_ms DESC, id DESC LIMIT 1",
-                params![agent_id, session_id],
-                |r| r.get(0),
-            )
-            .optional()?)
-        })
+        self.last_statusline_cost(agent_id, Some(session_id))
     }
 
     /// The cost of an agent's last statusline row when that row has no
     /// session (recorded before `session_id` was stored): the best-effort
     /// baseline of the restart that installs the fix, whose resumed sessions
-    /// have no tagged row yet.
+    /// have no tagged row yet. Transitional: `None` once the agent has a
+    /// tagged row.
     pub fn last_untagged_cost(&self, agent_id: &str) -> Result<Option<f64>> {
-        let agent_id = agent_id.to_string();
+        self.last_statusline_cost(agent_id, None)
+    }
+
+    /// The agent's last statusline cost: of `session`, or (`None`) of its
+    /// last row when that row is untagged.
+    fn last_statusline_cost(&self, agent_id: &str, session: Option<&str>) -> Result<Option<f64>> {
+        let (agent_id, session) = (agent_id.to_string(), session.map(str::to_string));
         self.read(move |c| {
             Ok(c.query_row(
-                "SELECT cost_estimate FROM (
-                     SELECT cost_estimate, session_id FROM usage_samples
-                     WHERE agent_id = ?1 AND source = 'statusline' AND cost_estimate IS NOT NULL
-                     ORDER BY ts_ms DESC, id DESC LIMIT 1
-                 ) WHERE session_id IS NULL",
-                params![agent_id],
-                |r| r.get(0),
+                "SELECT cost_estimate, session_id FROM usage_samples
+                 WHERE agent_id = ?1 AND (?2 IS NULL OR session_id = ?2)
+                   AND source = 'statusline' AND cost_estimate IS NOT NULL
+                 ORDER BY ts_ms DESC, id DESC LIMIT 1",
+                params![agent_id, session],
+                |r| Ok((r.get::<_, f64>(0)?, r.get::<_, Option<String>>(1)?)),
             )
-            .optional()?)
+            .optional()?
+            .filter(|(_, sid)| session.is_some() || sid.is_none())
+            .map(|(cost, _)| cost))
         })
     }
 

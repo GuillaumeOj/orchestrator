@@ -82,13 +82,14 @@ impl UsageCollector {
         a.total_cost_usd = cost;
     }
 
-    /// Records one statusline render. Returns the Governor sample when it
-    /// carries a new API response.
+    /// [`Self::ingest_with`] with no stored baselines (tests).
+    #[cfg(test)]
     pub fn ingest(&mut self, agent_id: &str, ts_ms: u64, s: &StatusSample) -> Option<UsageSample> {
         self.ingest_with(agent_id, ts_ms, s, |_| None)
     }
 
-    /// [`Self::ingest`], with `baseline(session)`: the last cost stored for a
+    /// Records one statusline render. Returns the Governor sample when it
+    /// carries a new API response. `baseline(session)`: the last cost stored for a
     /// session the collector does not know (a resumed one), or `None` for a
     /// new session. Called only when the agent's session changes (its first
     /// render, or a switch back to an earlier session).

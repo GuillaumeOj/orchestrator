@@ -3832,31 +3832,32 @@ pub(crate) mod tests {
         assert_eq!(samples[0].class.as_deref(), Some("autonomous"));
     }
 
+    /// One statusline render of a1's session `s` (weekly window 3 days out).
+    fn session_status(rt: &Runtime, cost: f64, pct: u32) {
+        let reset = (now_ms() / 1000) as i64 + 3 * 24 * 3600;
+        rt.on_status(&StatusMsg {
+            agent_id: "a1".into(),
+            ts_ms: now_ms(),
+            payload: json!({"session_id": "s", "cost": {"total_cost_usd": cost},
+                "rate_limits": {"seven_day": {"used_percentage": pct, "resets_at": reset}}}),
+        });
+    }
+
     /// fix-week-usage-count §3.1, acceptance 2: `claude --resume` restores the
     /// session's cost; after a core restart it is not counted a second time.
     #[test]
     fn a_resumed_sessions_restored_cost_is_not_counted_again_after_a_restart() {
         let d = tempfile::Builder::new().prefix("orchrt").tempdir_in(orch_protocol::test_tmp()).unwrap();
-        let reset = (now_ms() / 1000) as i64 + 3 * 24 * 3600;
-        let status = |rt: &Runtime, cost: f64, pct: u32| {
-            rt.on_status(&StatusMsg {
-                agent_id: "a1".into(),
-                ts_ms: now_ms(),
-                payload: json!({"session_id": "s", "cost": {"total_cost_usd": cost},
-                    "rate_limits": {"seven_day": {"used_percentage": pct, "resets_at": reset}}}),
-            });
-        };
         {
             let rt = Runtime::new(test_cfg(d.path(), false)).unwrap();
             rt.store.write(|s| s.agents.insert("a1".into(), test_agent(d.path()))).unwrap();
-            assert_eq!(rt.store.read(|s| s.agents["a1"].session_id.clone()), "s");
-            status(&rt, 5.0, 30);
+            session_status(&rt, 5.0, 30);
             rt.db.flush().unwrap();
         }
         // The core restarts; the resumed process reports its restored cost, then more.
         let rt = Runtime::new(test_cfg(d.path(), false)).unwrap();
-        status(&rt, 5.0, 30);
-        status(&rt, 5.5, 31);
+        session_status(&rt, 5.0, 30);
+        session_status(&rt, 5.5, 31);
         rt.db.flush().unwrap();
         let rows = rt.db.usage_since(0, Some(orch_store::UsageSource::Statusline)).unwrap();
         let deltas: Vec<f64> = rows.iter().filter_map(|r| r.cost_delta).collect();
@@ -3870,7 +3871,6 @@ pub(crate) mod tests {
     #[test]
     fn the_upgrade_restart_counts_a_resumed_session_from_its_untagged_last_row() {
         let d = tempfile::Builder::new().prefix("orchrt").tempdir_in(orch_protocol::test_tmp()).unwrap();
-        let reset = (now_ms() / 1000) as i64 + 3 * 24 * 3600;
         {
             let rt = Runtime::new(test_cfg(d.path(), false)).unwrap();
             rt.store.write(|s| s.agents.insert("a1".into(), test_agent(d.path()))).unwrap();
@@ -3886,12 +3886,7 @@ pub(crate) mod tests {
             rt.db.flush().unwrap();
         }
         let rt = Runtime::new(test_cfg(d.path(), false)).unwrap();
-        rt.on_status(&StatusMsg {
-            agent_id: "a1".into(),
-            ts_ms: now_ms(),
-            payload: json!({"session_id": "s", "cost": {"total_cost_usd": 5.5},
-                "rate_limits": {"seven_day": {"used_percentage": 31, "resets_at": reset}}}),
-        });
+        session_status(&rt, 5.5, 31);
         rt.db.flush().unwrap();
         let rows = rt.db.usage_since(0, Some(orch_store::UsageSource::Statusline)).unwrap();
         let last = rows.last().unwrap();
