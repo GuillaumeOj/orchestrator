@@ -9,7 +9,7 @@
 
 **Confirmation caption: dropped.** The placeholder appearing at the caret is the confirmation; a caption would add a timed state, a second place to look and a claim ("Backspace removes it") the user finds out in one keystroke. Nothing is added to the `.hints` row. Screen readers get the live-region line (§5). Board 1 therefore shows the field only.
 
-**Removal and undo.** Backspace just after / Delete just before a placeholder removes it whole (spec §3.2), through the textarea's own editing (`execCommand('delete')`) so **⌘Z restores the placeholder, and the paste with it**: front keeps the `app.chatPastes` entry until send (unreferenced ones are dropped at send, as the spec says). No undo hint: ⌘Z is standard and a removed paste is one keystroke from back.
+**Removal and undo.** Backspace just after / Delete just before a placeholder removes it whole (spec §3.2), through the textarea's own editing (`execCommand('delete')`) so **⌘Z restores the placeholder, and the paste with it**: front keeps the `app.chatPastes` entry until send (unreferenced ones are dropped at send, as the spec says). No undo hint: ⌘Z is standard and a removed paste is one keystroke from back. Intercept on `beforeinput` (`deleteContentBackward`, `deleteContentForward`, `deleteWordBackward`, `deleteWordForward`), not on `keydown` of ⌫ / ⌦: ⌃H, ⌃D and ⌥⌦ reach the field as other keys and would otherwise cut one character out of the token.
 
 **Numbering and kept pastes.** Because a removed paste stays in `app.chatPastes` for ⌘Z, `n` is the highest `n` among **all** kept entries (referenced or not) + 1, and it restarts at 1 **only after a send** (not "when the draft is emptied" as spec §3.2 says: emptying the draft by ⌘A ⌫ would otherwise let a new paste reuse `#1` while the old `#1` is still kept for undo, and ⌘Z would then bring back a second `[Pasted text #1 …]` bound to the wrong text). Unreferenced entries are capped at the 10 most recent (an undo past that leaves plain text that is dropped at send). The native undo stack is reset by any programmatic `value` write: `pick()` (the mention insert) assigns `app.chatDraft`, so ⌘Z cannot restore a removal made before a mention pick unless front inserts the mention through the textarea's own editing too (changes, 8).
 
@@ -31,7 +31,7 @@ A paste error stays until the next keystroke, paste, or send; then the over-leng
 
 In `ChatText.svelte`, user `.body.plain`: each `[Pasted text #n …]` whose `n` is in `meta.pastes` (or the context, for unsent / waking) is a chip. The token's text is replaced by the chip; the text around it is untouched. Tokens with no matching paste stay plain text.
 
-**Element.** `<span class="paste" role="button" tabindex="0" aria-expanded aria-controls>` (`aria-controls` only while open, the panel is not in the DOM when collapsed; a span, like the mention link: it stays selectable in a copied message). The template has no whitespace between its parts (`white-space: pre-wrap` body). `display: inline-block; max-width: 100%; vertical-align: baseline; white-space: nowrap; overflow: hidden; text-overflow: ellipsis` (a chip never wraps across lines; ellipsis only as a last resort). `font: inherit; line-height: inherit`: **no line-height jump**, so the ring is `box-shadow: inset`, not a border. `padding: 0 var(--space-xs)`, `border-radius: var(--radius-sm)`, `cursor: pointer`.
+**Element.** `<span class="paste" role="button" tabindex="0" aria-expanded aria-controls>` (`aria-controls` only while open, the panel is not in the DOM when collapsed; a span, like the mention link: it stays selectable in a copied message). The template has no whitespace between its parts (`white-space: pre-wrap` body). `display: inline-block; max-width: 100%; vertical-align: top; white-space: nowrap; overflow: hidden; text-overflow: ellipsis` (a chip never wraps across lines; ellipsis only as a last resort). `font: inherit; line-height: inherit`. An inline-block with `overflow: hidden` has its baseline at its bottom margin edge, so `vertical-align: baseline` would sit the chip a line too high and grow the line box; `vertical-align: top` (box height = the line height) keeps the text on the line's baseline: **no line-height jump**, so the ring is `box-shadow: inset`, not a border. `padding: 0 var(--space-xs)`, `border-radius: var(--radius-sm)`, `cursor: pointer`.
 
 **Content**: a 12 px document glyph (inline SVG, `currentColor`, `aria-hidden`, `margin-right: var(--space-xs)`) + `Pasted text #1 · 5 000 chars · 120 lines`. Regular weight (a mention is semibold).
 
@@ -43,7 +43,7 @@ In `ChatText.svelte`, user `.body.plain`: each `[Pasted text #n …]` whose `n` 
 - **Missing file** (known once the fetch said `not_found`, §3): ring dashed (`outline: 1px dashed`-style, via a repeating-gradient or `outline` at `-1px` offset), `color: var(--color-text-secondary)`, no fill on hover, glyph replaced by a struck-through-document variant. Still focusable and expandable (the panel says why). Tooltip `Pasted text no longer available`.
 - ui checks WCAG 2 contrast of the text and ring on the wash in both themes and records the fixes below, as for the mention.
 
-**Narrow: three tiers.** Measured from the bubble's content width (`.user` is 85 % of the feed, minus 2 × 12 padding; ≈ 261 px at the 360 column, ≈ 220 px at the 300 minimum; the label is 13 px mono, 7.8 px a character, plus glyph 16 and padding 8):
+**Narrow: three tiers.** Measured from the bubble's content width (`.user` is 85 % of the feed, minus 2 × 12 padding; ≈ 261 px at the 360 column, ≈ 210 px at the 300 minimum (feed 300 − 1 − 2 × 12 = 275, × 85 % = 234, − 24); the label is 13 px mono, 7.8 px a character, plus glyph 16 and padding 8):
 
 | Bubble content | Label |
 |---|---|
@@ -51,7 +51,7 @@ In `ChatText.svelte`, user `.body.plain`: each `[Pasted text #n …]` whose `n` 
 | ≥ 242 px (column ≳ 340, so the default 360) | `Pasted text #1 · 5 000 chars` |
 | below (down to the 300 minimum) | `Pasted #1 · 5 000 chars` (≈ 203 px) |
 
-So at the default 360 the chip already shows no lines, and at 300 it shows the short form; the previous "drop the lines under 300 px" rule left a 242 px chip in a 220 px bubble, i.e. an ellipsis. The full label stays in the accessible name and the panel header. **Implementation**: switch the tiers with a container query on the **feed** (`container-type: inline-size` on the scrolling thread), never on the bubble: size containment on the bubble (or on an ancestor of its text) removes its intrinsic width, so the shrink-to-fit `.user` entry would collapse to its label's width.
+The widths assume a one-digit `n` and a four-digit count; the extremes (`#10`, `200 000 chars`: ≈ 266 px middle form, ≈ 227 px short form) overflow their tier and take the ellipsis, the stated last resort (the full label stays in the accessible name). So at the default 360 the chip already shows no lines, and at 300 it shows the short form; the previous "drop the lines under 300 px" rule left a 242 px chip in a 220 px bubble, i.e. an ellipsis. The full label stays in the accessible name and the panel header. **Implementation**: switch the tiers with a container query on the **feed** (`container-type: inline-size` on the scrolling thread), never on the bubble: size containment on the bubble (or on an ancestor of its text) removes its intrinsic width, so the shrink-to-fit `.user` entry would collapse to its label's width.
 
 **Keys.** ⇥ reaches it in reading order. ⏎ or ⎵ toggles (⎵ `preventDefault`s the scroll); click toggles.
 
@@ -80,7 +80,7 @@ So at the default 360 the chip already shows no lines, and at 300 it shows the s
 
 ## 4. Unsent entry
 
-Same bubble and chips as a sent one, panels openable from memory; the existing `unsent` line and **Retry** under it, unchanged. Retry sends the same pastes. The chip label uses `chars` and `lines` computed from the paste in memory.
+Same bubble and chips as a sent one, panels openable from memory; the existing `unsent` line and **Retry** under it, unchanged. Retry sends the same pastes. The chip label uses `chars` and `lines` computed from the paste in memory, **the way the core does** (`chars` in code points; `lines` as Rust's `str::lines()`: split on `\n` / `\r\n`, a trailing newline adds no line, no newline is 1), so the chip does not change its numbers once the entry is sent. The same count applies to the 10-line threshold.
 
 ## 5. Keys and screen reader
 
@@ -90,7 +90,7 @@ Same bubble and chips as a sent one, panels openable from memory; the existing `
 |---|---|
 | paste (⌘V) | long plain text: a placeholder; otherwise inline as today |
 | ⌫ just after a placeholder, ⌦ just before | removes it whole; ⌘Z restores |
-| ⌥⌫ just after a placeholder | same as ⌫ (see changes, 2) |
+| ⌥⌫ just after a placeholder, ⌥⌦ just before | same as ⌫ / ⌦ (see changes, 2) |
 | ⌘Z / ⇧⌘Z | undo / redo the insert or the removal, paste included |
 | ⏎, ⇧⏎, Esc, ⌘L | unchanged |
 
