@@ -111,6 +111,7 @@ struct Fx {
     gh: Answers,
     calls: Calls,
     linear: FakeLinear,
+    net: Arc<crate::net::fake::FakeNet>,
 }
 
 fn fx() -> Fx {
@@ -118,6 +119,8 @@ fn fx() -> Fx {
     let mut cfg = crate::runtime::tests::test_cfg(d.path(), true);
     let (gh, calls): (Answers, Calls) = Default::default();
     let (g, c) = (gh.clone(), calls.clone());
+    let net = Arc::new(crate::net::fake::FakeNet::default());
+    cfg.net = net.clone();
     cfg.gh = Some(GhFactory(Arc::new(move || Box::new(FakeGh(g.clone(), c.clone())))));
     let linear = FakeLinear {
         issues: Arc::new(Mutex::new(Ok(vec![]))),
@@ -141,7 +144,7 @@ fn fx() -> Fx {
     rt.overwatch.manual.store(true, std::sync::atomic::Ordering::SeqCst);
     let (rd, repo) = scratch_repo();
     let project = orch_git::project::register(&rt.db, &repo).unwrap();
-    Fx { _d: d, _rd: rd, rt, project, gh, calls, linear }
+    Fx { _d: d, _rd: rd, rt, project, gh, calls, linear, net }
 }
 
 fn stub(path: &std::path::Path, body: &str) {
@@ -2234,6 +2237,193 @@ fn a_failed_write_shows_retries_and_the_third_in_a_row_raises_one_decision() {
     assert_eq!(f.rt.program_decision_act(n, "turn_off").unwrap()["effect"], "turned off");
     assert!(!f.rt.db.tracker(&f.project.id).unwrap().write_back.enabled);
     assert!(opens(&f).is_empty());
+}
+
+/// GitHub's answer to a board write without the `project` scope (gh-notes §3).
+const ADD_ITEM_SCOPES: &str = "Your token has not been granted the required scopes to execute this query. The 'addProjectV2ItemById' field requires one of the following scopes: ['project'], but your token has only been granted the: ['gist', 'read:org', 'read:project', 'repo'] scopes. Please modify your token's scopes at: https://github.com/settings/tokens.";
+
+/// A board tracker whose board writes fail for the `project` scope, on nodes 1, 2 and 4.
+fn scope_failures(f: &Fx) {
+    let mut t = f.rt.db.tracker(&f.project.id).unwrap();
+    t.tracker = orch_store::Tracker::Github {
+        repo: Some("acme/shop".into()),
+        project_board: Some(orch_store::ProjectBoard { owner: "acme".into(), number: 4 }),
+    };
+    f.rt.db.set_tracker(&f.project.id, &t).unwrap();
+    answer_tree(f, vec![tree_issue(1, json!({})), tree_issue(2, json!({})), tree_issue(4, json!({}))], vec![]);
+    f.refresh();
+    for n in [1, 2, 4] {
+        f.answer(&format!("repos/acme/shop/issues/{n}"), json!({"node_id": format!("I_{n}"), "state": "open"}));
+    }
+    f.answer(
+        "graphql:OrchBoard",
+        json!({"data": {"repositoryOwner": {"projectV2": {"id": "P1", "field": {"id": "F1", "options": [
+            {"id": "o2", "name": "In progress"}]}}}}}),
+    );
+    f.fail("graphql:OrchBoardAdd", &format!("gh: {ADD_ITEM_SCOPES}"));
+    for (n, a) in [(2, "a1"), (4, "a2"), (1, "a3")] {
+        start_node(f, &format!("gh:acme/shop#{n}"), a);
+    }
+}
+
+/// GitHub accepts the board writes now.
+fn scope_granted(f: &Fx) {
+    f.answer("graphql:OrchBoardAdd", json!({"data": {"addProjectV2ItemById": {"item": {"id": "IT1"}}}}));
+    f.answer("graphql:OrchBoardSet", json!({"data": {}}));
+}
+
+fn failing_decisions(f: &Fx) -> Vec<orch_store::InboxItem> {
+    f.rt.store.read(|s| {
+        s.inbox
+            .iter()
+            .filter(|i| i.open() && i.kind == "program" && i.payload["kind"] == "writeback_failing")
+            .cloned()
+            .collect()
+    })
+}
+
+fn err_code(e: anyhow::Error) -> Value {
+    serde_json::from_str::<Value>(&e.to_string()).map(|v| v["code"].clone()).unwrap_or(Value::Null)
+}
+
+#[test]
+fn a_board_write_without_the_scope_says_project_and_retry_all_clears_it_and_the_decision() {
+    let f = work_fixture();
+    scope_failures(&f);
+    let st = wb_status(&f, "gh:acme/shop#2");
+    assert_eq!(
+        (st["status"].as_str(), st["code"].as_str(), st["scope"].as_str()),
+        (Some("failed"), Some("gh_scope"), Some("project"))
+    );
+    assert_eq!(st["op"]["op"], "started", "the op is passed through");
+    assert_eq!(st["message"], "gh needs the project scope: run `gh auth refresh -h github.com -s project`");
+    let d = failing_decisions(&f);
+    assert_eq!(d.len(), 1);
+    assert_eq!(
+        d[0].payload["text"],
+        "gh needs the project scope: run `gh auth refresh -h github.com -s project`. Fix it in Project settings › Tracker or turn write-back off."
+    );
+    // The access check: the login lacks `project`.
+    *f.net.gh.lock().unwrap() = Some(Ok("github.com\n  ✓ Logged in to github.com account octocat (keyring)\n  - Active account: true\n  - Token scopes: 'gist', 'read:org', 'read:project', 'repo'\n".into()));
+    let a = f.rt.tracker_gh_access(&f.project.id).unwrap();
+    assert_eq!(
+        (&a["gh"], &a["account"], &a["needed"], &a["missing"], &a["failed_writes"]),
+        (&json!("ok"), &json!("octocat"), &json!(["read:project", "project"]), &json!(["project"]), &json!(3))
+    );
+    assert_eq!(a["last_failure"]["node"], "gh:acme/shop#4");
+    assert_eq!(a["last_failure"]["scope"], "project");
+    assert_eq!(err_code(f.rt.tracker_gh_access("nope").unwrap_err()), "not_found");
+    // Granted elsewhere: retry all.
+    scope_granted(&f);
+    let r = f.rt.writeback_retry_all(&f.project.id).unwrap();
+    assert_eq!(r, json!({"retried": 3, "ok": 3, "failed": 0, "last_failure": null}));
+    for n in [1, 2, 4] {
+        assert_eq!(wb_status(&f, &format!("gh:acme/shop#{n}"))["status"], "ok");
+    }
+    assert_eq!(f.rt.db.setting(&format!("work.writeback.fails:{}", f.project.id)).unwrap().unwrap(), json!(0));
+    assert!(failing_decisions(&f).is_empty(), "resolved");
+    let closed = f.rt.store.read(|s| s.inbox.iter().find(|i| i.id == d[0].id).cloned()).unwrap();
+    assert_eq!(closed.decided_by.as_deref(), Some("core"), "closed by the core, not answered by the user");
+    // A stale decision goes with nothing to retry.
+    f.rt.add_item_in(
+        None,
+        "program",
+        "stale".into(),
+        json!({"kind": "writeback_failing", "project": f.project.id}),
+        0,
+        None,
+    )
+    .unwrap();
+    assert_eq!(f.rt.writeback_retry_all(&f.project.id).unwrap()["retried"], 0);
+    assert!(failing_decisions(&f).is_empty());
+    assert_eq!(err_code(f.rt.writeback_retry_all("nope").unwrap_err()), "not_found");
+}
+
+#[test]
+fn one_retry_that_leaves_nothing_failing_resolves_the_decision() {
+    let f = work_fixture();
+    scope_failures(&f);
+    scope_granted(&f);
+    f.rt.writeback_retry("gh:acme/shop#1").unwrap();
+    f.rt.writeback_retry("gh:acme/shop#2").unwrap();
+    assert_eq!(failing_decisions(&f).len(), 1, "#4 still fails");
+    f.rt.writeback_retry("gh:acme/shop#4").unwrap();
+    assert!(failing_decisions(&f).is_empty());
+}
+
+#[test]
+fn a_grant_answers_the_code_and_its_end_retries_the_failed_writes() {
+    use crate::net::fake::FakeRefresh;
+    let f = work_fixture();
+    scope_failures(&f);
+    let (tx, rx) = std::sync::mpsc::channel();
+    f.rt.set_grant_sink(Arc::new(move |v| {
+        let _ = tx.send(v.clone());
+    }));
+    assert_eq!(err_code(f.rt.gh_grant_scope("project,admin:org").unwrap_err()), "bad_scope");
+    assert_eq!(err_code(f.rt.gh_grant_scope("-s").unwrap_err()), "bad_scope");
+    // No gh.
+    assert_eq!(err_code(f.rt.gh_grant_scope("project").unwrap_err()), "gh_missing");
+    // A token from the environment: gh says so and exits.
+    let env = FakeRefresh {
+        lines: vec!["The value of the GH_TOKEN environment variable is being used for authentication.".into()],
+        ..Default::default()
+    };
+    *env.exit.lock().unwrap() = Some(false);
+    *f.net.refresh.lock().unwrap() = Some(env);
+    assert_eq!(err_code(f.rt.gh_grant_scope("project").unwrap_err()), "interactive_only");
+    // The device flow: the code and the URL at once.
+    let fr = FakeRefresh {
+        lines: vec![
+            "! First copy your one-time code: ABCD-1234".into(),
+            "Open this URL to continue in your web browser: https://github.com/login/device".into(),
+        ],
+        ..Default::default()
+    };
+    *f.net.refresh.lock().unwrap() = Some(fr.clone());
+    let a = f.rt.gh_grant_scope("project").unwrap();
+    assert_eq!(
+        a,
+        json!({"state": "waiting", "code": "ABCD-1234", "url": "https://github.com/login/device", "scope": "project"})
+    );
+    // One at a time: a second call answers the running one.
+    assert_eq!(f.rt.gh_grant_scope("read:project").unwrap(), a);
+    assert_eq!(f.net.refreshed.lock().unwrap().iter().filter(|s| *s == "project").count(), 3);
+    assert_eq!(f.net.refreshed.lock().unwrap().len(), 3, "the second call ran no gh");
+    // The user authorizes: done, and every failed write of the project is retried.
+    scope_granted(&f);
+    *fr.exit.lock().unwrap() = Some(true);
+    let ev = rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+    assert_eq!(ev["state"], "done");
+    assert_eq!(ev["retried"][&f.project.id], json!({"ok": 3, "failed": 0}));
+    assert_eq!(wb_status(&f, "gh:acme/shop#2")["status"], "ok");
+    assert!(failing_decisions(&f).is_empty());
+    f.rt.db.flush().unwrap();
+    assert_eq!(f.rt.db.events(0, None, Some("gh.grant"), 5).unwrap().len(), 1);
+    // Cancelled: killed, `failed` posted, a new grant can start.
+    let fr = FakeRefresh { lines: a_code_lines(), ..Default::default() };
+    *f.net.refresh.lock().unwrap() = Some(fr.clone());
+    f.rt.gh_grant_scope("project").unwrap();
+    assert_eq!(f.rt.gh_grant_cancel(), json!({"ok": true, "cancelled": true}));
+    let ev = rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+    assert_eq!(
+        (ev["state"].as_str(), ev["message"].as_str(), &ev["retried"]),
+        (Some("failed"), Some("cancelled"), &Value::Null)
+    );
+    assert!(fr.killed.load(std::sync::atomic::Ordering::SeqCst));
+    assert_eq!(f.rt.gh_grant_cancel()["cancelled"], false);
+    // gh fails at the end with nothing more said (its later stderr line would be the message).
+    let fr = FakeRefresh { lines: a_code_lines(), ..Default::default() };
+    *f.net.refresh.lock().unwrap() = Some(fr.clone());
+    f.rt.gh_grant_scope("project").unwrap();
+    *fr.exit.lock().unwrap() = Some(false);
+    let ev = rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+    assert_eq!(ev["state"], "failed");
+    assert_eq!(ev["message"], "gh auth refresh failed");
+}
+
+fn a_code_lines() -> Vec<String> {
+    vec!["! First copy your one-time code: WXYZ-9876".into(), "https://github.com/login/device".into()]
 }
 
 #[test]

@@ -276,9 +276,9 @@ impl Runtime {
     fn wb_record(&self, p: &Project, row: &IntakeRow, op: &WbOp, r: Result<(), SourceError>) {
         let now = orch_protocol::now_ms();
         let what = op.what();
-        let (ok, code, message) = match &r {
-            Ok(()) => (true, None, None),
-            Err(e) => (false, Some(e.code), Some(e.message.clone())),
+        let (ok, code, scope, message) = match &r {
+            Ok(()) => (true, None, None, None),
+            Err(e) => (false, Some(e.code), e.scope.clone(), Some(e.message.clone())),
         };
         let _ = self.db.audit(
             "core",
@@ -286,7 +286,7 @@ impl Runtime {
             "writeback",
             Some(&row.node_id),
             if ok { "ok" } else { "failed" },
-            json!({"what": what, "code": code, "message": message}),
+            json!({"what": what, "code": code, "scope": scope, "message": message}),
         );
         let e = WorkEvent {
             at_ms: now,
@@ -300,7 +300,7 @@ impl Runtime {
         };
         let _ = self.db.work_note(&p.id, &row.node_id, &e);
         let status = json!({"status": if ok { "ok" } else { "failed" }, "what": what, "at_ms": now, "message": message,
-                            "code": code, "op": op});
+                            "code": code, "scope": scope, "op": op});
         // A success of another write does not hide a failure that can still be retried.
         let key = status_key(&p.id, &row.node_id);
         let keeps_failure = ok
@@ -316,7 +316,7 @@ impl Runtime {
         self.event(
             "-",
             if ok { "writeback.done" } else { "writeback.failed" },
-            json!({"node": row.node_id, "what": what, "code": code}),
+            json!({"node": row.node_id, "what": what, "code": code, "scope": scope}),
         );
         self.db.note([crate::intake::TOPIC]);
         if ok {
@@ -325,18 +325,11 @@ impl Runtime {
         }
         let n = self.db.setting(&fails_key(&p.id)).ok().flatten().and_then(|v| v.as_u64()).unwrap_or(0) + 1;
         let _ = self.db.set_setting(&fails_key(&p.id), &json!(n));
-        let open = self.store.read(|s| {
-            s.inbox.iter().any(|i| {
-                i.open()
-                    && i.kind == "program"
-                    && i.payload["kind"] == "writeback_failing"
-                    && i.payload["project"] == p.id.as_str()
-            })
-        });
+        let open = self.store.read(|s| s.inbox.iter().any(|i| i.open() && is_failing_decision(i, &p.id)));
         if n >= FAILING_AFTER && !open {
             let payload = json!({"kind": "writeback_failing", "project": p.id, "key": "writeback",
                                  "title": format!("Write-back is failing for {}", p.name),
-                                 "text": format!("{}. Fix it in the tracker settings or turn write-back off.", message.unwrap_or_default())});
+                                 "text": format!("{}. Fix it in Project settings › Tracker or turn write-back off.", message.unwrap_or_default())});
             if let Err(e) =
                 self.add_item_in(None, "program", format!("Write-back is failing for {}", p.name), payload, 0, None)
             {
@@ -358,7 +351,54 @@ impl Runtime {
         let op: WbOp =
             serde_json::from_value(st["op"].clone()).map_err(|e| anyhow!("the failed write is not readable: {e}"))?;
         self.wb_run(&row.project_id, node, &op);
+        self.wb_resolve_if_clear(&row.project_id);
         Ok(self.db.setting(&status_key(&row.project_id, node))?.unwrap_or_default())
+    }
+
+    /// `writeback_retry_all(project)`: repeats every failed write of the project, in node order. When
+    /// none is left failing, the project's open `writeback_failing` decision is resolved (also when
+    /// nothing was retried: it can be stale).
+    pub fn writeback_retry_all(&self, project: &str) -> Result<Value> {
+        if self.db.project(project)?.is_none() {
+            return Err(anyhow!(
+                json!({"code": "not_found", "message": format!("no project {project:?}")}).to_string()
+            ));
+        }
+        let failed = self.wb_failed(project);
+        let retried = failed.len();
+        for (node, st) in failed {
+            // (a status whose op does not read is left failed: it counts below)
+            if let Ok(op) = serde_json::from_value::<WbOp>(st["op"].clone()) {
+                self.wb_run(project, &node, &op);
+            }
+        }
+        let left = self.wb_failed(project);
+        self.wb_resolve_if_clear(project);
+        Ok(json!({"retried": retried, "ok": retried.saturating_sub(left.len()), "failed": left.len(),
+                  "last_failure": last_failure(&left)}))
+    }
+
+    /// The failed write-backs of a project, in node order (`(node, status)`).
+    pub(crate) fn wb_failed(&self, project: &str) -> Vec<(String, Value)> {
+        let prefix = status_key(project, "");
+        let mut v: Vec<(String, Value)> = self
+            .db
+            .settings_prefixed(&prefix)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|(_, v)| v["status"] == "failed")
+            .filter_map(|(k, v)| Some((k.strip_prefix(&prefix)?.to_string(), v)))
+            .collect();
+        v.sort_by(|a, b| a.0.cmp(&b.0));
+        v
+    }
+
+    /// Resolves the project's open `writeback_failing` decision when no write of it is failing.
+    fn wb_resolve_if_clear(&self, project: &str) {
+        if self.wb_failed(project).is_empty() {
+            self.close_items_where(|i| is_failing_decision(i, project), "write-back works again");
+            self.touch("inbox");
+        }
     }
 
     /// The write-back status of every node of a project, by node id (for `WorkNode.writeback`).
@@ -372,7 +412,8 @@ impl Runtime {
                 let node = k.strip_prefix(&prefix)?.to_string();
                 Some((
                     node,
-                    json!({"status": v["status"], "what": v["what"], "at_ms": v["at_ms"], "message": v["message"]}),
+                    json!({"status": v["status"], "what": v["what"], "at_ms": v["at_ms"], "message": v["message"],
+                           "code": v["code"], "scope": v["scope"], "op": v["op"]}),
                 ))
             })
             .collect()
@@ -435,6 +476,19 @@ impl Runtime {
         self.db.set_setting(&fails_key(project), &json!(0))?;
         Ok(())
     }
+}
+
+/// Whether `i` is the `writeback_failing` decision of `project`.
+fn is_failing_decision(i: &orch_store::InboxItem, project: &str) -> bool {
+    i.kind == "program" && i.payload["kind"] == "writeback_failing" && i.payload["project"] == project
+}
+
+/// The last of `failed` as `{node, message, code, scope}`; null when none.
+pub(crate) fn last_failure(failed: &[(String, Value)]) -> Value {
+    failed.last().map_or(
+        Value::Null,
+        |(node, st)| json!({"node": node, "message": st["message"], "code": st["code"], "scope": st["scope"]}),
+    )
 }
 
 #[cfg(test)]

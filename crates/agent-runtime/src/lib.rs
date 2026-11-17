@@ -11,6 +11,7 @@ pub mod digest;
 pub mod env;
 pub mod feature_prs;
 pub mod flow;
+pub mod gh_access;
 pub mod github_issue;
 pub mod handover;
 pub mod inbox;
