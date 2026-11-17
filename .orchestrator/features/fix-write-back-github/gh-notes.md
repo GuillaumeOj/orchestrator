@@ -23,8 +23,11 @@ to GitHub): the implementation task must confirm on a real login before relying 
   lines are only for `login`), exit **0**; the new token replaces the stored one (keyring or hosts.yml). Expired code
   (≈15 min) or denied: exit **1** with `authentication timed out` / `access_denied`-style text on stderr. Killed
   (SIGKILL on our timeout) leaves the old token untouched. gh's own exit 2 = cancelled (Ctrl-C), 4 = needs auth.
-- Decision for impl: treat exit 0 = `done`, anything else = `failed` with the last stderr line; if no code appears within
-  ~10 s of spawn (or exit 1 before any code), answer `interactive_only` and the UI shows Copy command.
+- Decision for impl: treat exit 0 = `done`, anything else = `failed` with the last stderr line. Before any code is seen,
+  classify by the text first: spawn error `No such file` -> `gh_missing`; `not logged in` -> `gh_auth`; the `GH_TOKEN` /
+  `GITHUB_TOKEN` text -> `interactive_only`. Only a silent exit, or no code within ~10 s of spawn, is `interactive_only`
+  (the command blocks for that wait: run it off the UI thread). If the user authorizes as another account gh fails with
+  "received credentials for <other>": show it as the `failed` message.
 
 ## 2. `gh auth status` and the scopes line
 
