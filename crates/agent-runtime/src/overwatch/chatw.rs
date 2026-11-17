@@ -111,19 +111,16 @@ impl Runtime {
         let dir = self.overwatch_pastes_dir().join(day);
         std::fs::create_dir_all(&dir)?;
         let key: String = uuid::Uuid::new_v4().simple().to_string().chars().take(8).collect();
-        let mut written: Vec<std::path::PathBuf> = vec![];
-        let mut meta = vec![];
+        let mut meta: Vec<Value> = vec![];
         for (n, body) in &kept {
             let path = dir.join(format!("{key}-{n}.md"));
+            let item = json!({"n": n, "chars": body.chars().count(), "lines": body.lines().count(),
+                              "path": path.to_string_lossy()});
+            meta.push(item);
             if let Err(e) = std::fs::write(&path, body) {
-                for w in &written {
-                    let _ = std::fs::remove_file(w);
-                }
-                let _ = std::fs::remove_file(&path);
+                remove_paste_files(&meta);
                 return Err(anyhow::Error::new(e).context("the pasted text was not written"));
             }
-            written.push(path.clone());
-            meta.push(json!({"n": n, "chars": body.chars().count(), "lines": body.lines().count(), "path": path.to_string_lossy()}));
         }
         Ok(meta)
     }
