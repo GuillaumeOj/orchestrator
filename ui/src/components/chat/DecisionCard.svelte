@@ -205,7 +205,7 @@
       const from = e.currentTarget;
       from.blur();
       from.closest('[tabindex]')?.focus();
-    } else if (e.key === 'Enter' && !e.shiftKey) {
+    } else if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
       e.preventDefault();
       onkey('enter');
     }
