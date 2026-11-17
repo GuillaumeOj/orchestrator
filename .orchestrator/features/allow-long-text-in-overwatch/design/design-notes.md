@@ -171,4 +171,6 @@ Drive `Orchestrator.figcraft`, page 04.3 Chat column, section "Allow long text i
 - **Rest ring at 80 %**: `box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-accent-default) 80%, transparent)` (§2 said 50 %: 2.19:1 on accent-subtle in dark; 80 % is 3.34:1). In light, accent on accent-subtle is 2.25:1 even at 100 %; the glyph and label (5.81:1) carry the chip there, as the focus ring does app-wide.
 - **Contrast (WCAG 2), dark / light**: text-primary on accent-subtle 6.68 / 5.81; on the hover wash 4.73 / 4.87; text-secondary (missing) 5.11 / 4.74; muted dashed ring 3.73 / 4.30.
 - **Narrow panel header**: at the 300 column (panel ≈ 245 px) the label, Copy and × don't fit one row. The label is `flex: 1; min-width: 0` with normal wrapping (two lines, header ≈ 40 px); Copy and × stay top-aligned on the first row. Never an ellipsis on the numbers.
-- **Short panels**: a paste of 10 to 15 lines makes a panel that hugs its text, with no scrollbar.
+- **Short panels**: a panel whose text wraps to fewer than 16 rows hugs it, with no scrollbar. The 16-row cap counts **wrapped rows** at the panel's width, not the paste's `lines` (a 1-line paste of 1 204 chars wraps to many rows; board 6's `#1 · 14 lines` is drawn as 14 rows).
+- **Load error panel**: Copy is **disabled** (nothing loaded yet), as in the loading state.
+- **Order under the bubble**: the open panels (by `n`), then the `planning · <project>` line, then the delivery / `Not sent` marker. The panels sit right under the bubble so the open chip reads as attached to them.
