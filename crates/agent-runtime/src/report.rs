@@ -569,6 +569,63 @@ impl Runtime {
         Ok(())
     }
 
+    /// §3.2 item 7: each stored report of a rebuilt week, built again from
+    /// the repaired rows and the week's rebuilt calibration at its reset, and
+    /// overwritten in place. Only the usage split changes: the observed
+    /// total, the dates and what does not come from the split (states,
+    /// actions, alerts, limits, intake: retention may have purged their
+    /// sources) stay as stored; the suggestions are read again from both. No
+    /// digest. Only the weeks the chain rebuilt (their rows all kept) are.
+    /// Returns the reports rebuilt.
+    pub(crate) fn rebuild_reports(&self, weeks: &[crate::runtime::RebuiltWeek]) -> Result<usize> {
+        const SPLIT: [&str; 6] = ["totals", "allocations", "by_project", "by_feature", "by_role", "by_model"];
+        let mut n = 0;
+        for row in self.db.reports()? {
+            let (Ok(start), Ok(reset)) =
+                (Timestamp::from_millisecond(row.week_start_ms), Timestamp::from_millisecond(row.reset_at_ms))
+            else {
+                continue;
+            };
+            let Some(w) = weeks.iter().find(|w| governor::same_reset(w.plan.week_start, start)) else { continue };
+            let Some(mut stored) = self.db.report(&row.id)? else { continue };
+            let plan = WeeklyPlan { id: row.id.clone(), week_start: start, reset_at: reset, ..w.plan.clone() };
+            let observed = row.final_weekly_pct.or_else(|| stored["totals"]["weekly_pct"].as_f64());
+            let mut r = serde_json::to_value(self.build_report(&plan, &w.calibration, 1.0, observed, false, reset)?)?;
+            let Some(obj) = stored.as_object_mut() else { continue };
+            for key in SPLIT {
+                obj.insert(key.into(), r[key].take());
+            }
+            // The stored states, alerts and limits (their sources may be
+            // purged) count in the suggestions too; a stored report that no
+            // longer parses gets the rebuilt one's, never the old split's.
+            stored["suggestions"] = match WeeklyReport::deserialize(&stored) {
+                Ok(merged) => json!(suggestions(&merged)),
+                Err(_) => r["suggestions"].take(),
+            };
+            if self.db.replace_report_data(&row.id, &stored)? {
+                n += 1;
+            }
+        }
+        Ok(n)
+    }
+
+    /// The end of the one-shot rebuild (§3.2): the reports of the rebuilt
+    /// weeks, then the setting that marks it done and one event. A failure
+    /// leaves the setting unset, so the next start runs it again.
+    pub(crate) fn finish_week_rebuild(&self, weeks: &[crate::runtime::RebuiltWeek]) {
+        let done = self.rebuild_reports(weeks).and_then(|reports| {
+            self.db.set_setting(
+                crate::runtime::WEEK_REBUILD_KEY,
+                &json!({"version": 1, "at_ms": orch_protocol::now_ms()}),
+            )?;
+            Ok(reports)
+        });
+        match done {
+            Ok(reports) => self.event("-", "governor_rebuilt", json!({"weeks": weeks.len(), "reports": reports})),
+            Err(e) => self.event("-", "governor_rebuild_failed", json!(e.to_string())),
+        }
+    }
+
     /// At start: the report of the last week the app saw, when it was not
     /// running at that week's reset (FR-818). Its `k` is the estimator this
     /// week started with.
@@ -577,11 +634,10 @@ impl Runtime {
         let start = plan.week_start;
         // The last week the app saw start (its estimator row).
         let Ok(Some((prev_start, _))) = self.db.week_estimator_before(start) else { return };
-        let week = governor::jiff::SignedDuration::from_hours(168);
         let prev = WeeklyPlan {
             id: format!("week-{}", prev_start.as_second()),
             week_start: prev_start,
-            reset_at: prev_start.checked_add(week).unwrap_or(start).min(start),
+            reset_at: crate::runtime::past_week_reset(prev_start, Some(start)),
             ..plan
         };
         let Ok(Some(e)) = self.db.week_estimator(start) else { return };

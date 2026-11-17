@@ -202,3 +202,44 @@ fn a_spawn_without_a_slot_goes_back_to_the_queue() {
     assert!(g.set_process_slots(1, 1, at(3)).is_empty());
     assert_eq!(g.set_process_slots(0, 1, at(4)).len(), 1, "released when a slot frees, in shadow mode too");
 }
+
+/// fix-week-usage-count §3.3, acceptance 5: an interval whose app cost alone
+/// explains far more than its increase (a double-counted resume) is skipped
+/// by the fit, live and in the restart replay alike.
+#[test]
+fn a_double_counted_interval_is_skipped_live_and_in_the_replay() {
+    // 3 pp every 2 h, cost at k = 10 with 0.25 pp/h outside; `spike` $ more
+    // in the 8th interval.
+    let week = |spike: f64| -> Vec<UsageSample> {
+        (1..=12)
+            .map(|i| {
+                let cost = 10.0 * (3.0 - 0.25 * 2.0) + if i == 8 { spike } else { 0.0 };
+                weekly(at(hours(2.0 * i as f64)), "A-1", cost, 3.0 * i as f64)
+            })
+            .collect()
+    };
+    let now = at(hours(25.0));
+    let live = |samples: &[UsageSample]| {
+        let mut g = governor();
+        let stored: Vec<_> = samples
+            .iter()
+            .map(|s| {
+                let class = g.cost_class(s);
+                g.ingest(s);
+                (s.clone(), class)
+            })
+            .collect();
+        g.tick(now);
+        (g, stored)
+    };
+    let (clean, _) = live(&week(0.0));
+    let (spiked, stored) = live(&week(400.0));
+    let mut restarted = governor();
+    for (s, class) in &stored {
+        restarted.replay(s, *class, None);
+    }
+    restarted.tick(now);
+    same_state(&spiked, &restarted, now);
+    let k = |g: &Governor| g.snapshot(now).calibration.cost_per_weekly_pct;
+    assert!((k(&spiked) - k(&clean)).abs() < 0.1 * k(&clean), "spiked k {} vs {}", k(&spiked), k(&clean));
+}

@@ -73,9 +73,33 @@ impl UsageCollector {
         Self::default()
     }
 
-    /// Records one statusline render. Returns the Governor sample when it
-    /// carries a new API response.
+    /// Seeds an agent's cost baseline at startup: its current session and the
+    /// last cost stored for it. `claude --resume` restores the session's cost,
+    /// so the first render after a core restart is counted from there.
+    pub fn seed(&mut self, agent_id: &str, session_id: &str, cost: f64) {
+        let a = self.agents.entry(agent_id.to_string()).or_default();
+        a.session_id = Some(session_id.to_string());
+        a.total_cost_usd = cost;
+    }
+
+    /// [`Self::ingest_with`] with no stored baselines (tests).
+    #[cfg(test)]
     pub fn ingest(&mut self, agent_id: &str, ts_ms: u64, s: &StatusSample) -> Option<UsageSample> {
+        self.ingest_with(agent_id, ts_ms, s, |_| None)
+    }
+
+    /// Records one statusline render. Returns the Governor sample when it
+    /// carries a new API response. `baseline(session)`: the last cost stored for a
+    /// session the collector does not know (a resumed one), or `None` for a
+    /// new session. Called only when the agent's session changes (its first
+    /// render, or a switch back to an earlier session).
+    pub fn ingest_with(
+        &mut self,
+        agent_id: &str,
+        ts_ms: u64,
+        s: &StatusSample,
+        baseline: impl FnOnce(&str) -> Option<f64>,
+    ) -> Option<UsageSample> {
         let a = self.agents.entry(agent_id.to_string()).or_default();
         a.last_seen_ms = ts_ms;
         if s.model.is_some() {
@@ -87,6 +111,8 @@ impl UsageCollector {
         let new_session = s.session_id.is_some() && s.session_id != a.session_id;
         if new_session {
             a.session_id = s.session_id.clone();
+            // A resumed session restores its cost: count from its last one.
+            a.total_cost_usd = s.session_id.as_deref().and_then(baseline).unwrap_or(0.0);
         }
         let cost = s.total_cost_usd.unwrap_or(0.0);
         let rl = s.rate_limits.unwrap_or_default();
@@ -96,17 +122,16 @@ impl UsageCollector {
             !same(rl.five_hour, prev.five_hour) || !same(rl.seven_day, prev.seven_day) || models_changed;
         let cost_changed = (cost - a.total_cost_usd).abs() > 1e-12;
         if rl.is_empty() && s.model_windows.is_empty() && cost == 0.0 {
-            // Before the first response of a session: nothing observed yet.
-            if new_session {
-                a.total_cost_usd = 0.0;
-            }
+            // Before the first response of a session: nothing observed yet
+            // (the baseline set above stays for its first response).
             return None;
         }
         if !readings_changed && !cost_changed && !new_session {
             return None; // idle re-render of the same response
         }
-        // A restarted process (resume) starts its cost counter again.
-        let delta = if cost >= a.total_cost_usd && !new_session { cost - a.total_cost_usd } else { cost };
+        // Against the session's baseline (0 for a new session); a process
+        // that did not restore its cost starts again from 0.
+        let delta = if cost >= a.total_cost_usd { cost - a.total_cost_usd } else { cost };
         a.total_cost_usd = cost;
         if !rl.is_empty() {
             a.rate_limits = Some(rl);
@@ -266,6 +291,48 @@ mod tests {
             )
             .unwrap();
         assert!((g.cost_delta - 0.002).abs() < 1e-9);
+    }
+
+    fn cost(session: &str, cost: f64) -> StatusSample {
+        s(json!({"session_id": session, "cost": {"total_cost_usd": cost},
+            "rate_limits": {"seven_day": {"used_percentage": 30, "resets_at": 1792983600}}}))
+    }
+
+    /// fix-week-usage-count §3.1: a resumed session's restored cost is not
+    /// counted again after a core restart.
+    #[test]
+    fn a_seeded_or_stored_baseline_gives_exact_deltas() {
+        let close = |g: Option<UsageSample>, want: f64| {
+            let d = g.expect("a response").cost_delta;
+            assert!((d - want).abs() < 1e-9, "delta {d}, want {want}");
+        };
+        // Seeded at startup with (s, 12.0): the resumed process reports 12.4.
+        let mut c = UsageCollector::new();
+        c.seed("a", "s", 12.0);
+        close(c.ingest("a", 1, &cost("s", 12.4)), 0.4);
+        // The same session, a process that did not restore its cost.
+        let mut c = UsageCollector::new();
+        c.seed("a", "s", 12.0);
+        close(c.ingest("a", 1, &cost("s", 0.3)), 0.3);
+        // Unseeded: the store's baseline of (a, s) is looked up once.
+        let mut c = UsageCollector::new();
+        let mut asked = Vec::new();
+        let g = c.ingest_with("a", 1, &cost("s", 12.4), |sid| {
+            asked.push(sid.to_string());
+            Some(12.0)
+        });
+        close(g, 0.4);
+        close(c.ingest_with("a", 2, &cost("s", 12.9), |_| panic!("known session: no lookup")), 0.5);
+        assert_eq!(asked, ["s"]);
+        // A new session t (no stored baseline): its whole cost.
+        close(c.ingest_with("a", 3, &cost("t", 0.2), |_| None), 0.2);
+        // A resume whose first render has no cost yet keeps the baseline.
+        let mut c = UsageCollector::new();
+        assert!(
+            c.ingest_with("a", 1, &s(json!({"session_id": "s", "cost": {"total_cost_usd": 0}})), |_| Some(12.0))
+                .is_none()
+        );
+        close(c.ingest("a", 2, &cost("s", 12.4)), 0.4);
     }
 
     #[test]

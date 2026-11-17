@@ -409,6 +409,9 @@ pub fn enforce_chosen(db: &orch_store::Store) -> Option<bool> {
 }
 /// Settings key: the plan week (start, ms) whose reserve warning reached the Inbox.
 pub const RESERVE_ALERT_KEY: &str = "governor.reserve_alerted";
+/// Set once the one-shot rebuild of the estimator chain and the stored
+/// reports from the repaired usage rows ran (fix-week-usage-count §3.2).
+pub const WEEK_REBUILD_KEY: &str = "governor.week_rebuild";
 
 /// The plan week: from last Monday 09:00 local to next Monday 09:00, weekdays
 /// 09:00–19:00, one allocation. The Week planner (FR-802) replaces this later.
@@ -528,6 +531,13 @@ impl Runtime {
                 crate::live_cap::DEFAULT_LIVE_CAP
             }),
         };
+        // §3.2: the week chain rebuilt from the repaired rows (once), before
+        // the current week restores from its start. Best-effort: a failure
+        // leaves the stored chain and runs again at the next start.
+        let rebuilt = rebuild_week_chain(&db, &store, &cfg, now).unwrap_or_else(|e| {
+            warnings.push(format!("rebuilding the weekly estimators: {e}"));
+            None
+        });
         let (gov, released) = restore_governor(&db, &store, &cfg, base_cap, cfg.shadow, None, now)?;
         let home = crate::paths::home_dir();
         let shell = std::env::var_os("SHELL").map(PathBuf::from).unwrap_or_else(|| "/bin/zsh".into());
@@ -552,6 +562,21 @@ impl Runtime {
             warnings.push(e.to_string());
         }
         let pressure = cfg.pressure_filter;
+        // §3.1: each agent's current session and its last stored cost, so a
+        // resumed session's restored cost is not counted again. The restart
+        // that installs this has no session on its rows yet: the agent's last
+        // row then stands for the session it resumes (best-effort, as the
+        // migration's repair).
+        let mut usage = UsageCollector::new();
+        let agents =
+            store.read(|s| s.agents.values().map(|a| (a.id.clone(), a.session_id.clone())).collect::<Vec<_>>());
+        for (id, sid) in agents.into_iter().filter(|(_, sid)| !sid.is_empty()) {
+            let cost =
+                db.last_session_cost(&id, &sid).ok().flatten().or_else(|| db.last_untagged_cost(&id).ok().flatten());
+            if let Some(cost) = cost {
+                usage.seed(&id, &sid, cost);
+            }
+        }
         let rt = Arc::new_cyclic(|me| Runtime {
             user_statusline: crate::env::user_statusline_command(&home),
             git_identity,
@@ -563,7 +588,7 @@ impl Runtime {
             settings_gen: AtomicU64::new(0),
             settings_written: Mutex::new(BTreeMap::new()),
             base_cap: std::sync::atomic::AtomicU32::new(base_cap),
-            usage: Mutex::new(UsageCollector::new()),
+            usage: Mutex::new(usage),
             live: Mutex::new(BTreeMap::new()),
             decisions: Mutex::new(VecDeque::new()),
             login_path,
@@ -598,6 +623,9 @@ impl Runtime {
             watches: Default::default(),
         });
         rt.handle_releases(released);
+        if let Some(weeks) = rebuilt {
+            rt.finish_week_rebuild(&weeks);
+        }
         rt.backfill_report(now);
         // Migration 15: the store's rules go to the policy files (once).
         rt.migrate_store_rules();
@@ -2192,7 +2220,11 @@ impl Runtime {
             return;
         }
         let sample = StatusSample::parse(&m.payload);
-        let g = self.usage.lock().unwrap_or_else(|e| e.into_inner()).ingest(&m.agent_id, m.ts_ms, &sample);
+        // A session the collector does not know: a resumed one counts from
+        // its last stored cost (one store read, on its first render only).
+        let baseline = |sid: &str| self.db.last_session_cost(&m.agent_id, sid).ok().flatten();
+        let g =
+            self.usage.lock().unwrap_or_else(|e| e.into_inner()).ingest_with(&m.agent_id, m.ts_ms, &sample, baseline);
         if let Some(g) = g {
             self.touch(orch_protocol::Topic::Usage);
             self.event(&m.agent_id, "usage_sample", serde_json::to_value(&g).unwrap_or(Value::Null));
@@ -3214,8 +3246,7 @@ fn restore_governor(
     let seen_from = samples.first().map_or(now, |(_, s)| s.ts).clamp(start, now.max(start));
     let mut gov = Governor::new(plan.clone(), policy.clone(), seen_from).map_err(|e| anyhow!("{e:?}"))?;
     let aliases = project_aliases(db)?;
-    let allocs: BTreeMap<String, String> =
-        store.read(|s| s.agents.values().map(|a| (a.id.clone(), a.allocation.clone())).collect());
+    let allocs = agent_allocations(store);
     // FR-814: the estimator the week started with, then the week replayed,
     // gives the live run's calibration back.
     match db.week_estimator(start)? {
@@ -3229,11 +3260,7 @@ fn restore_governor(
         }
     }
     gov.set_aliases(aliases);
-    for (u, sample) in samples {
-        let class = u.class.as_deref().and_then(orch_store::untag).unwrap_or(governor::CostClass::Interactive);
-        let alloc = u.allocation.clone().or_else(|| u.agent_id.as_ref().and_then(|a| allocs.get(a).cloned()));
-        gov.replay(&sample, class, alloc.map(Into::into));
-    }
+    replay_rows(&mut gov, samples, &allocs);
     let mut released = Vec::new();
     // A replan carries the live Governor's state, running turns included; a
     // restart the stored one, without running turns (their processes ended
@@ -3321,23 +3348,147 @@ fn rebuild_estimator(
     aliases: &BTreeMap<String, governor::AllocationId>,
 ) -> Result<Option<governor::EstimatorState>> {
     let Some((prev_start, base)) = db.week_estimator_before(plan.week_start)? else { return Ok(None) };
-    let prev_reset = prev_start.checked_add(168.hours()).unwrap_or(plan.week_start).min(plan.week_start);
-    let prev_plan = WeeklyPlan {
+    let prev_reset = past_week_reset(prev_start, Some(plan.week_start));
+    let week = WeeklyPlan {
         id: format!("week-{}", prev_start.as_second()),
         week_start: prev_start,
         reset_at: prev_reset,
         ..plan.clone()
     };
-    let samples = week_samples(db, prev_start, Some(prev_reset))?;
-    let Ok(mut prev) = Governor::new(prev_plan, policy.clone(), prev_start) else { return Ok(Some(base)) };
-    prev.restore_estimator(base);
-    prev.set_aliases(aliases.clone());
-    for (u, sample) in samples {
+    let rows = week_samples(db, prev_start, Some(prev_reset))?;
+    Ok(Some(match replay_week(week, policy, base.clone(), rows, allocs, aliases) {
+        Some(prev) => prev.estimator(),
+        None => base,
+    }))
+}
+
+/// Where the stored week starting at `start` ends: at the next stored week's
+/// start when that is the next week (a DST week is an hour longer or
+/// shorter), else 168 h later.
+pub(crate) fn past_week_reset(start: Timestamp, next: Option<Timestamp>) -> Timestamp {
+    let full = start.checked_add(168.hours()).unwrap_or(start);
+    next.filter(|n| *n < full || governor::same_reset(*n, full)).unwrap_or(full)
+}
+
+/// The Governor of `week` started from `base`, with the week's stored
+/// `rows` replayed (None when the plan is not valid).
+fn replay_week(
+    week: WeeklyPlan,
+    policy: &governor::PacingPolicy,
+    base: governor::EstimatorState,
+    rows: Vec<(orch_store::UsageRecord, governor::UsageSample)>,
+    allocs: &BTreeMap<String, String>,
+    aliases: &BTreeMap<String, governor::AllocationId>,
+) -> Option<Governor> {
+    let start = week.week_start;
+    let mut gov = Governor::new(week, policy.clone(), start).ok()?;
+    gov.restore_estimator(base);
+    gov.set_aliases(aliases.clone());
+    replay_rows(&mut gov, rows, allocs);
+    Some(gov)
+}
+
+/// Each agent's allocation, for stored rows that have none.
+fn agent_allocations(store: &Store) -> BTreeMap<String, String> {
+    store.read(|s| s.agents.values().map(|a| (a.id.clone(), a.allocation.clone())).collect())
+}
+
+/// Stored rows replayed with their cost class and allocation (NFR-2).
+fn replay_rows(
+    gov: &mut Governor,
+    rows: Vec<(orch_store::UsageRecord, governor::UsageSample)>,
+    allocs: &BTreeMap<String, String>,
+) {
+    for (u, sample) in rows {
         let class = u.class.as_deref().and_then(orch_store::untag).unwrap_or(governor::CostClass::Interactive);
         let alloc = u.allocation.clone().or_else(|| u.agent_id.as_ref().and_then(|a| allocs.get(a).cloned()));
-        prev.replay(&sample, class, alloc.map(Into::into));
+        gov.replay(&sample, class, alloc.map(Into::into));
     }
-    Ok(Some(prev.estimator()))
+}
+
+/// A past week the chain rebuild replayed: its plan and the calibration it
+/// ended with, for its report.
+pub(crate) struct RebuiltWeek {
+    pub plan: WeeklyPlan,
+    pub calibration: governor::Calibration,
+}
+
+/// §3.2 item 6, once ([`WEEK_REBUILD_KEY`]): every stored week, oldest
+/// first, replayed from the week before's rebuilt end (the oldest keeps its
+/// stored start) with the repaired rows, and its end stored as the next
+/// week's start. The weeks retention purged (all or part of their rows: they
+/// start before the usage cut) are not rebuilt: the chain goes on from their
+/// stored end. A week with no rows after the chain started passes its start
+/// through. The current week is left to `restore_governor`, which replays it
+/// from its rebuilt start. None when the rebuild already ran.
+fn rebuild_week_chain(
+    db: &orch_store::Store,
+    store: &Store,
+    cfg: &RuntimeConfig,
+    now: Timestamp,
+) -> Result<Option<Vec<RebuiltWeek>>> {
+    if db.setting(WEEK_REBUILD_KEY)?.is_some() {
+        return Ok(None);
+    }
+    let starts = db.week_estimators()?;
+    let mut out = Vec::new();
+    let Some((_, mut base)) = starts.first().cloned() else { return Ok(Some(out)) };
+    let policy = db.policy(POLICY_ID)?.unwrap_or_default();
+    let template = db.active_plan()?.unwrap_or_else(|| (cfg.default_plan)(now, cfg.shadow));
+    let (allocs, aliases) = (agent_allocations(store), project_aliases(db)?);
+    // Rows before this are purged, or will be: a week that starts before it
+    // has lost (some of) its rows.
+    let cut = now.as_millisecond() - i64::from(cfg.retention.usage_days) * 86_400_000;
+    let mut chained = false;
+    for (i, (start, _)) in starts.iter().enumerate() {
+        let next = starts.get(i + 1);
+        let reset = past_week_reset(*start, next.map(|n| n.0));
+        if reset > now {
+            break; // the current week
+        }
+        let rows = if start.as_millisecond() < cut { Vec::new() } else { week_samples(db, *start, Some(reset))? };
+        if rows.is_empty() {
+            if !chained {
+                // Purged: nothing to rebuild it from. The live run's end of
+                // it, the next week's stored start, carries on.
+                if let Some((_, s)) = next {
+                    base = s.clone();
+                }
+                continue;
+            }
+            // After the chain started, a week with no rows passes its start through.
+        } else {
+            chained = true;
+            let week = week_plan(db, &template, *start, reset);
+            // A week whose plan is not valid passes its start through.
+            if let Some(gov) = replay_week(week.clone(), &policy, base.clone(), rows, &allocs, &aliases) {
+                base = gov.estimator();
+                out.push(RebuiltWeek { calibration: gov.calibration(reset), plan: week });
+            }
+        }
+        if let Some((n, _)) = next {
+            db.save_estimator("week", *n, &base.calibrator.snapshot(*n), &base)?;
+        }
+    }
+    Ok(Some(out))
+}
+
+/// The plan of the week `[start, reset)`: the stored one that ended at that
+/// reset, else (none, or one an older app stored that no longer parses)
+/// `template` moved to those dates.
+fn week_plan(db: &orch_store::Store, template: &WeeklyPlan, start: Timestamp, reset: Timestamp) -> WeeklyPlan {
+    let slack = governor::jiff::SignedDuration::from_secs(governor::SAME_RESET_S);
+    let stored = db
+        .previous_plan(reset.checked_add(slack).unwrap_or(reset))
+        .ok()
+        .flatten()
+        .filter(|p| governor::same_reset(p.reset_at, reset));
+    WeeklyPlan {
+        id: format!("week-{}", start.as_second()),
+        week_start: start,
+        reset_at: reset,
+        ..stored.unwrap_or_else(|| template.clone())
+    }
 }
 
 fn reading(pct: Option<f64>, resets: Option<i64>) -> Option<governor::WindowReading> {
@@ -3381,6 +3532,7 @@ fn usage_record(
         class: Some(tag(&class)),
         allocation,
         model_windows: g.model_windows.clone(),
+        session_id: s.session_id.clone(),
         ..Default::default()
     }
 }
@@ -3810,6 +3962,211 @@ pub(crate) mod tests {
         let samples = rt.db.usage_since(0, Some(orch_store::UsageSource::Statusline)).unwrap();
         assert_eq!(samples.len(), 2);
         assert_eq!(samples[0].class.as_deref(), Some("autonomous"));
+    }
+
+    /// One statusline render of a1's session `s` (weekly window 3 days out).
+    fn session_status(rt: &Runtime, cost: f64, pct: u32) {
+        let reset = (now_ms() / 1000) as i64 + 3 * 24 * 3600;
+        rt.on_status(&StatusMsg {
+            agent_id: "a1".into(),
+            ts_ms: now_ms(),
+            payload: json!({"session_id": "s", "cost": {"total_cost_usd": cost},
+                "rate_limits": {"seven_day": {"used_percentage": pct, "resets_at": reset}}}),
+        });
+    }
+
+    /// fix-week-usage-count §3.1, acceptance 2: `claude --resume` restores the
+    /// session's cost; after a core restart it is not counted a second time.
+    #[test]
+    fn a_resumed_sessions_restored_cost_is_not_counted_again_after_a_restart() {
+        let d = tempfile::Builder::new().prefix("orchrt").tempdir_in(orch_protocol::test_tmp()).unwrap();
+        {
+            let rt = Runtime::new(test_cfg(d.path(), false)).unwrap();
+            rt.store.write(|s| s.agents.insert("a1".into(), test_agent(d.path()))).unwrap();
+            session_status(&rt, 5.0, 30);
+            rt.db.flush().unwrap();
+        }
+        // The core restarts; the resumed process reports its restored cost, then more.
+        let rt = Runtime::new(test_cfg(d.path(), false)).unwrap();
+        session_status(&rt, 5.0, 30);
+        session_status(&rt, 5.5, 31);
+        rt.db.flush().unwrap();
+        let rows = rt.db.usage_since(0, Some(orch_store::UsageSource::Statusline)).unwrap();
+        let deltas: Vec<f64> = rows.iter().filter_map(|r| r.cost_delta).collect();
+        let sum: f64 = deltas.iter().sum();
+        assert!((sum - 5.5).abs() < 1e-9, "deltas {deltas:?} sum to {sum}, not 5.5");
+        assert!(rows.iter().all(|r| r.session_id.as_deref() == Some("s")), "{rows:?}");
+    }
+
+    /// The restart that installs the fix: the agent's rows have no session
+    /// yet, so its last row is the resumed session's baseline.
+    #[test]
+    fn the_upgrade_restart_counts_a_resumed_session_from_its_untagged_last_row() {
+        let d = tempfile::Builder::new().prefix("orchrt").tempdir_in(orch_protocol::test_tmp()).unwrap();
+        {
+            let rt = Runtime::new(test_cfg(d.path(), false)).unwrap();
+            rt.store.write(|s| s.agents.insert("a1".into(), test_agent(d.path()))).unwrap();
+            rt.db.add_usage(orch_store::UsageRecord {
+                ts_ms: now_ms() - 1_000,
+                agent_id: Some("a1".into()),
+                cost_estimate: Some(5.0),
+                cost_delta: Some(5.0),
+                provenance: "observed".into(),
+                source: Some(orch_store::UsageSource::Statusline),
+                ..Default::default()
+            });
+            rt.db.flush().unwrap();
+        }
+        let rt = Runtime::new(test_cfg(d.path(), false)).unwrap();
+        session_status(&rt, 5.5, 31);
+        rt.db.flush().unwrap();
+        let rows = rt.db.usage_since(0, Some(orch_store::UsageSource::Statusline)).unwrap();
+        let last = rows.last().unwrap();
+        assert_eq!(last.session_id.as_deref(), Some("s"));
+        assert!((last.cost_delta.unwrap() - 0.5).abs() < 1e-9, "{rows:?}");
+    }
+
+    /// fix-week-usage-count §3.2 items 6–7, acceptance 3b: a store of the
+    /// old app (schema 22) with a double-counted spike in its oldest week.
+    /// The start repairs the rows, rebuilds the week chain and the past
+    /// reports once, and sends no digest.
+    #[test]
+    fn the_first_start_rebuilds_the_week_chain_and_the_past_reports_once() {
+        use orch_store::tag;
+        let d = tempfile::Builder::new().prefix("orchrt").tempdir_in(orch_protocol::test_tmp()).unwrap();
+        let now = Timestamp::now();
+        let week = 168.hours();
+        let current = test_plan(now, false).week_start;
+        let w2 = current.checked_sub(week).unwrap();
+        let w1 = w2.checked_sub(week).unwrap();
+        let reset = |s: Timestamp| s.checked_add(week).unwrap();
+        // Truth: k = 20 $ per weekly pp, and 6 pp outside the app over the
+        // 112 h of 56 responses, one session. Costs and gaps vary apart, so
+        // the fit can tell the app's cost from the time outside.
+        const K: f64 = 20.0;
+        const OUTSIDE: f64 = 6.0;
+        let rows = |start: Timestamp, spike: Option<usize>| -> (Vec<orch_store::UsageRecord>, f64) {
+            let (mut cost, mut w, mut h) = (0.0, 0.0, 1.0);
+            let rows = (0..56)
+                .map(|i| {
+                    let dc = [24.0, 6.0, 36.0, 12.0][i % 4];
+                    let dh = [0.25, 2.0, 0.5, 4.0, 0.25, 1.0, 6.0][i % 7];
+                    cost += dc;
+                    h += dh;
+                    w += dc / K + OUTSIDE / 112.0 * dh;
+                    orch_store::UsageRecord {
+                        ts_ms: start.as_millisecond() as u64 + (h * 3_600_000.0) as u64,
+                        agent_id: Some("a1".into()),
+                        model: Some("claude-sonnet-4-5".into()),
+                        cost_estimate: Some(cost),
+                        // The old app's first render after a restart counted the whole cost.
+                        cost_delta: Some(if spike == Some(i) { cost } else { dc }),
+                        weekly_pct: Some(w.floor()),
+                        weekly_resets_at: Some(reset(start).as_second()),
+                        provenance: tag(&governor::Provenance::Observed),
+                        source: Some(orch_store::UsageSource::Statusline),
+                        class: Some(tag(&governor::CostClass::Autonomous)),
+                        allocation: Some(DEFAULT_ALLOCATION.into()),
+                        ..Default::default()
+                    }
+                })
+                .collect();
+            (rows, w.floor())
+        };
+        let (rows1, final1) = rows(w1, Some(30));
+        let (rows2, final2) = rows(w2, None);
+        let id = |s: Timestamp| format!("week-{}", s.as_second());
+        let stored = |s: Timestamp, pct: f64| {
+            json!({"id": id(s), "week_start": s, "reset_at": reset(s), "in_progress": false, "provenance": "observed",
+                "totals": {"weekly_pct": pct, "agents_pp": 2.0, "interactive_pp": 0.0, "outside_pp": pct - 2.0},
+                "states": [{"marker": "states"}], "actions": [{"marker": "actions"}], "intake": {"marker": "intake"}})
+        };
+        let db_file = AppPaths::new(d.path().join("app")).db_file();
+        {
+            std::fs::create_dir_all(db_file.parent().unwrap()).unwrap();
+            let db = orch_store::Store::open(&db_file).unwrap();
+            for r in rows1.into_iter().chain(rows2) {
+                db.add_usage(r);
+            }
+            // The old chain: the oldest week at the prior, the later ones carrying the spike.
+            let prior = Governor::new(test_plan(now, false), governor::PacingPolicy::default(), now)
+                .unwrap()
+                .week_estimator()
+                .clone();
+            let mut inflated = prior.clone();
+            inflated.calibrator = governor::Calibrator::new(1.0, 0.85);
+            for _ in 0..10 {
+                inflated.calibrator.update(3.0 * 60.0, 2.0, 3.0);
+            }
+            db.save_estimator("week", w1, &prior.calibrator.snapshot(w1), &prior).unwrap();
+            // An older week whose rows retention purged: it is not rebuilt,
+            // and its start does not replace the stored start of the next.
+            let w0 = w1.checked_sub(week).unwrap();
+            db.save_estimator("week", w0, &inflated.calibrator.snapshot(w0), &inflated).unwrap();
+            // A week from before the usage retention cut (90 d): rows still
+            // there are partial, so it is not rebuilt either.
+            let old = current.checked_sub(168.hours() * 14).unwrap();
+            db.save_estimator("week", old, &inflated.calibrator.snapshot(old), &inflated).unwrap();
+            for r in rows(old, Some(30)).0 {
+                db.add_usage(r);
+            }
+            for s in [w2, current] {
+                db.save_estimator("week", s, &inflated.calibrator.snapshot(s), &inflated).unwrap();
+            }
+            db.save_report(&id(w1), w1, reset(w1), Some(final1), &stored(w1, final1)).unwrap();
+            // A report whose row lost its final %: the stored total stands.
+            db.save_report(&id(w2), w2, reset(w2), None, &stored(w2, final2)).unwrap();
+            // Back to schema 22, before the row repair: migration 23 runs at the start.
+            db.write(|tx| {
+                tx.execute_batch(
+                    "DROP INDEX usage_samples_session; ALTER TABLE usage_samples DROP COLUMN session_id;
+                     PRAGMA user_version = 22;",
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        }
+
+        let rt = Runtime::new(test_cfg(d.path(), false)).unwrap();
+        rt.db.flush().unwrap();
+        let spike =
+            rt.db.usage_between(0, None, Some(orch_store::UsageSource::Statusline)).unwrap()[56 + 30].cost_delta;
+        assert_eq!(spike, Some(36.0), "migration 23 repaired the spike (row 30 costs 36)");
+        for (s, pct) in [(w1, final1), (w2, final2)] {
+            let r = rt.report_view(&id(s)).unwrap();
+            let outside = r["totals"]["outside_pp"].as_f64().unwrap();
+            assert!((outside - OUTSIDE).abs() <= 3.0, "{}: outside {outside}, truth {OUTSIDE}: {r}", id(s));
+            assert_eq!(r["totals"]["weekly_pct"].as_f64(), Some(pct), "the observed total stays");
+            let old = stored(s, pct);
+            for key in ["id", "week_start", "reset_at", "states", "actions", "intake"] {
+                assert_eq!(r[key], old[key], "{key} stays as stored");
+            }
+        }
+        let rows = rt.db.reports().unwrap();
+        for (s, pct) in [(w1, Some(final1)), (w2, None)] {
+            let r = rows.iter().find(|r| r.id == id(s)).unwrap();
+            let ms = |t: Timestamp| t.as_millisecond();
+            assert_eq!((r.week_start_ms, r.reset_at_ms, r.final_weekly_pct), (ms(s), ms(reset(s)), pct), "{}", id(s));
+        }
+        assert_eq!(rt.db.week_estimator(w1).unwrap().unwrap().calibrator.intervals(), 0, "w1 keeps its start");
+        let k = rt.db.week_estimator(current).unwrap().unwrap().calibrator.snapshot(current).cost_per_weekly_pct;
+        assert!((k - K).abs() <= 0.1 * K, "the current week starts from k {k}, truth {K}");
+        assert!(rt.db.setting(WEEK_REBUILD_KEY).unwrap().is_some());
+        let rebuilt = rt.db.events(0, None, Some("governor_rebuilt"), 5).unwrap();
+        assert_eq!(rebuilt.len(), 1);
+        assert_eq!(rebuilt[0].detail, json!({"weeks": 2, "reports": 2}));
+        assert!(rt.db.events(0, None, Some("weekly_report"), 5).unwrap().is_empty(), "no digest");
+
+        // A second start does not run the pass again.
+        let tampered = json!({"id": id(w1), "totals": {"outside_pp": 99.0}});
+        assert!(rt.db.replace_report_data(&id(w1), &tampered).unwrap());
+        rt.db.flush().unwrap();
+        drop(rt);
+        let rt = Runtime::new(test_cfg(d.path(), false)).unwrap();
+        rt.db.flush().unwrap();
+        assert_eq!(rt.report_view(&id(w1)).unwrap(), tampered);
+        assert_eq!(rt.db.events(0, None, Some("governor_rebuilt"), 5).unwrap().len(), 1);
+        assert!(rt.db.events(0, None, Some("weekly_report"), 5).unwrap().is_empty(), "no digest");
     }
 
     #[test]

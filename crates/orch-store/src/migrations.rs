@@ -708,6 +708,31 @@ ALTER TABLE tasks ADD COLUMN issue TEXT;
 ALTER TABLE tasks ADD COLUMN reported_sha TEXT;
 ALTER TABLE team_runs ADD COLUMN prs TEXT;
 "#,
+    // 23 (fix-week-usage-count §3.1–3.2): the statusline session of each
+    // usage row, so a resumed session's restored cost is not counted again
+    // after a core restart (the baseline is that session's last cost).
+    //
+    // Then a one-time repair of every stored week: before the fix, the first
+    // sample after a restart had `cost_delta = cost_estimate` (the whole
+    // restored cost). When the agent's previous row cost no more, the delta
+    // becomes the difference. Best-effort for rows recorded before the fix:
+    // a new session whose first cost is >= the previous (tiny) session's last
+    // cost gets that cost subtracted too; a new session that costs less than
+    // the previous row is left as it is.
+    r#"
+ALTER TABLE usage_samples ADD COLUMN session_id TEXT;
+CREATE INDEX usage_samples_session ON usage_samples(agent_id, session_id, ts_ms);
+
+UPDATE usage_samples SET cost_delta = usage_samples.cost_estimate - p.prev
+FROM (
+    SELECT id, LAG(cost_estimate) OVER (PARTITION BY agent_id ORDER BY ts_ms, id) AS prev
+    FROM usage_samples WHERE source = 'statusline' AND agent_id IS NOT NULL AND cost_estimate IS NOT NULL
+) AS p
+WHERE usage_samples.id = p.id
+  AND p.prev IS NOT NULL
+  AND usage_samples.cost_delta = usage_samples.cost_estimate
+  AND p.prev <= usage_samples.cost_estimate;
+"#,
 ];
 
 pub(crate) fn migrate(c: &mut Connection) -> Result<()> {
@@ -934,6 +959,64 @@ mod tests {
         for st in ["sent", "effect", "failed", "stale"] {
             assert_eq!(crate::InboxStatus::parse(st).as_str(), st);
         }
+    }
+
+    #[test]
+    fn migration_23_repairs_double_counted_first_samples_of_every_week() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("m.db");
+        let now: i64 = 1_800_000_000_000;
+        let past = now - 14 * 24 * 3_600_000; // two weeks before
+        {
+            let mut c = Connection::open(&p).unwrap();
+            for sql in &MIGRATIONS[..22] {
+                c.execute_batch(sql).unwrap();
+            }
+            c.pragma_update(None, "user_version", 22).unwrap();
+            let ins = |id: i64, ts: i64, agent: &str, cost: f64, delta: f64, source: &str| {
+                c.execute(
+                    "INSERT INTO usage_samples(id, ts_ms, agent_id, cost_estimate, cost_delta, provenance, source)
+                     VALUES (?1, ?2, ?3, ?4, ?5, 'observed', ?6)",
+                    rusqlite::params![id, ts, agent, cost, delta, source],
+                )
+                .unwrap();
+            };
+            // This week: a restart double-counts 3.4, then a real new session at 0.2.
+            ins(1, now, "a", 1.0, 1.0, "statusline");
+            ins(2, now + 1, "a", 3.0, 2.0, "statusline");
+            ins(3, now + 2, "a", 3.4, 3.4, "statusline");
+            ins(4, now + 3, "a", 0.2, 0.2, "statusline");
+            // An agent's very first row stays its own cost.
+            ins(5, now + 1, "b", 0.7, 0.7, "statusline");
+            // A past week: the same restart case.
+            ins(6, past, "c", 2.0, 2.0, "statusline");
+            ins(7, past + 1, "c", 2.5, 2.5, "statusline");
+            // A row with no cost between them does not hide the restart.
+            c.execute(
+                "INSERT INTO usage_samples(id, ts_ms, agent_id, provenance, source) VALUES (9, ?1, 'c', 'observed', 'statusline')",
+                [past + 2],
+            )
+            .unwrap();
+            ins(10, past + 3, "c", 2.9, 2.9, "statusline");
+            // OTLP rows are per-request costs: never touched.
+            ins(8, now + 4, "a", 3.5, 3.5, "otel");
+            migrate(&mut c).unwrap();
+        }
+        let c = Connection::open(&p).unwrap();
+        let delta = |id: i64| -> f64 {
+            c.query_row("SELECT cost_delta FROM usage_samples WHERE id = ?1", [id], |r| r.get(0)).unwrap()
+        };
+        let close = |a: f64, b: f64| (a - b).abs() < 1e-9;
+        assert!(close(delta(1), 1.0) && close(delta(2), 2.0));
+        assert!(close(delta(3), 0.4), "{}", delta(3));
+        assert!(close(delta(4), 0.2), "a new session that costs less is kept");
+        assert!(close(delta(5), 0.7));
+        assert!(close(delta(6), 2.0) && close(delta(7), 0.5), "past weeks are repaired too: {}", delta(7));
+        assert!(close(delta(8), 3.5));
+        assert!(close(delta(10), 0.4), "the last row with a cost is the previous one: {}", delta(10));
+        let sessions: i64 =
+            c.query_row("SELECT count(*) FROM usage_samples WHERE session_id IS NOT NULL", [], |r| r.get(0)).unwrap();
+        assert_eq!(sessions, 0);
     }
 
     #[test]
