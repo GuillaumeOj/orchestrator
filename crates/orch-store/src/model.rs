@@ -365,6 +365,9 @@ pub struct UsageRecord {
     pub allocation: Option<String>,
     /// Per-model weekly windows of the response (FR-815), statusline rows.
     pub model_windows: Vec<governor::ModelWindowReading>,
+    /// The statusline session the sample came from (a resume's cost
+    /// baseline); `None` on rows recorded before it was stored, and OTLP rows.
+    pub session_id: Option<String>,
 }
 
 /// OTLP token and cost totals of one agent (`None` = unattributed).

@@ -66,7 +66,7 @@ fn row_rule(r: &rusqlite::Row) -> rusqlite::Result<PermissionRule> {
     })
 }
 
-const USAGE_COLS: &str = "id, ts_ms, agent_id, turn_id, model, tokens_in, tokens_out, cache_read, cache_write, cost_estimate, cost_delta, five_hour_pct, five_hour_resets_at, weekly_pct, weekly_resets_at, model_weekly_pct, provenance, source, class, allocation, model_windows";
+const USAGE_COLS: &str = "id, ts_ms, agent_id, turn_id, model, tokens_in, tokens_out, cache_read, cache_write, cost_estimate, cost_delta, five_hour_pct, five_hour_resets_at, weekly_pct, weekly_resets_at, model_weekly_pct, provenance, source, class, allocation, model_windows, session_id";
 
 fn row_usage(r: &rusqlite::Row) -> rusqlite::Result<UsageRecord> {
     let u = |i: usize| opt_u64(r, i);
@@ -93,6 +93,7 @@ fn row_usage(r: &rusqlite::Row) -> rusqlite::Result<UsageRecord> {
         class: r.get(18)?,
         allocation: r.get(19)?,
         model_windows: r.get::<_, Option<String>>(20)?.and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default(),
+        session_id: r.get(21)?,
     })
 }
 
@@ -378,7 +379,7 @@ impl Store {
             let o = |v: Option<u64>| v.map(|x| x as i64);
             tx.execute(
                 &format!(
-                    "INSERT INTO usage_samples({}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)",
+                    "INSERT INTO usage_samples({}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)",
                     &USAGE_COLS[4..]
                 ),
                 params![
@@ -401,11 +402,28 @@ impl Store {
                     u.source.map(|s| s.as_str()).unwrap_or("statusline"),
                     u.class,
                     u.allocation,
-                    (!u.model_windows.is_empty()).then(|| js(&u.model_windows))
+                    (!u.model_windows.is_empty()).then(|| js(&u.model_windows)),
+                    u.session_id
                 ],
             )?;
             Ok(())
         });
+    }
+
+    /// The last cumulative cost stored for an agent's statusline session:
+    /// the baseline of a resumed session, whose CLI restores that cost.
+    pub fn last_session_cost(&self, agent_id: &str, session_id: &str) -> Result<Option<f64>> {
+        let (agent_id, session_id) = (agent_id.to_string(), session_id.to_string());
+        self.read(move |c| {
+            Ok(c.query_row(
+                "SELECT cost_estimate FROM usage_samples
+                 WHERE agent_id = ?1 AND session_id = ?2 AND source = 'statusline' AND cost_estimate IS NOT NULL
+                 ORDER BY ts_ms DESC, id DESC LIMIT 1",
+                params![agent_id, session_id],
+                |r| r.get(0),
+            )
+            .optional()?)
+        })
     }
 
     /// Samples with `ts >= since_ms`, oldest first, optionally of one source.
@@ -884,11 +902,29 @@ pub(crate) mod tests {
             source: Some(UsageSource::Otel),
             ..Default::default()
         });
+        for (ts, sid, cost) in [(12, "s1", 0.4), (13, "s2", 0.1), (14, "s1", 0.6)] {
+            s.add_usage(UsageRecord {
+                ts_ms: ts,
+                agent_id: Some("a2".into()),
+                session_id: Some(sid.into()),
+                cost_estimate: Some(cost),
+                provenance: "observed".into(),
+                source: Some(UsageSource::Statusline),
+                ..Default::default()
+            });
+        }
         s.flush().unwrap();
+        assert_eq!(s.last_session_cost("a2", "s1").unwrap(), Some(0.6));
+        assert_eq!(s.last_session_cost("a2", "s2").unwrap(), Some(0.1));
+        assert_eq!(s.last_session_cost("a2", "s3").unwrap(), None);
+        assert_eq!(s.last_session_cost("a1", "s1").unwrap(), None);
+        let all = s.usage_since(12, Some(UsageSource::Statusline)).unwrap();
+        assert_eq!(all[0].session_id.as_deref(), Some("s1"));
         let st = s.usage_since(0, Some(UsageSource::Statusline)).unwrap();
-        assert_eq!(st.len(), 1);
+        assert_eq!(st.len(), 4);
+        assert_eq!(st[0].session_id, None);
         assert_eq!(st[0].weekly_pct, Some(40.0));
-        assert_eq!(s.usage_since(11, None).unwrap().len(), 1);
+        assert_eq!(s.usage_since(11, None).unwrap().len(), 4);
         let tot = s.usage_totals(0).unwrap();
         assert_eq!(
             tot,
