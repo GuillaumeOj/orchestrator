@@ -1,70 +1,80 @@
-# Fix flaky test: `retry_on_an_invariant_decision_resends_and_a_second_failure_is_raised_again`
+# Fix flaky test: `f3_a_crashed_agent_is_resumed_and_gets_its_message`
+
+> This folder held the spec of an earlier feature with the same slug (the flaky
+> `retry_on_an_invariant_decision…` scenario, commit ec03f9cf); it is in git history.
 
 ## Symptom (CI, main)
 
 ```
-thread 'chaos::scenarios::retry_on_an_invariant_decision_resends_and_a_second_failure_is_raised_again'
-panicked at crates/agent-runtime/src/chaos.rs:970:9:
-assertion failed: sim.items("delivery").is_empty()
+thread 'chaos::scenarios::f3_a_crashed_agent_is_resumed_and_gets_its_message'
+panicked at crates/agent-runtime/src/chaos.rs:721:9:
+assertion failed: cli.saw(&format!("[t:{t}]"))
 ```
 
-The last assertion of the scenario: after the second Retry worked and the lead saw the
-message, a `delivery` decision is still open.
+`sim.until("the turn done", …)` passed (the core has the turn `Done`), and the next line
+finds no screen line with the turn's `[t:<id>]` marker.
 
 ## Root cause (lead's analysis, to be confirmed by `back`)
 
-The scenario runs with `short_bounds()`: `delivery.invariant_secs` = 1 s for the whole test.
+The test harness races itself, not the product.
 
-1. Line 966–968: the test lifts the modal, sets `ack_secs` = 1 and retries the second decision.
-   `retry_delivery` closes it, requeues the paste, sets `ready_at = now + AFTER_STOP (500 ms)`
-   and restarts the message's invariant clock (`retried_at = now`).
-2. Until the lead's `UserPromptSubmit` arrives the lead is not `Working` and the message is
-   unread. If that takes more than 1 s (500 ms `AFTER_STOP` + pump/tick cadence + the fake
-   CLI thread, under CI load), `delivery_invariant` (team tick) raises a **third**
-   `stuck_lead` decision: the retry released the episode key, so this is a new episode.
-3. The message is then seen; the `until("the message seen")` condition turns true on the
-   CLI thread right after a tick. `close_delivered` (first step of the next team tick)
-   would close the third decision by itself, but no tick runs before line 970 asserts.
+In the fake CLI (`Machine::turn`, `chaos.rs` ~line 233–307) the order of a normal turn is:
 
-So the product behaves as specified (a decision raised during a slow redelivery closes
-itself once the message is seen). The flake is the test: a 1 s invariant window racing
-a real-clock redelivery, and a strict assertion with no tick between "seen" and "no open
-decision". Production uses 10 min, where this race does not exist.
+1. transcript `user` line, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, statusline,
+   transcript `assistant` line;
+2. the `Stop` (or `StopFailure`) hook, served synchronously by `Runtime::serve_hook`:
+   `end_turn` marks every delivered turn **`Done`** in the store;
+3. only then `self.say(format!("DONE[{n}] {prompt}"))`, the only screen line that carries
+   the prompt, so the only one with `[t:<id>]`.
+
+The test thread polls `sim.status(&t) == Done` every step (~20 ms). When it reads the
+store between 2 and 3 (the CLI thread preempted right after the hook returned, which a
+loaded CI runner with 620 tests does), `until` returns and `cli.saw("[t:…]")` is false.
+
+The same race exists in every assertion of the pattern "turn `Done` → the model saw its
+marker": `Sim::next_message_arrives` (line ~583, called by most F-scenarios), F1 at lines
+~615 and ~628, F3 at line 721. F3 is simply the one that lost the race this time.
+
+Checked and ruled out: `continue_after_crash` closing the new turn as `Done` before the
+new process ran it. It runs synchronously in `on_exit` on the old CLI thread, before the
+resumed process can even pass `SessionStart` (150 ms start + `AFTER_SESSION_START`
+1.5 s), so the user's turn is never `Delivered` when it runs.
 
 ## Fix
 
-Test-only, in `crates/agent-runtime/src/chaos.rs` (scenario at line ~946):
+Test-harness only, in `crates/agent-runtime/src/chaos.rs`:
 
-- Before the second (successful) Retry, set `INVARIANT_KEY` to a large value (e.g. 3600 s),
-  as the scenario already does for `ACK_KEY` in its first half. No new invariant episode
-  can then open while the retry goes through, and the final strict assertion keeps its
-  meaning: *when the retry works, the decision stays closed* (nothing new is raised).
-- Keep the final assertion strict (do not fold it into the `until`, which would hide a real
-  "decision raised again" regression).
-- Check the sibling scenarios using the same pattern
-  (`the_delivery_invariant_names_the_cause_of_a_message_left_unread`, the F-series using
-  `short_bounds`) for the same race; fix only those that can race the same way.
+- In `Machine::turn`, show the turn's `DONE[{n}] {prompt}` line **before** sending the
+  `Stop` / `StopFailure` hook (and in the `drop_stop` case as today). This is also what
+  the real Claude Code does: the reply is on screen before the Stop hook fires. A turn
+  the core sees as `Done` has then always been seen by the model.
+- The crash path (`exit` after `UserPromptSubmit`) is unchanged: it shows no `DONE` line.
+- Update the `Cli::screen` doc comment to say the `DONE` line comes before the Stop.
+- Check the screen-line assertions that read after an `until(saw …)` (F4 line ~782,
+  F5 ~804, F8 ~878–894, the send-order test ~1009–1011, F7, F9, the team scenarios) still
+  mean the same; none of them should need a Stop to have been applied when the line shows,
+  but if one does, wrap its follow-up check in an `until` rather than reorder again.
+- Give the four bare `assert!(cli.saw(&format!("[t:{t}]")))` the same failure message as
+  `next_message_arrives` (`"the model saw {t}: {:?}", cli.lines()`), so a future failure
+  prints the screen.
 
-No production code change unless the reproduction shows a different cause (then report to
-lead before changing `stuck.rs` / `handover.rs`).
+No production code change. If the reproduction shows a different cause, report to `lead`
+before touching `runtime.rs` / `delivery.rs`.
 
 ## Verification
 
-- Reproduce first: run the scenario repeatedly under load (e.g. many parallel copies:
-  `cargo test -p agent-runtime retry_on_an_invariant_decision -- --test-threads=1` in a loop
-  while the rest of the chaos suite runs, or `for i in $(seq 50)` with CPU pressure) and,
-  on failure, print the open item's `payload` (episode, blocker, key) to confirm it is a
-  third `stuck_lead` raised after the retry.
-- After the fix: the same loop passes (≥ 50 runs under load), and the whole
-  `chaos::scenarios` module and `cargo test -p agent-runtime` pass
-  (`ORCH_TEST_TMP=$TMPDIR/t`; socket/pty tests may fail in the sandbox — CI judges them).
-- `cargo clippy` / `cargo fmt` clean.
+- Reproduce first, deterministically: put a `std::thread::sleep(Duration::from_millis(200))`
+  between the `Stop` hook and the `DONE` line (temporary, not committed) and run
+  `cargo test -p agent-runtime --lib chaos::scenarios::f3_a_crashed_agent_is_resumed` —
+  it must fail with the CI assertion. With the fix (and the same sleep moved after the
+  hook, i.e. after the `DONE` line), it must pass.
+- Then, without the sleep: `cargo test -p agent-runtime --lib chaos::` passes, run in a
+  loop (≥ 20 runs) to show no other scenario turned flaky, and the full
+  `cargo test -p agent-runtime --lib` passes (`ORCH_TEST_TMP=$TMPDIR/t`; socket/pty tests
+  may fail in the sandbox — CI judges them).
+- `cargo clippy` and `cargo fmt --check` clean.
 
 ## Team
 
-- `back`: the whole fix (test code in `agent-runtime`). One task.
-- `front`: no work.
-
-## Out of scope
-
-Changing the invariant or retry semantics in production code.
+One task, `back` (Rust test harness). No frontend or design work: `front` has nothing to
+do on this feature, so no `api-contract.md` / `ux-brief.md`.
