@@ -58,7 +58,7 @@
     warnVerb,
   } from '../../lib/chat.js';
   import { clock, plural } from '../../lib/format.js';
-  import { actionByKey, agentOf, answerText, blockOf, FILTERS, intentFor, isOpen, keyIntent } from '../../lib/inbox.js';
+  import { actionByKey, agentOf, answerMessage, blockOf, FILTERS, intentFor, isOpen, keyIntent } from '../../lib/inbox.js';
   import { briefEnded } from '../../lib/intake.js';
   import { clearPlan, intakeUi, planContext, plannedEntries, startBrief } from '../../lib/intake.svelte.js';
   import { errText, invoke, listen } from '../../lib/ipc.js';
@@ -102,6 +102,7 @@
   let marked = $state(new Set());
   let reply = $state(null); // { id, action }
   let choices = $state({}); // decision id → the options block's choices
+  let notes = $state({}); // decision id → the free text typed under its options
   let expanded = $state(new Set()); // line item keys
   // A card's collapse waits while the pointer is over it or a reply is typed (notes §2.1).
   let hovered = $state(null);
@@ -718,8 +719,11 @@
         const opts = blockOf(d, 'options');
         if (opts) {
           const c = choices[d.id] ?? [];
-          if (opts.questions.every((_, i) => c[i]?.length)) send(d, 'answer', answerText(c));
-          else toast('Pick an answer for every question');
+          const n = (notes[d.id] ?? '').trim();
+          if (n || opts.questions.every((_, i) => c[i]?.length)) {
+            send(d, 'answer', answerMessage(c, n));
+            delete notes[d.id];
+          } else toast('Pick an answer for every question');
         } else reply = { id: d.id, action: 'answer' };
         return true;
       }
@@ -1076,6 +1080,7 @@
             refok={refOk}
             onref={openRef}
             bind:choices={() => choices[it.id] ?? [], (v) => (choices[it.id] = v)}
+            bind:notes={() => notes[it.id] ?? '', (v) => (notes[it.id] = v)}
             onkey={(k) => cardKey(it.d, k)}
             onact={(id) => act(it.d, id)}
             onreply={(text) => sendReply(it.d, text)}
