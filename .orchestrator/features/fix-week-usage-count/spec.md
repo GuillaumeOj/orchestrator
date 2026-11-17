@@ -46,20 +46,28 @@ The stored rows keep the inflated `cost_delta`, so a restart replays the week (`
    - a session the collector has no baseline for: when the store has a last `cost_estimate` for that agent and session (a resume), the same rule against it; else (a new session) `cost`.
 4. The core restart path, the idle suspend/resume path and the model-switch resume path all get exact deltas. A fresh session per task (improve-agent-usage) is unchanged: its first cost is its own.
 
-### 3.2 Repair the stored rows (`orch-store` migration, or a startup pass)
+### 3.2 Repair the stored data, every week (`orch-store` migration, then a one-shot rebuild)
 
-5. Rows recorded before the fix with `cost_delta == cost_estimate` (the "first sample" case) while the same agent's previous row has `cost_estimate ≤` this one: set `cost_delta = cost_estimate − previous cost_estimate`. Rows of an agent are ordered by `ts_ms`. The pass runs once (an idempotent migration).
-6. So the current week's replay and its in-progress report are right after the update. Stored reports of past weeks are not rebuilt.
+5. **Rows, all weeks.** One migration over every stored statusline row, past weeks included. It fixes rows recorded before the fix where `cost_delta == cost_estimate` (the "first sample" case) and the same agent's previous row has `cost_estimate ≤` this one: it sets `cost_delta = cost_estimate − previous cost_estimate`. Rows of an agent are ordered by `ts_ms`. It runs once, through the migration framework. It is best-effort for old rows: a new session whose first cost is at least the previous (tiny) session's last cost has that cost subtracted. A comment in the migration says so.
+6. **Estimator chain.** Each week starts from the estimator the previous week ended with (`save_estimator("week", …)`, FR-814). So a `k` inflated weeks ago is still carried today. After the migration, a one-shot pass, guarded by a stored setting so it runs once, does the following:
+   - it walks the stored weeks oldest first;
+   - for each week, it starts from the rebuilt end estimator of the week before (the oldest week keeps its stored start);
+   - it replays that week's repaired rows with the bounded fit (§3.3);
+   - it saves the result as the next week's start estimator.
+   The current week then restores from a clean start and replays its repaired rows.
+7. **Stored weekly reports.** The same pass rebuilds each stored report (`reports`, FR-818) from the repaired rows and the week's rebuilt calibration (the calibration at that week's reset), and overwrites it in place. It keeps the report id, `week_start`, `reset_at` and the stored `final_weekly_pct`: the observed total does not change. The "Weekly report ready" digest is not sent again.
+   - Attribution of a past week uses the agents the store has now, as `build_report` already does. Rows of agents deleted since go to "unknown project" / "solo sessions", the same as before the rebuild.
+   - Weeks with no stored rows, or no start estimator, keep their stored report.
 
 ### 3.3 A fit that a bad interval cannot capture (`governor`)
 
-7. `Calibrator::update` (and `FamilyCalibrator::update` with the same rule) bounds an interval's influence once the fit has some confidence (for example ≥ 3 real intervals). When `Δcost / k > m · ΔW + slack` (app cost alone explains far more than the increase, with `m` around 2 and `slack` around 1 pp for whole-percent readings), the interval is clipped to `Δcost = k · (m · ΔW + slack)`, or skipped. Back picks the option and its constants, with a test for each. Early in the week (the prior `k0 = 1` is far off), nothing is clipped.
-8. The governor's replay goes through the same `update`, so a restart gives the same `k` as the live run.
+8. `Calibrator::update` (and `FamilyCalibrator::update` with the same rule) bounds an interval's influence once the fit has some confidence (for example ≥ 3 real intervals). When `Δcost / k > m · ΔW + slack` (app cost alone explains far more than the increase, with `m` around 2 and `slack` around 1 pp for whole-percent readings), the interval is clipped to `Δcost = k · (m · ΔW + slack)`, or skipped. Back picks the option and its constants, with a test for each. Early in the week (the prior `k0 = 1` is far off), nothing is clipped.
+9. The governor's replay goes through the same `update`, so a restart, and the rebuild of §3.2, give the same `k` as the live run.
 
 ### 3.4 Out of scope
 
-- UI changes: the bars, Planner window and report already show `governed`, `interactive_used` and `unattributed_so_far` / `outside_pp`. They are right once the inputs are.
-- Rebuilding stored weekly reports of past weeks.
+- UI changes: the bars, Planner window and report already show `governed`, `interactive_used` and `unattributed_so_far` / `outside_pp`. They are right once the inputs are. A rebuilt past report shows in the Report pane as it is.
+- Repairing rows that no longer exist: the past is only as good as the stored rows.
 - Attribution of cloud work (`/code-review ultra`, remote sessions). It runs outside the app and stays "outside the app".
 
 ## 4. Acceptance
@@ -70,7 +78,11 @@ The stored rows keep the inflated `cost_delta`, so a restart replays the week (`
    - an unseeded collector with the store's baseline for `s` at 12.0, then a render of `s` at 12.4 ⇒ 0.4;
    - a new session `t` at 0.2 ⇒ 0.2.
 2. Runtime test (the existing restart harness in `runtime.rs` / `tests/e2e_fake_claude.rs`): an agent reports cost 5.0, the core restarts, the fake claude resumes and reports 5.0, then 5.5. Stored deltas sum to 5.5, not 10.5.
-3. Migration test: rows `(a, 1.0, Δ1.0) (a, 3.0, Δ2.0) (a, 3.4, Δ3.4)` ⇒ the last delta becomes 0.4. A real new session `(a, 0.2, Δ0.2)` after `3.4` is left as it is.
+3. Migration test: rows `(a, 1.0, Δ1.0) (a, 3.0, Δ2.0) (a, 3.4, Δ3.4)` ⇒ the last delta becomes 0.4. A real new session `(a, 0.2, Δ0.2)` after `3.4` is left as it is. Rows of a past week are repaired too.
+3b. Rebuild test: two stored past weeks plus the current one, with a double-counted spike in the oldest week and a stored report for each past week. After the migration and the one-shot pass:
+   - each past report's `outside_pp` is the truth (within 3 pp), and its id, dates and `final_weekly_pct` are unchanged;
+   - the current week's start estimator has `k` within 10 % of the truth;
+   - a second start does not run the pass again, and no `weekly_report` event is emitted.
 4. Estimator test: the §2.2 week (agents only, true `k` 20, outside 6.6 pp) with three double-counted intervals keeps `k` within 10 % of 20, and the outside estimate within 3 pp of the truth. The existing `learns_k_and_u_from_mixed_intervals` and the pacing-sim NFR tests still pass.
 5. Governor test: live ingest and restart replay of the same samples give the same `k` and the same `unattributed_so_far`.
 6. `cargo test --workspace`, `cargo clippy --workspace -- -D warnings`, `cargo fmt --check` pass.
@@ -79,7 +91,8 @@ The stored rows keep the inflated `cost_delta`, so a restart replays the week (`
 
 | Task | Owner | Notes |
 |---|---|---|
-| T-A · Exact cost deltas across restarts + row repair (§3.1, §3.2) | back | `usage.rs`, `runtime.rs` (`on_status`, startup, `usage_record`), `orch-store` (migration, `UsageRecord.session_id`, a "last cost of agent/session" query). Opus. |
-| T-B · Bounded calibration intervals (§3.3) | back | `crates/governor/src/estimator.rs`, `governor.rs` `calibrate`. No file in common with T-A. |
+| T-429 · Exact cost deltas across restarts + row repair, all weeks (§3.1, §3.2 item 5) | back | `usage.rs`, `runtime.rs` (`on_status`, startup, `usage_record`), `orch-store` (migration, `UsageRecord.session_id`, a "last cost of agent/session" query). Opus. |
+| T-430 · Bounded calibration intervals (§3.3) | back | `crates/governor/src/estimator.rs`, `governor.rs` `calibrate`. No file in common with T-429. |
+| T-C · Rebuild the estimator chain and the stored weekly reports (§3.2 items 6–7, acceptance 3b) | back | After T-429 and T-430. `report.rs` (a rebuild built on `build_report`), `runtime.rs` (one-shot pass at start, after `restore_governor`'s inputs are repaired), `orch-store/reports.rs` (overwrite a report in place, list the week estimators). Opus. |
 
 Front has no task: the UI does not change.
