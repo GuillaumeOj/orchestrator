@@ -79,6 +79,13 @@ pub(crate) fn pastes_of_meta(meta: Option<&Value>) -> Option<Vec<Value>> {
     (!v.is_empty()).then(|| v.clone())
 }
 
+/// Removes the files of a `meta.pastes` list (best effort).
+fn remove_paste_files(pastes: &[Value]) {
+    for f in pastes.iter().filter_map(|p| p["path"].as_str()) {
+        let _ = std::fs::remove_file(f);
+    }
+}
+
 impl Runtime {
     /// `<root>/overwatch/pastes`: where the pasted texts live (all days).
     pub(crate) fn overwatch_pastes_dir(&self) -> std::path::PathBuf {
@@ -116,7 +123,7 @@ impl Runtime {
                 return Err(anyhow::Error::new(e).context("the pasted text was not written"));
             }
             written.push(path.clone());
-            meta.push(json!({"n": n, "chars": body.chars().count(), "lines": body.lines().count(), "path": path}));
+            meta.push(json!({"n": n, "chars": body.chars().count(), "lines": body.lines().count(), "path": path.to_string_lossy()}));
         }
         Ok(meta)
     }
@@ -265,11 +272,7 @@ impl Runtime {
         let e = match self.chat_put(e) {
             Ok(e) => e,
             Err(err) => {
-                for p in &pastes {
-                    if let Some(f) = p["path"].as_str() {
-                        let _ = std::fs::remove_file(f);
-                    }
-                }
+                remove_paste_files(&pastes);
                 return Err(err);
             }
         };
@@ -374,6 +377,9 @@ impl Runtime {
             bail!("bad_request: only a message that was not delivered can be discarded");
         }
         self.db.chat_delete(n)?;
+        if let Some(p) = pastes_of_meta(e.meta.as_ref()) {
+            remove_paste_files(&p);
+        }
         self.overwatch_forget_pending(&e.id());
         let _ = self.db.audit("user", None, "chat_discard", Some(&e.id()), "ok", json!({}));
         self.touch("chat");
