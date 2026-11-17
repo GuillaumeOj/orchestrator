@@ -36,7 +36,7 @@ In `ChatText.svelte`, user `.body.plain`: each `[Pasted text #n …]` whose `n` 
 **Content**: a 12 px document glyph (inline SVG, `currentColor`, `aria-hidden`, `margin-right: var(--space-xs)`) + `Pasted text #1 · 5 000 chars · 120 lines`. Regular weight (a mention is semibold).
 
 **Look, distinct from a mention.** A mention is a **filled** semibold pill; the chip is an **outlined** regular-weight element with a glyph.
-- **Rest**: `background: transparent`; `box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-accent-default) 50%, transparent)`; `color: var(--color-text-primary)`.
+- **Rest**: `background: transparent`; `box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-accent-default) 80%, transparent)` (80% per the ui section: 50% fails contrast in dark); `color: var(--color-text-primary)`.
 - **Hover**: `background: color-mix(in srgb, var(--color-accent-default) 22%, var(--color-accent-subtle))`, ring `--color-accent-default`. Tooltip (`lib/tooltip.js`): `Show pasted text` / `Hide pasted text`.
 - **Focus-visible**: `box-shadow: 0 0 0 var(--border-width-focus) var(--color-focus)` (as `.text:focus-visible`), kept over the ring.
 - **Open** (`aria-expanded="true"`): the hover fill stays, ring `--color-accent-default`: it reads as attached to its panel.
