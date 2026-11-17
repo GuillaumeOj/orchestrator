@@ -249,6 +249,17 @@ describe('context blocks: one component per type, in order', () => {
       expect(app.pending[0]).toMatchObject({ action: 'answer', message: 'Clerk\nCard\n\ndetails' });
     });
 
+    it('Undo keeps the typed text, like the choices', async () => {
+      const { container: c } = setup();
+      await fireEvent.input(c.querySelector('textarea[aria-label="Your answer"]'), { target: { value: 'my words' } });
+      flushSync();
+      await fireEvent.click(answerBtn(c));
+      expect(c.querySelector('textarea[aria-label="Your answer"]')).toBeNull(); // pending: hidden
+      await fireEvent.click([...c.querySelectorAll('.actions button')].find((b) => b.textContent.trim() === 'Undo'));
+      flushSync();
+      expect(c.querySelector('textarea[aria-label="Your answer"]').value).toBe('my words');
+    });
+
     it('⏎ in the field sends, Shift+⏎ does not', async () => {
       const { container: c } = setup();
       const field = c.querySelector('textarea[aria-label="Your answer"]');

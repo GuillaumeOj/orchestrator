@@ -722,7 +722,6 @@
           const n = (notes[d.id] ?? '').trim();
           if (n || opts.questions.every((_, i) => c[i]?.length)) {
             send(d, 'answer', answerMessage(c, n));
-            delete notes[d.id];
           } else toast('Pick an answer for every question');
         } else reply = { id: d.id, action: 'answer' };
         return true;
