@@ -73,25 +73,18 @@ const PRIOR_HOURS: f64 = 10.0;
 const PRIOR_WEIGHT: f64 = 0.2;
 
 /// fix-week-usage-count §3.3: an interval whose app cost alone explains more
-/// than `BOUND_RATIO · ΔW + BOUND_SLACK_PP` at the current `k` cannot be
-/// right (a double-counted cost, a burst of cost the week did not see): it is
-/// skipped. Clipping it to the bound is not enough: a clipped interval still
-/// says `k` is up to `BOUND_RATIO` times higher, and the bound grows with the
-/// fit, so a few of them ratchet `k` up. A sound interval's app share is at
-/// most `ΔW` (outside usage is never negative); 1.5 leaves room for a `k` off
-/// by a few tens of percent, and 2 lets a 4 pp spike on a 5 pp interval
-/// through. The slack is a whole-percent reading's rounding.
+/// than `BOUND_RATIO · ΔW + BOUND_SLACK_PP` at the current `k` (a
+/// double-counted cost) is skipped, not clipped: a clipped one still pulls `k`
+/// up, and the bound grows with `k`. A sound interval's app share is at most
+/// `ΔW`; the slack is a whole-percent reading's rounding.
 const BOUND_RATIO: f64 = 1.5;
 const BOUND_SLACK_PP: f64 = 1.0;
-/// The bound applies once the fit has this many real intervals: before, `k`
-/// is still the prior (`k0 = 1` is far off) and nothing is skipped.
+/// Nothing is skipped before this many real intervals (`k` is still the prior).
 const BOUND_MIN_INTERVALS: u64 = 3;
-/// A spike is one interval; a real change of `k` recurs. The fit keeps a
-/// count of recent intervals over the bound, decayed by `BOUND_MEMORY` per
-/// interval, and skips one only while that count is under 1. Spikes 3
-/// intervals apart or more are all skipped; the third of a run, or a pattern
-/// every other interval (a costlier model's turns), is taken, so the
-/// fit still follows a lasting change (and its bound with it).
+/// Per-interval decay of the recent over-bound count; an over-bound interval
+/// is skipped only while that count is under 1. So spikes 3 intervals apart
+/// are skipped, and a run's third, or an every-other pattern, is taken: the
+/// fit still follows a lasting change of `k`.
 const BOUND_MEMORY: f64 = 0.75;
 
 impl Calibrator {
@@ -138,13 +131,6 @@ impl Calibrator {
         }
     }
 
-    /// §3.3: the interval's app cost alone explains far more than its
-    /// increase (`d_cost / k > BOUND_RATIO · d_pct + BOUND_SLACK_PP`), once
-    /// the fit has [`BOUND_MIN_INTERVALS`].
-    fn is_over_bound(&self, d_cost: f64, d_pct: f64) -> bool {
-        self.intervals >= BOUND_MIN_INTERVALS && d_cost * self.a > BOUND_RATIO * d_pct + BOUND_SLACK_PP
-    }
-
     /// Add one interval: attributed cost `d_cost`, `d_hours` wall hours, `d_pct`
     /// observed pp. Returns whether the fit took it: an invalid interval, or
     /// one over the bound (§3.3), is skipped, and the per-model fit
@@ -158,8 +144,8 @@ impl Calibrator {
             return false;
         }
         let recent = self.over_bound * BOUND_MEMORY;
-        let over = self.is_over_bound(d_cost, d_pct);
-        self.over_bound = recent + if over { 1.0 } else { 0.0 };
+        let over = self.intervals >= BOUND_MIN_INTERVALS && d_cost * self.a > BOUND_RATIO * d_pct + BOUND_SLACK_PP;
+        self.over_bound = recent + f64::from(u8::from(over));
         if over && recent < 1.0 {
             return false;
         }
@@ -227,8 +213,7 @@ impl FamilyCalibrator {
         FamilyCalibrator { s_xx: [[0.0; NV]; NV], s_xy: [0.0; NV], decay: decay.clamp(0.01, 1.0), counts: [0; NF] }
     }
 
-    /// Add one interval the shared fit took ([`Calibrator::update`] returned
-    /// `true`): the same intervals, so the same §3.3 bound.
+    /// Add one interval the shared fit took ([`Calibrator::update`] returned `true`).
     pub fn update(&mut self, d_cost: [f64; NF], d_hours: f64, d_pct: f64) {
         if d_cost.iter().any(|c| !c.is_finite() || *c < 0.0) || !(d_hours > 0.0 && d_pct.is_finite() && d_pct >= 0.0) {
             return;
@@ -414,6 +399,15 @@ mod tests {
         (c, outside)
     }
 
+    /// A fit at `k` = 20 (60 $ per 3 pp each hour), `n` intervals.
+    fn warm(n: usize) -> Calibrator {
+        let mut c = Calibrator::new(20.0, 0.85);
+        for _ in 0..n {
+            assert!(c.update(60.0, 1.0, 3.0));
+        }
+        c
+    }
+
     /// Acceptance 4: three double-counted intervals keep `k` within 10 % of
     /// 20 and the outside estimate within 3 pp of 6.6, wherever they fall
     /// (3 intervals apart or more: a restart every few hours).
@@ -445,13 +439,7 @@ mod tests {
     /// one just over it skipped.
     #[test]
     fn the_bound_is_ratio_times_the_increase_plus_slack() {
-        let warm = || {
-            let mut c = Calibrator::new(20.0, 0.85);
-            for _ in 0..5 {
-                assert!(c.update(60.0, 1.0, 3.0));
-            }
-            c
-        };
+        let warm = || warm(5);
         let k = warm().cost_per_pct();
         // ΔW = 4 pp: the bound is (1.5 · 4 + 1) · k = 7 k.
         assert!(warm().update(6.9 * k, 2.0, 4.0), "just under the bound");
@@ -469,7 +457,7 @@ mod tests {
             assert!(c.update(60.0, 1.0, 3.0), "k0 = 1 says 60 $ is 60 pp");
         }
         assert!((c.cost_per_pct() - 20.0).abs() < 4.0, "k = {}", c.cost_per_pct());
-        assert!(c.update(60.0, 1.0, 3.0));
+        assert!(!c.update(400.0, 1.0, 3.0), "the bound now applies");
     }
 
     /// A costlier interval every other one (a model whose cost per pp is
@@ -477,10 +465,7 @@ mod tests {
     /// a few, so `k` does not stay at the cheap intervals' value.
     #[test]
     fn over_bound_intervals_every_other_one_are_taken() {
-        let mut c = Calibrator::new(20.0, 0.85);
-        for _ in 0..5 {
-            c.update(60.0, 1.0, 3.0);
-        }
+        let mut c = warm(5);
         let mut taken = 0;
         for _ in 0..10 {
             taken += c.update(120.0, 1.0, 3.0) as u32;
@@ -493,10 +478,7 @@ mod tests {
     /// is taken from its third interval, and the bound follows the fit.
     #[test]
     fn a_lasting_change_of_k_is_followed() {
-        let mut c = Calibrator::new(20.0, 0.85);
-        for _ in 0..10 {
-            c.update(60.0, 1.0, 3.0);
-        }
+        let mut c = warm(10);
         for _ in 0..30 {
             c.update(180.0, 1.0, 3.0);
         }
@@ -506,8 +488,8 @@ mod tests {
     #[test]
     fn ignores_invalid_intervals() {
         let mut c = Calibrator::new(10.0, 0.9);
-        c.update(-1.0, 1.0, 3.0);
-        c.update(1.0, 0.0, 3.0);
+        assert!(!c.update(-1.0, 1.0, 3.0));
+        assert!(!c.update(1.0, 0.0, 3.0));
         assert!(!c.update(f64::NAN, 1.0, 3.0));
         assert_eq!(c.intervals(), 0);
     }

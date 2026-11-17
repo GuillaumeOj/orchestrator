@@ -1227,10 +1227,7 @@ impl Governor {
             // §3.3: an interval the shared fit skips (over its bound) is
             // skipped by the per-model fit too. The anchor moves either way.
             if self.calib.update(obs.app_cost - anchor.app_cost, dh, dp) {
-                let mut dc = [0.0; 5];
-                for (i, d) in dc.iter_mut().enumerate() {
-                    *d = obs.family_cost[i] - anchor.family_cost[i];
-                }
+                let dc = std::array::from_fn(|i| obs.family_cost[i] - anchor.family_cost[i]);
                 self.fam.update(dc, dh, dp);
             }
             self.calib_anchor = obs;
