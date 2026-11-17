@@ -78,6 +78,23 @@ impl Store {
         })
     }
 
+    /// Every week's starting estimator, oldest week first (the latest row of
+    /// each week). A row whose state no longer parses is left out.
+    pub fn week_estimators(&self) -> Result<Vec<(Timestamp, EstimatorState)>> {
+        self.read(|c| {
+            let mut st = c.prepare(
+                "SELECT week_start_ms, state FROM calibrations c WHERE kind='week'
+                   AND id = (SELECT max(id) FROM calibrations WHERE kind='week' AND week_start_ms=c.week_start_ms)
+                 ORDER BY week_start_ms",
+            )?;
+            let rows = st.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?)))?;
+            Ok(rows
+                .flatten()
+                .filter_map(|(w, s)| Some((Timestamp::from_millisecond(w).ok()?, serde_json::from_str(&s?).ok()?)))
+                .collect())
+        })
+    }
+
     /// Governor actions logged in `[from, to)`, across boots, without the
     /// copies a replay after a restart logs again (same kind, time and reason).
     pub fn actions_between(&self, from: Timestamp, to: Timestamp) -> Result<Vec<governor::GovernorAction>> {
@@ -118,6 +135,13 @@ impl Store {
             )?;
             Ok(())
         })
+    }
+
+    /// Overwrites a stored report's data in place: its id, dates, final % and
+    /// creation time stay. False when there is no report `id`.
+    pub fn replace_report_data(&self, id: &str, data: &Value) -> Result<bool> {
+        let (id, data) = (id.to_string(), js(data));
+        self.write(move |tx| Ok(tx.execute("UPDATE weekly_reports SET data=?2 WHERE id=?1", params![id, data])? == 1))
     }
 
     pub fn report(&self, id: &str) -> Result<Option<Value>> {
@@ -180,6 +204,9 @@ mod tests {
         let (w, e) = s.week_estimator_before(t(168)).unwrap().unwrap();
         assert_eq!((w, e.calibrator.intervals()), (t(0), 0));
         assert!(s.week_estimator_before(t(0)).unwrap().is_none());
+        let all = s.week_estimators().unwrap();
+        assert_eq!(all.iter().map(|(w, _)| *w).collect::<Vec<_>>(), [t(0), t(168)]);
+        assert_eq!((all[0].1.calibrator.intervals(), &all[1].1.calibrator), (0, &cal));
         let n: i64 = s
             .read(|c| Ok(c.query_row("SELECT count(*) FROM calibrations WHERE kind='week'", [], |r| r.get(0))?))
             .unwrap();
@@ -190,6 +217,16 @@ mod tests {
         assert_eq!(s.report("week-1").unwrap().unwrap()["id"], "week-1");
         assert_eq!(s.reports().unwrap()[0].final_weekly_pct, Some(71.0));
         assert_eq!(s.report_for_reset(t(168)).unwrap().as_deref(), Some("week-1"));
+        let created = |s: &Store| -> i64 {
+            s.read(|c| Ok(c.query_row("SELECT created_at_ms FROM weekly_reports", [], |r| r.get(0))?)).unwrap()
+        };
+        let before = created(&s);
+        assert!(s.replace_report_data("week-1", &json!({"id": "week-1", "v": 2})).unwrap());
+        assert!(!s.replace_report_data("week-9", &json!({})).unwrap());
+        assert_eq!(s.report("week-1").unwrap().unwrap()["v"], 2);
+        let row = &s.reports().unwrap()[0];
+        assert_eq!((row.id.as_str(), row.week_start_ms, row.reset_at_ms), ("week-1", ms(t(0)), ms(t(168))));
+        assert_eq!((row.final_weekly_pct, created(&s)), (Some(71.0), before));
         assert!(s.report_for_reset(t(170)).unwrap().is_none());
         // Retention leaves reports and calibrations alone.
         s.purge(u64::MAX / 2, crate::Retention::default()).unwrap();
