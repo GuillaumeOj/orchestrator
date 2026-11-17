@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::RecvTimeoutError;
 use std::time::{Duration, Instant};
 
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use orch_store::Tracker;
 use serde_json::{Value, json};
 
@@ -23,6 +23,17 @@ const CODE_WAIT: Duration = Duration::from_secs(10);
 /// A device code lives about 15 minutes: then the grant is killed.
 const GRANT_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 const POLL: Duration = Duration::from_millis(200);
+/// How long, once gh exited, its last lines may take to come through the reader threads.
+const DRAIN: Duration = Duration::from_millis(500);
+/// github.com's device-flow page.
+const DEVICE_URL: &str = "https://github.com/login/device";
+
+/// Reads what is left of an exited gh's output: until both streams end (or nothing comes for [`DRAIN`]).
+fn drain_after_exit(lines: &std::sync::mpsc::Receiver<String>, mut f: impl FnMut(String)) {
+    while let Ok(l) = lines.recv_timeout(DRAIN) {
+        f(l);
+    }
+}
 
 /// Told of every `gh.grant` outcome ([`Runtime::set_grant_sink`]).
 pub type GrantSink = Arc<dyn Fn(&Value) + Send + Sync>;
@@ -34,7 +45,7 @@ pub(crate) struct Grant {
 }
 
 fn coded(code: &str, message: impl Into<String>) -> anyhow::Error {
-    anyhow!(json!({"code": code, "message": message.into()}).to_string())
+    crate::issues::coded(code, message, None)
 }
 
 /// What `gh auth status` says of the active github.com account.
@@ -56,12 +67,15 @@ pub(crate) fn parse_gh_status(text: &str) -> GhStatus {
             .take_while(|l| l.trim().is_empty() || l.starts_with(char::is_whitespace))
             .copied()
             .collect(),
+        // No github.com block: another host's block is never read (its scopes are not github.com's).
+        None if lines.iter().any(|l| !l.trim().is_empty() && !l.starts_with(char::is_whitespace)) => vec![],
         None => lines,
     };
-    // One account per `Logged in to` line: the active one, else the first.
+    // One account per `Logged in to` line (or a failed `… log in to` one, which names no account): the
+    // active one, else the first.
     let mut accounts: Vec<Vec<&str>> = vec![];
     for l in block {
-        if l.contains("Logged in to") || accounts.is_empty() {
+        if l.contains("Logged in to") || l.contains("log in to") || accounts.is_empty() {
             accounts.push(vec![]);
         }
         accounts.last_mut().expect("pushed").push(l);
@@ -162,7 +176,14 @@ impl Runtime {
         }
         let (gh, status) = match self.cfg.net.gh_auth_status() {
             Ok(text) => ("ok", parse_gh_status(&text)),
-            Err(e) => (gh_state_of_failure(&format!("{e:#}")), GhStatus { account: None, scopes: None }),
+            Err(e) => {
+                let text = format!("{e:#}");
+                // gh exits 1 when any account or host has a problem: the active github.com login can still be fine.
+                match parse_gh_status(&text) {
+                    s if s.account.is_some() => ("ok", s),
+                    _ => (gh_state_of_failure(&text), GhStatus { account: None, scopes: None }),
+                }
+            }
         };
         let missing: Vec<&str> = match &status.scopes {
             Some(g) if gh == "ok" => needed.iter().copied().filter(|n| !covers(g, n)).collect(),
@@ -228,25 +249,30 @@ impl Runtime {
                 }
             }
             if !exited && matches!(child.try_wait(), Ok(Some(_))) {
-                // (lines already sent are still read on the next turn)
+                // (what gh printed before it exited may still be on its way through the reader threads)
                 exited = true;
-                while let Ok(l) = lines.try_recv() {
-                    code = code.or_else(|| device_code(&l));
-                    url = url.or_else(|| device_url(&l));
+                drain_after_exit(&lines, |l| {
+                    code = code.take().or_else(|| device_code(&l));
+                    url = url.take().or_else(|| device_url(&l));
                     seen.push(l);
-                }
+                });
                 break;
             }
         }
+        // (a code without the URL line: github.com's device page is always the same)
+        let url = url.or_else(|| code.as_ref().map(|_| DEVICE_URL.to_string()));
         let (Some(code), Some(url)) = (code, url) else {
             child.kill();
             return Err(start_failure(&seen, exited));
+        };
+        let Some(me) = self.me.upgrade() else {
+            child.kill();
+            return Err(coded("failed", "the core is stopping"));
         };
         let answer = json!({"state": "waiting", "code": code, "url": url, "scope": scope});
         let cancel = Arc::new(AtomicBool::new(false));
         *slot = Some(Grant { answer: answer.clone(), cancel: cancel.clone() });
         drop(slot);
-        let Some(me) = self.me.upgrade() else { return Ok(answer) };
         let scope = scope.to_string();
         std::thread::spawn(move || me.grant_wait(&scope, lines, child, &cancel));
         Ok(answer)
@@ -268,11 +294,14 @@ impl Runtime {
     ) {
         let until = Instant::now() + GRANT_TIMEOUT;
         let mut last: Option<String> = None;
+        let keep = |last: &mut Option<String>, l: String| {
+            if !l.trim().is_empty() {
+                *last = Some(l.trim().to_string());
+            }
+        };
         let outcome = loop {
             while let Ok(l) = lines.try_recv() {
-                if !l.trim().is_empty() {
-                    last = Some(l.trim().to_string());
-                }
+                keep(&mut last, l);
             }
             if cancel.load(Ordering::SeqCst) {
                 child.kill();
@@ -280,7 +309,11 @@ impl Runtime {
             }
             match child.try_wait() {
                 Ok(Some(true)) => break Ok(()),
-                Ok(Some(false)) => break Err(last.clone().unwrap_or_else(|| "gh auth refresh failed".into())),
+                Ok(Some(false)) => {
+                    // (its last stderr line, printed just before it exited, may not be read yet)
+                    drain_after_exit(&lines, |l| keep(&mut last, l));
+                    break Err(last.clone().unwrap_or_else(|| "gh auth refresh failed".into()));
+                }
                 Err(e) => break Err(format!("{e:#}")),
                 Ok(None) if Instant::now() >= until => {
                     child.kill();
@@ -348,6 +381,12 @@ mod tests {
             parse_gh_status(two),
             GhStatus { account: Some("new".into()), scopes: Some(vec!["repo".into(), "project".into()]) }
         );
+        // Another host only: its scopes are not github.com's.
+        let ghe = "ghe.acme.com\n  ✓ Logged in to ghe.acme.com account x (keyring)\n  - Active account: true\n  - Token scopes: 'project'\n";
+        assert_eq!(parse_gh_status(ghe), GhStatus { account: None, scopes: None });
+        // The active account failed (gh exits 1): it names no account, the inactive one is not taken for it.
+        let failed = "github.com\n  ✓ Logged in to github.com account old (keyring)\n  - Active account: false\n  - Token scopes: 'repo'\n\n  X Failed to log in to github.com account new (keyring)\n  - Active account: true\n  - The token in keyring is invalid.\n";
+        assert_eq!(parse_gh_status(failed), GhStatus { account: None, scopes: None });
         assert_eq!(
             gh_state_of_failure("You are not logged into any GitHub hosts. To log in, run: gh auth login"),
             "logged_out"

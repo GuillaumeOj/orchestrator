@@ -2305,13 +2305,22 @@ fn a_board_write_without_the_scope_says_project_and_retry_all_clears_it_and_the_
     );
     // The access check: the login lacks `project`.
     *f.net.gh.lock().unwrap() = Some(Ok("github.com\n  ✓ Logged in to github.com account octocat (keyring)\n  - Active account: true\n  - Token scopes: 'gist', 'read:org', 'read:project', 'repo'\n".into()));
+    // The last failure is the most recent one, not the last node.
+    let key = format!("work.writeback:{}:gh:acme/shop#2", f.project.id);
+    let mut later = f.rt.db.setting(&key).unwrap().unwrap();
+    later["at_ms"] = json!(later["at_ms"].as_u64().unwrap() + 60_000);
+    f.rt.db.set_setting(&key, &later).unwrap();
     let a = f.rt.tracker_gh_access(&f.project.id).unwrap();
     assert_eq!(
         (&a["gh"], &a["account"], &a["needed"], &a["missing"], &a["failed_writes"]),
         (&json!("ok"), &json!("octocat"), &json!(["read:project", "project"]), &json!(["project"]), &json!(3))
     );
-    assert_eq!(a["last_failure"]["node"], "gh:acme/shop#4");
+    assert_eq!(a["last_failure"]["node"], "gh:acme/shop#2");
     assert_eq!(a["last_failure"]["scope"], "project");
+    // gh exits 1 for another host's failed login: the github.com one is still read.
+    *f.net.gh.lock().unwrap() = Some(Err("github.com\n  ✓ Logged in to github.com account octocat (keyring)\n  - Active account: true\n  - Token scopes: 'repo', 'project'\nghe.acme.com\n  X Timeout trying to log in to ghe.acme.com account x (keyring)\n".into()));
+    let a = f.rt.tracker_gh_access(&f.project.id).unwrap();
+    assert_eq!((&a["gh"], &a["missing"]), (&json!("ok"), &json!([])));
     assert_eq!(err_code(f.rt.tracker_gh_access("nope").unwrap_err()), "not_found");
     // Granted elsewhere: retry all.
     scope_granted(&f);
