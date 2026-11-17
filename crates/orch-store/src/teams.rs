@@ -1143,6 +1143,9 @@ impl Store {
 
     // ------------------------------------------------------------ team runs
 
+    /// `prs` is written on insert only: on an existing run it changes through
+    /// [`Store::update_run_prs`] (one transaction), so a caller holding an older
+    /// copy of the run (two issue PRs opening at once) can't drop a PR.
     pub fn upsert_run(&self, run: &TeamRun) -> Result<()> {
         let run = run.clone();
         let topics = vec![
@@ -1156,7 +1159,7 @@ impl Store {
                     "INSERT INTO team_runs({RUN_COLS}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)
                      ON CONFLICT(id) DO UPDATE SET team_version=excluded.team_version, status=excluded.status,
                        resume_status=excluded.resume_status, pr_url=excluded.pr_url, ended_at_ms=excluded.ended_at_ms,
-                       pr_number=excluded.pr_number, pr_status=excluded.pr_status, prs=excluded.prs"
+                       pr_number=excluded.pr_number, pr_status=excluded.pr_status"
                 ),
                 params![
                     run.id,

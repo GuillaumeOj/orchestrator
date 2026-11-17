@@ -91,16 +91,16 @@ pub fn links(refs: &[String], rows: &[IntakeRow], repo: Option<&str>) -> Vec<Iss
         .collect()
 }
 
-/// The canonical ref of an intake row (GitHub or Linear; a repo doc has none).
-/// A GitHub item of another repository than `repo` (the project's) has none:
-/// an intake source or a project board may list other repositories' issues,
-/// and `#12` names the project's own.
 /// The tracker issues among a project's work nodes (milestones, projects and
 /// briefs are not issues a PR closes).
 pub fn issue_rows(rows: Vec<IntakeRow>) -> Vec<IntakeRow> {
     rows.into_iter().filter(|r| r.kind == "issue" && !r.deleted).collect()
 }
 
+/// The canonical ref of an intake row (GitHub or Linear; a repo doc has none).
+/// A GitHub item of another repository than `repo` (the project's) has none:
+/// an intake source or a project board may list other repositories' issues,
+/// and `#12` names the project's own.
 pub fn row_ref(row: &IntakeRow, repo: Option<&str>) -> Option<String> {
     match row.source.as_str() {
         "github" => {
@@ -296,7 +296,7 @@ pub fn prs_view(run: &TeamRun, feature: &Feature, gates: &[GateRef]) -> Vec<PrVi
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use orch_store::{IntakeState, RunPr};
+    use orch_store::RunPr;
     use orch_team::RunState;
 
     const REPO: Option<&str> = Some("o/r");
@@ -323,35 +323,18 @@ pub(crate) mod tests {
 
     #[test]
     fn issue_rows_keep_the_issues_only() {
-        let row = |kind: &str, deleted: bool| IntakeRow {
-            id: 0,
-            project_id: "p".into(),
-            source: "github".into(),
-            reference: "#1".into(),
-            title: String::new(),
-            url: None,
-            body: String::new(),
-            meta: serde_json::Value::Null,
-            rev: String::new(),
-            fetched_at_ms: 0,
-            position: 0,
-            state: IntakeState::default(),
-            started_kind: None,
-            started_ref: None,
-            hidden_at_ms: None,
-            hidden_rev: None,
-            node_id: format!("n-{kind}-{deleted}"),
+        let of = |kind: &str, deleted: bool| IntakeRow {
             kind: kind.into(),
-            parent_id: None,
-            depth: 1,
             deleted,
+            node_id: format!("n-{kind}-{deleted}"),
+            ..row("github", "#1", "")
         };
         let rows = vec![
-            row("issue", false),
-            row("milestone", false),
-            row("linear_project", false),
-            row("brief", false),
-            row("issue", true),
+            of("issue", false),
+            of("milestone", false),
+            of("linear_project", false),
+            of("brief", false),
+            of("issue", true),
         ];
         let kept: Vec<String> = issue_rows(rows).into_iter().map(|r| r.node_id).collect();
         assert_eq!(kept, ["n-issue-false"]);
