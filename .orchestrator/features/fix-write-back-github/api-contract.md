@@ -42,7 +42,7 @@ Decision `writeback_failing` payload `text`: `"<message>. Fix it in Project sett
 
 Errors: `{code: "not_found"}` for an unknown project. Not a GitHub tracker → `needed: []`, `missing: []`.
 
-## 3. `gh_grant_scope(scope: string)` → command, `gh.grant` event
+## 3. `gh_grant_scope(scope: string)` → command, `gh_grant` event
 
 `scope` must be `project` or `read:project`; anything else answers `{code: "bad_scope"}` (it is passed to
 `gh auth refresh -s`, where a comma or a leading `-` would add scopes or flags). The scope in a `gh_scope` error comes
@@ -60,7 +60,7 @@ Errors (as `{code, message}`): `interactive_only` (gh did not print a code witho
 A call while a grant runs answers the running one (same code; its `scope` tells the caller when it is another scope than asked). `gh_grant_cancel()` kills it (posts `failed`,
 `message: "cancelled"`).
 
-Event `gh.grant` (core event stream, like `writeback.done`):
+Event `gh_grant` (a Tauri webview event: the app emits it with `emit("gh_grant", …)`; Tauri event names have no dot):
 
 ```jsonc
 { "state": "done" | "failed", "scope": "project", "message": "…" | null,
