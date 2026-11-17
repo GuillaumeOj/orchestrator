@@ -578,28 +578,26 @@ impl Runtime {
     /// digest. Only the weeks the chain rebuilt (their rows all kept) are.
     /// Returns the reports rebuilt.
     pub(crate) fn rebuild_reports(&self, weeks: &[crate::runtime::RebuiltWeek]) -> Result<usize> {
-        const SPLIT: [&str; 7] =
-            ["totals", "allocations", "by_project", "by_feature", "by_role", "by_model", "suggestions"];
+        const SPLIT: [&str; 6] = ["totals", "allocations", "by_project", "by_feature", "by_role", "by_model"];
         let mut n = 0;
         for row in self.db.reports()? {
-            let near = |t: Timestamp| (t.as_millisecond() - row.week_start_ms).abs() <= governor::SAME_RESET_S * 1000;
-            let Some(w) = weeks.iter().find(|w| near(w.plan.week_start)) else { continue };
-            let Some(mut stored) = self.db.report(&row.id)? else { continue };
             let (Ok(start), Ok(reset)) =
                 (Timestamp::from_millisecond(row.week_start_ms), Timestamp::from_millisecond(row.reset_at_ms))
             else {
                 continue;
             };
+            let Some(w) = weeks.iter().find(|w| governor::same_reset(w.plan.week_start, start)) else { continue };
+            let Some(mut stored) = self.db.report(&row.id)? else { continue };
             let plan = WeeklyPlan { id: row.id.clone(), week_start: start, reset_at: reset, ..w.plan.clone() };
             let observed = row.final_weekly_pct.or_else(|| stored["totals"]["weekly_pct"].as_f64());
-            let r = serde_json::to_value(self.build_report(&plan, &w.calibration, 1.0, observed, false, reset)?)?;
+            let mut r = serde_json::to_value(self.build_report(&plan, &w.calibration, 1.0, observed, false, reset)?)?;
             let Some(obj) = stored.as_object_mut() else { continue };
             for key in SPLIT {
-                obj.insert(key.into(), r[key].clone());
+                obj.insert(key.into(), r[key].take());
             }
             // The stored states, alerts and limits (their sources may be
             // purged) count in the suggestions too.
-            if let Ok(merged) = serde_json::from_value::<WeeklyReport>(stored.clone()) {
+            if let Ok(merged) = WeeklyReport::deserialize(&stored) {
                 stored["suggestions"] = json!(suggestions(&merged));
             }
             if self.db.replace_report_data(&row.id, &stored)? {
@@ -634,11 +632,10 @@ impl Runtime {
         let start = plan.week_start;
         // The last week the app saw start (its estimator row).
         let Ok(Some((prev_start, _))) = self.db.week_estimator_before(start) else { return };
-        let week = governor::jiff::SignedDuration::from_hours(168);
         let prev = WeeklyPlan {
             id: format!("week-{}", prev_start.as_second()),
             week_start: prev_start,
-            reset_at: prev_start.checked_add(week).unwrap_or(start).min(start),
+            reset_at: crate::runtime::past_week_reset(prev_start, Some(start)),
             ..plan
         };
         let Ok(Some(e)) = self.db.week_estimator(start) else { return };

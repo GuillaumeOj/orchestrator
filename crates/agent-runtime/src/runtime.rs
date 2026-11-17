@@ -3348,7 +3348,7 @@ fn rebuild_estimator(
     aliases: &BTreeMap<String, governor::AllocationId>,
 ) -> Result<Option<governor::EstimatorState>> {
     let Some((prev_start, base)) = db.week_estimator_before(plan.week_start)? else { return Ok(None) };
-    let prev_reset = prev_start.checked_add(168.hours()).unwrap_or(plan.week_start).min(plan.week_start);
+    let prev_reset = past_week_reset(prev_start, Some(plan.week_start));
     let week = WeeklyPlan {
         id: format!("week-{}", prev_start.as_second()),
         week_start: prev_start,
@@ -3360,6 +3360,14 @@ fn rebuild_estimator(
         Some(prev) => prev.estimator(),
         None => base,
     }))
+}
+
+/// Where the stored week starting at `start` ends: at the next stored week's
+/// start when that is the next week (a DST week is an hour longer or
+/// shorter), else 168 h later.
+pub(crate) fn past_week_reset(start: Timestamp, next: Option<Timestamp>) -> Timestamp {
+    let full = start.checked_add(168.hours()).unwrap_or(start);
+    next.filter(|n| *n < full || governor::same_reset(*n, full)).unwrap_or(full)
 }
 
 /// The Governor of `week` started from `base`, with the week's stored
@@ -3431,37 +3439,35 @@ fn rebuild_week_chain(
     // Rows before this are purged, or will be: a week that starts before it
     // has lost (some of) its rows.
     let cut = now.as_millisecond() - i64::from(cfg.retention.usage_days) * 86_400_000;
-    let slack = governor::jiff::SignedDuration::from_secs(governor::SAME_RESET_S);
     let mut chained = false;
     for (i, (start, _)) in starts.iter().enumerate() {
-        let next = starts.get(i + 1).map(|(w, _)| *w);
-        let full = start.checked_add(168.hours()).unwrap_or(*start);
-        // The next week's start ends this one, when it is the next week (a
-        // week of a DST change is an hour longer or shorter).
-        let reset = next.filter(|n| *n <= full.checked_add(slack).unwrap_or(full)).unwrap_or(full);
+        let next = starts.get(i + 1);
+        let reset = past_week_reset(*start, next.map(|n| n.0));
         if reset > now {
             break; // the current week
         }
         let rows = if start.as_millisecond() < cut { Vec::new() } else { week_samples(db, *start, Some(reset))? };
-        if rows.is_empty() && !chained {
-            // Purged: nothing to rebuild it from. The live run's end of it,
-            // the next week's stored start, carries on.
-            if let Some((_, s)) = starts.get(i + 1) {
-                base = s.clone();
+        if rows.is_empty() {
+            if !chained {
+                // Purged: nothing to rebuild it from. The live run's end of
+                // it, the next week's stored start, carries on.
+                if let Some((_, s)) = next {
+                    base = s.clone();
+                }
+                continue;
             }
-            continue;
-        }
-        chained = true;
-        // A week with no rows, or whose plan is not valid, passes its start through.
-        if !rows.is_empty() {
+            // After the chain started, a week with no rows passes its start through.
+        } else {
+            chained = true;
             let week = week_plan(db, &template, *start, reset)?;
+            // A week whose plan is not valid passes its start through.
             if let Some(gov) = replay_week(week.clone(), &policy, base.clone(), rows, &allocs, &aliases) {
                 base = gov.estimator();
                 out.push(RebuiltWeek { calibration: gov.calibration(reset), plan: week });
             }
         }
-        if let Some(n) = next {
-            db.save_estimator("week", n, &base.calibrator.snapshot(n), &base)?;
+        if let Some((n, _)) = next {
+            db.save_estimator("week", *n, &base.calibrator.snapshot(*n), &base)?;
         }
     }
     Ok(Some(out))
@@ -3473,7 +3479,7 @@ fn week_plan(db: &orch_store::Store, template: &WeeklyPlan, start: Timestamp, re
     let slack = governor::jiff::SignedDuration::from_secs(governor::SAME_RESET_S);
     let stored = db
         .previous_plan(reset.checked_add(slack).unwrap_or(reset))?
-        .filter(|p| (p.reset_at.as_second() - reset.as_second()).abs() <= governor::SAME_RESET_S);
+        .filter(|p| governor::same_reset(p.reset_at, reset));
     Ok(WeeklyPlan {
         id: format!("week-{}", start.as_second()),
         week_start: start,
@@ -4125,11 +4131,12 @@ pub(crate) mod tests {
                 assert_eq!(r[key], old[key], "{key} stays as stored");
             }
         }
-        let rows: Vec<_> =
-            rt.db.reports().unwrap().into_iter().map(|r| (r.id, r.week_start_ms, r.reset_at_ms)).collect();
-        let ms = |t: Timestamp| t.as_millisecond();
-        assert!(rows.contains(&(id(w1), ms(w1), ms(reset(w1)))) && rows.contains(&(id(w2), ms(w2), ms(reset(w2)))));
-        assert_eq!(rt.db.reports().unwrap().iter().find(|r| r.id == id(w1)).unwrap().final_weekly_pct, Some(final1));
+        let rows = rt.db.reports().unwrap();
+        for (s, pct) in [(w1, Some(final1)), (w2, None)] {
+            let r = rows.iter().find(|r| r.id == id(s)).unwrap();
+            let ms = |t: Timestamp| t.as_millisecond();
+            assert_eq!((r.week_start_ms, r.reset_at_ms, r.final_weekly_pct), (ms(s), ms(reset(s)), pct), "{}", id(s));
+        }
         assert_eq!(rt.db.week_estimator(w1).unwrap().unwrap().calibrator.intervals(), 0, "w1 keeps its start");
         let k = rt.db.week_estimator(current).unwrap().unwrap().calibrator.snapshot(current).cost_per_weekly_pct;
         assert!((k - K).abs() <= 0.1 * K, "the current week starts from k {k}, truth {K}");
