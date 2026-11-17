@@ -163,11 +163,15 @@
   const accessRow = $derived(accessView(access));
   const wbOn = $derived(kind === 'github' && !!form?.write_back.enabled);
 
+  // (an answer older than the latest check is dropped, as in loadOptions)
+  let accessSeq = 0;
   async function checkAccess() {
+    const mine = ++accessSeq;
     try {
-      access = await invoke('tracker_gh_access', { project });
+      const a = await invoke('tracker_gh_access', { project });
+      if (mine === accessSeq) access = a;
     } catch (e) {
-      access = { gh: 'error', message: parseErr(e, errText).message ?? errText(e) };
+      if (mine === accessSeq) access = { gh: 'error', message: parseErr(e, errText).message ?? errText(e) };
     }
   }
   // Opening the section (or turning write-back on) checks again; so does Open settings from the decision.
@@ -223,12 +227,7 @@
     }
   }
 
-  async function copyScope(scope) {
-    try {
-      await navigator.clipboard.writeText(ghScopeCommand(scope));
-    } catch {}
-    toast('Copied. Run it in a terminal, then check again.');
-  }
+  const copyScope = (scope) => copyText(ghScopeCommand(scope), 'the command');
 
   // A request counter: an answer older than the latest request is dropped.
   let seq = 0;
@@ -394,6 +393,8 @@
     if (r?.settings) adopt(r);
     else baseline = JSON.stringify(settings);
     if (was && !r?.migration_notice) notice = null;
+    // tracker_gh_access reads the saved settings: what write-back needs (the board, the switch) is known once saved.
+    if (wbOn) checkAccess();
     savedAt = Date.now();
     clearTimeout(savedTimer);
     savedTimer = setTimeout(() => (savedAt = 0), 5000);

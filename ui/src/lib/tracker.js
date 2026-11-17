@@ -262,7 +262,7 @@ export function accessView(a) {
     const what = scope === 'project' ? 'to move items on the board' : 'to read the board';
     return { state: 'missing', scope, canGrant: GRANTABLE.includes(scope), text: `GitHub needs the ${scope} scope ${what}.` };
   }
-  if (a.granted == null) return { state: 'unknown', text: "Orchestrator can't check this gh login's scopes." };
+  if (a.granted == null && (a.needed ?? []).length) return { state: 'unknown', text: "Orchestrator can't check this gh login's scopes." };
   const needed = a.needed ?? [];
   return { state: 'ok', text: `GitHub access OK${needed.length ? ` (${needed.join(', ')})` : ''}.` };
 }

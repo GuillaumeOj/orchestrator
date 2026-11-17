@@ -757,12 +757,10 @@ describe('Write back access row (fix-write-back-github §4.5)', () => {
 
   it('Copy command copies the command for the missing scope', async () => {
     replies.tracker_gh_access = MISSING;
-    const writeText = vi.fn(() => Promise.resolve());
-    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
     const r = open(board());
     await waitFor(() => expect(r.getByRole('button', { name: 'Copy command' })).toBeTruthy());
     await fireEvent.click(r.getByRole('button', { name: 'Copy command' }));
-    expect(writeText).toHaveBeenCalledWith('gh auth refresh -h github.com -s project');
+    expect(copyText).toHaveBeenCalledWith('gh auth refresh -h github.com -s project', 'the command');
   });
 
   it('grant failed: its message and Copy command; Cancel calls gh_grant_cancel', async () => {
