@@ -596,10 +596,12 @@ impl Runtime {
                 obj.insert(key.into(), r[key].take());
             }
             // The stored states, alerts and limits (their sources may be
-            // purged) count in the suggestions too.
-            if let Ok(merged) = WeeklyReport::deserialize(&stored) {
-                stored["suggestions"] = json!(suggestions(&merged));
-            }
+            // purged) count in the suggestions too; a stored report that no
+            // longer parses gets the rebuilt one's, never the old split's.
+            stored["suggestions"] = match WeeklyReport::deserialize(&stored) {
+                Ok(merged) => json!(suggestions(&merged)),
+                Err(_) => r["suggestions"].take(),
+            };
             if self.db.replace_report_data(&row.id, &stored)? {
                 n += 1;
             }

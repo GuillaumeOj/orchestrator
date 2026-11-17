@@ -3459,7 +3459,7 @@ fn rebuild_week_chain(
             // After the chain started, a week with no rows passes its start through.
         } else {
             chained = true;
-            let week = week_plan(db, &template, *start, reset)?;
+            let week = week_plan(db, &template, *start, reset);
             // A week whose plan is not valid passes its start through.
             if let Some(gov) = replay_week(week.clone(), &policy, base.clone(), rows, &allocs, &aliases) {
                 base = gov.estimator();
@@ -3474,18 +3474,21 @@ fn rebuild_week_chain(
 }
 
 /// The plan of the week `[start, reset)`: the stored one that ended at that
-/// reset, else `template` moved to those dates.
-fn week_plan(db: &orch_store::Store, template: &WeeklyPlan, start: Timestamp, reset: Timestamp) -> Result<WeeklyPlan> {
+/// reset, else (none, or one an older app stored that no longer parses)
+/// `template` moved to those dates.
+fn week_plan(db: &orch_store::Store, template: &WeeklyPlan, start: Timestamp, reset: Timestamp) -> WeeklyPlan {
     let slack = governor::jiff::SignedDuration::from_secs(governor::SAME_RESET_S);
     let stored = db
-        .previous_plan(reset.checked_add(slack).unwrap_or(reset))?
+        .previous_plan(reset.checked_add(slack).unwrap_or(reset))
+        .ok()
+        .flatten()
         .filter(|p| governor::same_reset(p.reset_at, reset));
-    Ok(WeeklyPlan {
+    WeeklyPlan {
         id: format!("week-{}", start.as_second()),
         week_start: start,
         reset_at: reset,
         ..stored.unwrap_or_else(|| template.clone())
-    })
+    }
 }
 
 fn reading(pct: Option<f64>, resets: Option<i64>) -> Option<governor::WindowReading> {
@@ -4100,6 +4103,13 @@ pub(crate) mod tests {
             // and its start does not replace the stored start of the next.
             let w0 = w1.checked_sub(week).unwrap();
             db.save_estimator("week", w0, &inflated.calibrator.snapshot(w0), &inflated).unwrap();
+            // A week from before the usage retention cut (90 d): rows still
+            // there are partial, so it is not rebuilt either.
+            let old = current.checked_sub(168.hours() * 14).unwrap();
+            db.save_estimator("week", old, &inflated.calibrator.snapshot(old), &inflated).unwrap();
+            for r in rows(old, Some(30)).0 {
+                db.add_usage(r);
+            }
             for s in [w2, current] {
                 db.save_estimator("week", s, &inflated.calibrator.snapshot(s), &inflated).unwrap();
             }
@@ -4119,7 +4129,8 @@ pub(crate) mod tests {
 
         let rt = Runtime::new(test_cfg(d.path(), false)).unwrap();
         rt.db.flush().unwrap();
-        let spike = rt.db.usage_between(0, None, Some(orch_store::UsageSource::Statusline)).unwrap()[30].cost_delta;
+        let spike =
+            rt.db.usage_between(0, None, Some(orch_store::UsageSource::Statusline)).unwrap()[56 + 30].cost_delta;
         assert_eq!(spike, Some(36.0), "migration 18 repaired the spike (row 30 costs 36)");
         for (s, pct) in [(w1, final1), (w2, final2)] {
             let r = rt.report_view(&id(s)).unwrap();
