@@ -63,7 +63,9 @@ pub(crate) struct Switches {
 #[derive(Clone, Default)]
 pub(crate) struct Cli {
     pub sw: Arc<Mutex<Switches>>,
-    /// What the model saw, in order: `POST …` (a tool reply), `DONE[n] …`.
+    /// What the model saw, in order: `POST …` (a tool reply), `DONE[n] …`. The
+    /// `DONE` line is written before the Stop hook, so a turn read as `Done`
+    /// has already shown it (a crashed turn shows none).
     pub screen: Arc<Mutex<Vec<String>>>,
     /// Chunks typed into the terminal and not handled yet.
     pending: Arc<AtomicUsize>,
@@ -277,6 +279,9 @@ impl Machine {
             let failure = sw.stop_failure.take().or_else(|| sw.stop_failure_sticky.clone());
             (std::mem::take(&mut sw.drop_stop), failure, std::mem::take(&mut sw.bg))
         };
+        // The line comes first: the test thread may read the turn as `Done` as
+        // soon as the Stop is applied, and must find this line by then.
+        self.say(format!("DONE[{n}] {prompt}"));
         if drop_stop {
             // The Stop never arrives: the core still believes in the turn.
         } else if let Some(err) = failure {
@@ -303,7 +308,6 @@ impl Machine {
             let tasks = if bg { json!([{"id": "b1", "type": "shell", "status": "running"}]) } else { json!([]) };
             self.hook(&rt, drop_all, "Stop", json!({"background_tasks": tasks}));
         }
-        self.say(format!("DONE[{n}] {prompt}"));
     }
 }
 
@@ -612,7 +616,7 @@ mod scenarios {
         cli.set(|s| s.swallow_enter = true);
         let t = sim.say("a1", "second");
         sim.until("the turn done", 30, || sim.status(&t) == T::Done);
-        assert!(cli.saw(&format!("[t:{t}]")));
+        assert!(cli.saw(&format!("[t:{t}]")), "the model saw {t}: {:?}", cli.lines());
         assert!(sim.events("a1", "redelivered").iter().any(|e| e["how"] == "enter"));
         sim.next_message_arrives("a1", &cli);
     }
@@ -625,7 +629,7 @@ mod scenarios {
         cli.set(|s| s.modal = true);
         let t = sim.say("a1", "second");
         sim.until("the turn done", 30, || sim.status(&t) == T::Done);
-        assert!(cli.saw(&format!("[t:{t}]")));
+        assert!(cli.saw(&format!("[t:{t}]")), "the model saw {t}: {:?}", cli.lines());
         assert!(sim.events("a1", "redelivered").iter().any(|e| e["how"] == "esc"));
         sim.next_message_arrives("a1", &cli);
     }
@@ -718,7 +722,7 @@ mod scenarios {
         sim.until("the crash", 30, || sim.state("a1") == AgentState::Error);
         let t = sim.say("a1", "second");
         sim.until("the turn done", 40, || sim.status(&t) == T::Done);
-        assert!(cli.saw(&format!("[t:{t}]")));
+        assert!(cli.saw(&format!("[t:{t}]")), "the model saw {t}: {:?}", cli.lines());
         let ev = sim.events("a1", "recovered");
         assert!(ev.iter().any(|e| e["from_state"] == "crashed" && e["how"] == "resume"), "{ev:?}");
         sim.next_message_arrives("a1", &cli);
