@@ -426,6 +426,26 @@ impl Store {
         })
     }
 
+    /// The cost of an agent's last statusline row when that row has no
+    /// session (recorded before `session_id` was stored): the best-effort
+    /// baseline of the restart that installs the fix, whose resumed sessions
+    /// have no tagged row yet.
+    pub fn last_untagged_cost(&self, agent_id: &str) -> Result<Option<f64>> {
+        let agent_id = agent_id.to_string();
+        self.read(move |c| {
+            Ok(c.query_row(
+                "SELECT cost_estimate FROM (
+                     SELECT cost_estimate, session_id FROM usage_samples
+                     WHERE agent_id = ?1 AND source = 'statusline' AND cost_estimate IS NOT NULL
+                     ORDER BY ts_ms DESC, id DESC LIMIT 1
+                 ) WHERE session_id IS NULL",
+                params![agent_id],
+                |r| r.get(0),
+            )
+            .optional()?)
+        })
+    }
+
     /// Samples with `ts >= since_ms`, oldest first, optionally of one source.
     pub fn usage_since(&self, since_ms: u64, source: Option<UsageSource>) -> Result<Vec<UsageRecord>> {
         self.usage_between(since_ms, None, source)
@@ -918,6 +938,10 @@ pub(crate) mod tests {
         assert_eq!(s.last_session_cost("a2", "s2").unwrap(), Some(0.1));
         assert_eq!(s.last_session_cost("a2", "s3").unwrap(), None);
         assert_eq!(s.last_session_cost("a1", "s1").unwrap(), None);
+        // a1's last statusline row has no session (the OTLP row is ignored); a2's has one.
+        assert_eq!(s.last_untagged_cost("a1").unwrap(), Some(0.2));
+        assert_eq!(s.last_untagged_cost("a2").unwrap(), None);
+        assert_eq!(s.last_untagged_cost("a3").unwrap(), None);
         let all = s.usage_since(12, Some(UsageSource::Statusline)).unwrap();
         assert_eq!(all[0].session_id.as_deref(), Some("s1"));
         let st = s.usage_since(0, Some(UsageSource::Statusline)).unwrap();

@@ -90,7 +90,8 @@ impl UsageCollector {
 
     /// [`Self::ingest`], with `baseline(session)`: the last cost stored for a
     /// session the collector does not know (a resumed one), or `None` for a
-    /// new session. Called only on that session's first render.
+    /// new session. Called only when the agent's session changes (its first
+    /// render, or a switch back to an earlier session).
     pub fn ingest_with(
         &mut self,
         agent_id: &str,
