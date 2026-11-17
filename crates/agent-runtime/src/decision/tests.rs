@@ -168,6 +168,10 @@ fn a_question_with_options_has_no_markdown_block() {
     f.item(Some("front-1"), "question", "front-1: which db?", json!({"question": "which db?"}));
     let d = f.one("q-2");
     assert_eq!(types(&d), ["markdown"]);
+    // An empty `question` falls back to the item's text, in the options block too.
+    f.item(Some("front-1"), "question", "front-1: pick one", json!({"question": "", "options": ["a"]}));
+    let d = f.one("q-3");
+    assert_eq!(d.context[0]["questions"][0]["question"], "pick one");
 }
 
 #[test]
