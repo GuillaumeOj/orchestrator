@@ -150,3 +150,25 @@ The thresholds (800 characters or 10 lines), the placeholder format, the Backspa
 7. **The chip mutes on a missing file only after the fetch says so** (the file is checked on first open: no IPC on render).
 8. **Mention insert through the textarea's own editing** (`execCommand('insertText')`), not by assigning `app.chatDraft`: the assignment resets the native undo stack, so ⌘Z could not restore a removed paste after a mention was picked (§1). Touches `pick()` in `ChatInput.svelte`.
 9. **Over-length copy** names the 800-character / 10-line threshold: several inline pastes just under it (3 × 799) exceed the 2 000 cap, and "paste long text instead" would tell a user who just pasted to paste.
+
+## Boards (ui, T-457)
+
+Drive `Orchestrator.figcraft`, page 04.3 Chat column, section "Allow long text in overwatch" at y 20500 (the row right under `mention-*` is taken by later features). Dark theme; light uses the same tokens. Exported at 1x:
+
+| File | Brief board | Shows |
+|---|---|---|
+| [paste-input-after.png](paste-input-after.png) | 1 | empty field → after a 5 000-char paste, no caption |
+| [paste-input-mixed.png](paste-input-mixed.png) | 2 | planning tag, typed text, #1, #2, `@mention`, caret after #2 |
+| [paste-input-errors.png](paste-input-errors.png) | 3 | too big, 11th paste, over-length (new copy) |
+| [paste-chip-states.png](paste-chip-states.png) | 4, 5 | sent entry with a collapsed chip; rest, hover + tooltip, focus-visible, open, missing; beside a mention |
+| [paste-expanded.png](paste-expanded.png) | 5 | one chip open, 16-line panel scrolling, Copy, × |
+| [paste-multi.png](paste-multi.png) | 6 | two chips, #1 open (14 lines, panel hugs), #2 closed |
+| [paste-loading-missing.png](paste-loading-missing.png) | 6 | loading, missing, load error with Retry |
+| [paste-unsent.png](paste-unsent.png) | 7 | unsent entry with a chip and Retry |
+| [paste-narrow.png](paste-narrow.png) | 8 | 300 px: mixed draft and expanded with the short chip; 560 px: full chip |
+
+**ui changes (final for front):**
+- **Rest ring at 80 %**: `box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-accent-default) 80%, transparent)` (§2 said 50 %: 2.19:1 on accent-subtle in dark; 80 % is 3.34:1). In light, accent on accent-subtle is 2.25:1 even at 100 %; the glyph and label (5.81:1) carry the chip there, as the focus ring does app-wide.
+- **Contrast (WCAG 2), dark / light**: text-primary on accent-subtle 6.68 / 5.81; on the hover wash 4.73 / 4.87; text-secondary (missing) 5.11 / 4.74; muted dashed ring 3.73 / 4.30.
+- **Narrow panel header**: at the 300 column (panel ≈ 245 px) the label, Copy and × don't fit one row. The label is `flex: 1; min-width: 0` with normal wrapping (two lines, header ≈ 40 px); Copy and × stay top-aligned on the first row. Never an ellipsis on the numbers.
+- **Short panels**: a paste of 10 to 15 lines makes a panel that hugs its text, with no scrollbar.
