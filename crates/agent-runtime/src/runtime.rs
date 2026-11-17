@@ -3408,9 +3408,11 @@ pub(crate) struct RebuiltWeek {
 /// §3.2 item 6, once ([`WEEK_REBUILD_KEY`]): every stored week, oldest
 /// first, replayed from the week before's rebuilt end (the oldest keeps its
 /// stored start) with the repaired rows, and its end stored as the next
-/// week's start. A week with no rows left (retention) is not rebuilt: the
-/// chain goes on from its stored end. The current week is left to `restore_governor`, which
-/// replays it from its rebuilt start. None when the rebuild already ran.
+/// week's start. The weeks retention purged (all or part of their rows: they
+/// start before the usage cut) are not rebuilt: the chain goes on from their
+/// stored end. A week with no rows after the chain started passes its start
+/// through. The current week is left to `restore_governor`, which replays it
+/// from its rebuilt start. None when the rebuild already ran.
 fn rebuild_week_chain(
     db: &orch_store::Store,
     store: &Store,
@@ -3426,27 +3428,37 @@ fn rebuild_week_chain(
     let policy = db.policy(POLICY_ID)?.unwrap_or_default();
     let template = db.active_plan()?.unwrap_or_else(|| (cfg.default_plan)(now, cfg.shadow));
     let (allocs, aliases) = (agent_allocations(store), project_aliases(db)?);
+    // Rows before this are purged, or will be: a week that starts before it
+    // has lost (some of) its rows.
+    let cut = now.as_millisecond() - i64::from(cfg.retention.usage_days) * 86_400_000;
+    let slack = governor::jiff::SignedDuration::from_secs(governor::SAME_RESET_S);
+    let mut chained = false;
     for (i, (start, _)) in starts.iter().enumerate() {
         let next = starts.get(i + 1).map(|(w, _)| *w);
-        let reset = start.checked_add(168.hours()).unwrap_or(*start);
-        let reset = next.map_or(reset, |n| reset.min(n));
+        let full = start.checked_add(168.hours()).unwrap_or(*start);
+        // The next week's start ends this one, when it is the next week (a
+        // week of a DST change is an hour longer or shorter).
+        let reset = next.filter(|n| *n <= full.checked_add(slack).unwrap_or(full)).unwrap_or(full);
         if reset > now {
             break; // the current week
         }
-        let rows = week_samples(db, *start, Some(reset))?;
-        if rows.is_empty() {
-            // Purged (or unused): nothing to rebuild it from. The live run's
-            // end of it, the next week's stored start, carries on.
+        let rows = if start.as_millisecond() < cut { Vec::new() } else { week_samples(db, *start, Some(reset))? };
+        if rows.is_empty() && !chained {
+            // Purged: nothing to rebuild it from. The live run's end of it,
+            // the next week's stored start, carries on.
             if let Some((_, s)) = starts.get(i + 1) {
                 base = s.clone();
             }
             continue;
         }
-        let week = week_plan(db, &template, *start, reset)?;
-        // A week whose plan is not valid passes its start through.
-        if let Some(gov) = replay_week(week.clone(), &policy, base.clone(), rows, &allocs, &aliases) {
-            base = gov.estimator();
-            out.push(RebuiltWeek { calibration: gov.calibration(reset), plan: week });
+        chained = true;
+        // A week with no rows, or whose plan is not valid, passes its start through.
+        if !rows.is_empty() {
+            let week = week_plan(db, &template, *start, reset)?;
+            if let Some(gov) = replay_week(week.clone(), &policy, base.clone(), rows, &allocs, &aliases) {
+                base = gov.estimator();
+                out.push(RebuiltWeek { calibration: gov.calibration(reset), plan: week });
+            }
         }
         if let Some(n) = next {
             db.save_estimator("week", n, &base.calibrator.snapshot(n), &base)?;

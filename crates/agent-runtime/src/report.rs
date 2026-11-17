@@ -574,7 +574,9 @@ impl Runtime {
     /// overwritten in place. Only the usage split changes: the observed
     /// total, the dates and what does not come from the split (states,
     /// actions, alerts, limits, intake: retention may have purged their
-    /// sources) stay as stored. No digest. Returns the reports rebuilt.
+    /// sources) stay as stored; the suggestions are read again from both. No
+    /// digest. Only the weeks the chain rebuilt (their rows all kept) are.
+    /// Returns the reports rebuilt.
     pub(crate) fn rebuild_reports(&self, weeks: &[crate::runtime::RebuiltWeek]) -> Result<usize> {
         const SPLIT: [&str; 7] =
             ["totals", "allocations", "by_project", "by_feature", "by_role", "by_model", "suggestions"];
@@ -583,10 +585,6 @@ impl Runtime {
             let near = |t: Timestamp| (t.as_millisecond() - row.week_start_ms).abs() <= governor::SAME_RESET_S * 1000;
             let Some(w) = weeks.iter().find(|w| near(w.plan.week_start)) else { continue };
             let Some(mut stored) = self.db.report(&row.id)? else { continue };
-            let (from, to) = (row.week_start_ms.max(0) as u64, row.reset_at_ms.max(0) as u64);
-            if self.db.usage_between(from, Some(to), Some(orch_store::UsageSource::Statusline))?.is_empty() {
-                continue;
-            }
             let (Ok(start), Ok(reset)) =
                 (Timestamp::from_millisecond(row.week_start_ms), Timestamp::from_millisecond(row.reset_at_ms))
             else {
@@ -598,6 +596,11 @@ impl Runtime {
             let Some(obj) = stored.as_object_mut() else { continue };
             for key in SPLIT {
                 obj.insert(key.into(), r[key].clone());
+            }
+            // The stored states, alerts and limits (their sources may be
+            // purged) count in the suggestions too.
+            if let Ok(merged) = serde_json::from_value::<WeeklyReport>(stored.clone()) {
+                stored["suggestions"] = json!(suggestions(&merged));
             }
             if self.db.replace_report_data(&row.id, &stored)? {
                 n += 1;
