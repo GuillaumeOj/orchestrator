@@ -43,3 +43,29 @@ Footnote: "Applies to features you start from now on. Running features keep thei
 - No modal; inline only. Keyboard: radios with arrows, ⌘⏎ saves.
 - Hand off to `ui` for final frames; export each frame to
   `.orchestrator/features/change-how-specs-are-saved/design/<name>.png` and commit.
+
+## Final design (T-463)
+
+Frames in `Orchestrator.figcraft`: page **04.7 Settings**, below the Allocation/Sandbox frames at
+y=31002 (`FD · 1…4`, 1512 wide, built from the Tracker · Local frame); **04.4 Feature &
+board** at y=17900 (`FD · 5`). Exports: `design/feature-docs-1-default.png`,
+`-2-custom-folders.png`, `-3-not-saved.png`, `-4-validation-error.png`,
+`feature-page-docs-location.png`.
+
+Final copy (changes from the brief marked *):
+- Nav item: **Feature docs** (after Files). Title: Feature docs. Rows: **Docs**, **Designs**.
+- Radios: "In the repository" · "Not saved in the repository" · (designs) "With the docs".
+- Docs example: `→ .orchestrator/features/checkout/`. Designs *With the docs* example is
+  **resolved** *: `→ .orchestrator/features/checkout/design/` (not the `<docs>/design/` token);
+  when docs are not saved: `→ Not saved either`.
+- Hint under the docs path field only: "{slug} is the feature's short name".
+- Errors (red, under the field, field border red): "Must contain {slug}" ·
+  "Must be a path inside the repository" (absolute, `..`, `.git`, empty parts) · "Too long (200
+  characters at most)" *. While any error shows: Save disabled and "Fix the folders above to
+  save." * next to Revert.
+- Clean state (state 1): no "Unsaved changes", Save disabled (muted). Dirty: blue dot +
+  "Unsaved changes", Save enabled with ⌘⏎.
+- Selected radio: filled dot, label semibold; the path field shows only under a selected
+  "In the repository" (focused field: blue border). Radios are a single tab stop, arrows move.
+- Feature page: line under the docs tabs, above the document: "In the repository · `<path>`"
+  (path monospace) or "Not saved in the repository" + **Reveal in Finder** (secondary button).
