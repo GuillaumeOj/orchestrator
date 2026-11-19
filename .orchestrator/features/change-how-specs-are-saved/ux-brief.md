@@ -69,3 +69,19 @@ Final copy (changes from the brief marked *):
   "In the repository" (focused field: blue border). Radios are a single tab stop, arrows move.
 - Feature page: line under the docs tabs, above the document: "In the repository · `<path>`"
   (path monospace) or "Not saved in the repository" + **Reveal in Finder** (secondary button).
+
+## Final frames (T-464, ui)
+
+Dark and Light for every state. Figcraft **04.7 Settings**: `FD · 1…4 · 1512` at y=31002 (dark)
+and `… · Light` at y=31846. **04.4 Feature & board**: `FD · 5` (y=17900) and `FD · 5c` (y=18330),
+dark at x=0, Light at x=1660.
+
+- Exports: `design/feature-docs-{1-default,2-custom-folders,3-not-saved,4-validation-error}[-light].png`,
+  `design/feature-page-docs-location[-light].png`, `design/feature-page-docs-location-designs[-light].png`.
+- Dirty marker: blue dot + "Unsaved changes" centred on the title line, 16 px after it.
+- Feature page, designs outside the docs folder (lead decision): a second line under the docs
+  line, "Designs · In the repository · `<path>`" or "Designs · Not saved in the repository" +
+  **Reveal in Finder**. Designs under the docs folder: docs line only.
+- Path after "In the repository · ": one space after the dot, path in the primary text colour.
+- Light palette = the Tokyo Night Day values the other Light settings frames use (window
+  `#D0D5E3`, content `#E1E2E7`, text `#283E72`/`#495178`, accent `#2E7DE9`, error `#CE0A43`).
