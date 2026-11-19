@@ -173,34 +173,50 @@ export const SOURCES_SHOWN = 3;
 
 const DOC = /^(?:\.\/)?[\w@.-]+(?:\/[\w@.-]+)*\.md(?:#.*)?$/i;
 
+/** An absolute doc path: only when written in backticks / angle brackets, percent-encoded, or holding a space
+ *  (a markdown `<…>` destination arrives unwrapped). `featureDoc` then decides whether it may open at all. */
+const ABS_DOC = /^\/[^\0-\x1f#]*\.md$/i;
+
 /**
  * What a link in the Overwatch's text or a source means (api-contract §5):
- * `chat:<id>` · `agent:<id>` · `run:<id>` · a doc path with an optional `#section`.
+ * `chat:<id>` · `agent:<id>` · `run:<id>` · a doc path with an optional `#section`, repo-relative or
+ * (`abs`) the absolute path of a doc kept outside the repository, e.g. under the app folder.
  * Anything else (http, mailto, unknown schemes) is null: the markdown renderer's own.
  */
 export function refKind(url) {
-  const u = String(url ?? '').trim();
+  let u = String(url ?? '').trim();
   const m = /^(chat|agent|run):(.+)$/i.exec(u);
   if (m) return { kind: m[1].toLowerCase(), id: m[2] };
-  if (!DOC.test(u) || u.split('#')[0].split('/').includes('..')) return null;
-  const [path, hash = ''] = u.split('#');
-  const clean = path.replace(/^(\.\/)+/, '');
+  const wrapped = /^(?:`([^`]+)`|<([^<>]+)>)$/.exec(u);
+  if (wrapped) u = (wrapped[1] ?? wrapped[2]).trim();
+  const [raw, ...rest] = u.split('#');
+  const hash = rest.join('#');
+  if (u.startsWith('/')) {
+    const path = /%[0-9a-f]{2}/i.test(raw) ? safeDecode(raw) : raw;
+    if (!(wrapped || path !== raw || /\s/.test(path)) || !ABS_DOC.test(path) || path.split('/').includes('..'))
+      return null;
+    return { kind: 'doc', path, abs: true, name: path.split('/').at(-1), section: safeDecode(hash) || null };
+  }
+  if (!DOC.test(u) || raw.split('/').includes('..')) return null;
+  const clean = raw.replace(/^(\.\/)+/, '');
   return { kind: 'doc', path: clean, name: clean.split('/').at(-1), section: safeDecode(hash) || null };
 }
 
-/** Which feature a doc path belongs to: the feature's docs folder (`docs_location`, in the repo) or
- *  the legacy `.orchestrator/features/<slug>/<name>`. `features` are the known features. */
-export function featureDoc(path, features = []) {
+/** Which feature a doc path belongs to, by its resolved folders (`docs_location`): the docs or designs dir,
+ *  repo-relative (a path prefix) or app (absolute). Else the legacy `.orchestrator/features/<slug>/<name>`.
+ *  `design` is set for a file of the designs folder; an `abs` path skips the legacy form. */
+export function featureDoc(path, features = [], abs = false) {
   for (const f of features) {
-    const dir = f.docs_location?.docs;
-    if (dir?.kind !== 'repo' || !dir.dir) continue;
-    const prefix = `${dir.dir.replace(/\/+$/, '')}/`;
-    const at = path.startsWith(prefix) ? 0 : path.indexOf(`/${prefix}`) + 1;
-    if (path.startsWith(prefix) || at > 0) {
-      const name = path.slice(at + prefix.length);
-      if (name) return { slug: f.slug, name };
+    // The designs folder first: with docs it is inside the docs folder.
+    for (const which of ['designs', 'docs']) {
+      const dir = f.docs_location?.[which]?.dir;
+      if (!dir) continue;
+      const prefix = `${dir.replace(/\/+$/, '')}/`;
+      const name = path.startsWith(prefix) ? path.slice(prefix.length) : '';
+      if (name) return which === 'designs' ? { slug: f.slug, name, design: true } : { slug: f.slug, name };
     }
   }
+  if (abs) return null;
   const m = /(?:^|\/)\.orchestrator\/features\/([^/]+)\/(.+)$/.exec(path);
   return m ? { slug: m[1], name: m[2] } : null;
 }

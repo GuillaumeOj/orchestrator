@@ -23,7 +23,7 @@ const { default: ProjectSettingsWindow } = await import('../src/components/Proje
 const { default: FeaturePane } = await import('../src/panes/FeaturePane.svelte');
 const fd = await import('../src/lib/featuredocs.js');
 const { docRepoPath } = await import('../src/lib/teams.js');
-const { featureDoc } = await import('../src/lib/overwatch.js');
+const { featureDoc, refKind } = await import('../src/lib/overwatch.js');
 
 const called = (cmd) => calls.filter(([c]) => c === cmd);
 const el = (x) => /** @type {any} */ (x);
@@ -119,9 +119,54 @@ describe('feature docs helpers', () => {
   it('featureDoc finds the feature by its docs folder, else the legacy path', () => {
     const features = [{ slug: 'checkout', docs_location: { docs: { kind: 'repo', dir: 'docs/specs/checkout' } } }];
     expect(featureDoc('docs/specs/checkout/spec.md', features)).toEqual({ slug: 'checkout', name: 'spec.md' });
-    expect(featureDoc('/w/co/docs/specs/checkout/spec.md', features)).toEqual({ slug: 'checkout', name: 'spec.md' });
+    // A path prefix, not a substring: a `{slug}`-first template cannot claim a code path.
+    expect(featureDoc('/w/co/docs/specs/checkout/spec.md', features)).toBeNull();
+    const first = [{ slug: 'checkout', docs_location: { docs: { kind: 'repo', dir: 'checkout/docs' } } }];
+    expect(featureDoc('checkout/docs/spec.md', first)).toEqual({ slug: 'checkout', name: 'spec.md' });
+    expect(featureDoc('src/checkout/docs/spec.md', first)).toBeNull();
     expect(featureDoc('.orchestrator/features/x/spec.md', features)).toEqual({ slug: 'x', name: 'spec.md' });
     expect(featureDoc('docs/other.md', features)).toBeNull();
+  });
+});
+
+describe('Overwatch links to docs kept outside the repository', () => {
+  const app = '/Users/me/Library/Application Support/Orchestrator/projects/p1/features/checkout';
+  const features = [
+    {
+      slug: 'checkout',
+      docs_location: {
+        docs: { kind: 'app', dir: `${app}/docs` },
+        designs: { kind: 'app', dir: `${app}/design` },
+      },
+    },
+  ];
+  const doc = `${app}/docs/spec.md`;
+
+  it('accepts a spaced absolute path in backticks or angle brackets, or percent-encoded', () => {
+    const want = { kind: 'doc', path: doc, abs: true, name: 'spec.md', section: null };
+    expect(refKind(`\`${doc}\``)).toEqual(want);
+    expect(refKind(`<${doc}>`)).toEqual(want);
+    expect(refKind(doc.replaceAll(' ', '%20'))).toEqual(want);
+    expect(refKind(`\`${doc}#scope\``)).toEqual({ ...want, section: 'scope' });
+    expect(featureDoc(doc, features, true)).toEqual({ slug: 'checkout', name: 'spec.md' });
+    expect(featureDoc(`${app}/design/home.md`, features, true)).toEqual({
+      slug: 'checkout',
+      name: 'home.md',
+      design: true,
+    });
+  });
+
+  it('refuses a bare absolute path and traversal', () => {
+    expect(refKind('/etc/notes.md')).toBeNull();
+    expect(refKind('`/a/../etc/notes.md`')).toBeNull();
+    expect(refKind('`/etc/passwd`')).toBeNull();
+  });
+
+  it('does not link an absolute path outside any feature folder', () => {
+    const r = refKind('`/Users/me/Library/Application Support/Orchestrator/other/spec.md`');
+    expect(r.abs).toBe(true);
+    expect(featureDoc(r.path, features, true)).toBeNull();
+    expect(featureDoc('/x/.orchestrator/features/a/spec.md', features, true)).toBeNull();
   });
 });
 
