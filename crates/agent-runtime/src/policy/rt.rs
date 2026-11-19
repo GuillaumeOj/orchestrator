@@ -175,11 +175,11 @@ impl Runtime {
     /// The hard lists' view of `rec` (spec §3.2.1), its project given.
     fn hard_ctx_with(&self, rec: &AgentRecord, project: Option<&orch_store::Project>, cwd: Option<&str>) -> HardCtx {
         let mut ctx = self.hard_ctx_base(rec.worktree.clone(), project);
+        // One fetch per call (this runs on every tool call).
+        let feature = rec.team.as_ref().and_then(|seat| self.db.feature(&seat.feature_id).ok().flatten());
         // A specialist never merges into its run's integration branch (its lead does).
-        if let Some(seat) = rec.team.as_ref().filter(|_| !crate::runtime::is_lead(rec)) {
-            if let Ok(Some(f)) = self.db.feature(&seat.feature_id) {
-                ctx.protected.push(f.integration_branch());
-            }
+        if let Some(f) = feature.as_ref().filter(|_| !crate::runtime::is_lead(rec)) {
+            ctx.protected.push(f.integration_branch());
         }
         ctx.protected.sort();
         ctx.protected.dedup();
@@ -188,7 +188,9 @@ impl Runtime {
         }
         ctx.extra_write = rec.role.extra_write.clone();
         // The run's feature folders kept in the app's data (§3.4), and nothing else outside.
-        ctx.extra_write.extend(self.feature_app_dirs(rec));
+        if !rec.is_overwatch() {
+            ctx.extra_write.extend(feature.iter().flat_map(crate::feature_docs::app_dirs_of));
+        }
         // The effective sandbox's hosts (api-contract §2): role, then allowances.
         ctx.network_allow = self.network_allow(rec, project.map(|p| p.id.as_str()));
         ctx

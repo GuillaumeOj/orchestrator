@@ -186,10 +186,7 @@ impl Runtime {
         let path = m.path.as_deref().ok_or_else(|| anyhow!("not previewable"))?;
         let mime = image_mime(path).ok_or_else(|| anyhow!("not previewable"))?;
         if let Some(p) = self.app_file_of(&f, path)? {
-            let bytes = std::fs::read(&p).map_err(|_| anyhow!("not found"))?;
-            if bytes.len() as u64 > MAX_PREVIEW_BYTES {
-                return Err(too_large(bytes.len() as u64));
-            }
+            let bytes = crate::feature_docs::read_capped(&p)?;
             return Ok(json!({"mime": mime, "data_b64": base64(&bytes), "bytes": bytes.len(), "source": "app"}));
         }
         let repo = self.project_repo(&f)?;

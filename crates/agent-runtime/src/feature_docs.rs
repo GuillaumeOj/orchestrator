@@ -55,6 +55,11 @@ pub fn app_dirs(loc: &DocsLocation) -> Vec<PathBuf> {
     loc.app_dirs().into_iter().map(PathBuf::from).collect()
 }
 
+/// [`app_dirs`] of a feature's snapshot.
+pub fn app_dirs_of(f: &Feature) -> Vec<PathBuf> {
+    app_dirs(&FeatureDocs::of(f))
+}
+
 /// One folder of a feature, canonical. A repo folder (or a folder above it)
 /// symlinked out of the worktree is refused, and so is an app folder that
 /// is itself a symlink: every read below is confined to it.
@@ -80,10 +85,13 @@ pub fn doc_path(loc: &DocsLocation, name: &str) -> String {
 
 /// `[{path, lines}]` of the feature's docs (the spec gate's `docs` block).
 pub fn doc_lines(loc: &DocsLocation, worktree: &Path, docs: &[String]) -> Value {
+    // The names come from `feature_docs` (plain `.md` names in the folder).
+    let dir = real_dir(&loc.docs, worktree);
     let files: Vec<Value> = docs
         .iter()
         .map(|d| {
-            let lines = read_feature_doc(loc, worktree, d).map(|t| t.lines().count()).unwrap_or(0);
+            let lines = dir.as_ref().ok().and_then(|dir| std::fs::read_to_string(dir.join(d)).ok());
+            let lines = lines.map_or(0, |t| t.lines().count());
             json!({"path": doc_path(loc, d), "lines": lines})
         })
         .collect();
@@ -141,9 +149,7 @@ fn lexical_join(base: &Path, rel: &Path) -> Option<PathBuf> {
 /// (absolute, `..` out of both, a symlink to outside them), a symlink as the
 /// file itself, a non-image and a file over `MAX_PREVIEW_BYTES`.
 pub fn read_feature_asset(loc: &DocsLocation, worktree: &Path, path: &str) -> Result<Value> {
-    use crate::artifacts::{MAX_PREVIEW_BYTES, base64, too_large};
-    use std::io::Read;
-    use std::os::unix::fs::OpenOptionsExt;
+    use crate::artifacts::base64;
     let not_found = || anyhow!("not found");
     let outside = || anyhow!("outside the feature folder");
     let rel = Path::new(path);
@@ -176,14 +182,24 @@ pub fn read_feature_asset(loc: &DocsLocation, worktree: &Path, path: &str) -> Re
     if !roots.iter().any(|r| real.starts_with(r)) {
         return Err(outside());
     }
-    // The checks above are on the path; the read is on a handle that can't
-    // follow a symlink swapped in as the file since (a directory above it
-    // swapped in between is not caught), re-checked and capped (the folder
-    // is the agents' to change while we read).
+    let bytes = read_capped(&real)?;
+    Ok(json!({"mime": mime, "data_b64": base64(&bytes), "bytes": bytes.len()}))
+}
+
+/// A plain file's bytes, at most `MAX_PREVIEW_BYTES`. The callers' checks are
+/// on the path; the read is on a handle that can't follow a symlink swapped
+/// in as the file since (a directory above it swapped in between is not
+/// caught), re-checked and capped (the folder is the agents' to change while
+/// we read).
+pub(crate) fn read_capped(real: &Path) -> Result<Vec<u8>> {
+    use crate::artifacts::{MAX_PREVIEW_BYTES, too_large};
+    use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
+    let not_found = || anyhow!("not found");
     let file = std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-        .open(&real)
+        .open(real)
         .map_err(|_| not_found())?;
     let meta = file.metadata().map_err(|_| not_found())?;
     if !meta.is_file() {
@@ -197,7 +213,7 @@ pub fn read_feature_asset(loc: &DocsLocation, worktree: &Path, path: &str) -> Re
     if bytes.len() as u64 > MAX_PREVIEW_BYTES {
         return Err(too_large(bytes.len() as u64));
     }
-    Ok(json!({"mime": mime, "data_b64": base64(&bytes), "bytes": bytes.len()}))
+    Ok(bytes)
 }
 
 /// Is `p` (absolute) inside one of the feature's app folders? For a design
@@ -222,10 +238,7 @@ pub fn create_app_dirs(loc: &DocsLocation) -> Result<()> {
 /// (deleting the feature). Only that folder, never through a symlink: a
 /// folder that is a symlink, or resolves outside `<root>/projects`, is left.
 pub fn remove_app_base(root: &Path, project_id: &str, slug: &str) -> Result<bool> {
-    if project_id.is_empty()
-        || slug.is_empty()
-        || [project_id, slug].iter().any(|s| s.contains(['/', '\\']) || *s == ".." || *s == ".")
-    {
+    if !orch_git::valid_id(project_id) || !orch_git::valid_id(slug) {
         bail!("invalid feature folder");
     }
     let base = app_base(root, project_id, slug);

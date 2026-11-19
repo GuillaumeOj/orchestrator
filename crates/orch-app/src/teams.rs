@@ -327,11 +327,7 @@ impl Core {
         rt.db.update_project_settings(project_id, move |e| {
             // FR-112: the stored list stays as the transaction read it.
             general.external_files = std::mem::take(&mut e.settings.external_files);
-            if let Some(fd) = feature_docs {
-                general.feature_docs = fd;
-            } else {
-                general.feature_docs = std::mem::take(&mut e.settings.feature_docs);
-            }
+            general.feature_docs = feature_docs.unwrap_or_else(|| std::mem::take(&mut e.settings.feature_docs));
             e.settings = general;
             (e.backend, e.track_orchestrator_dir) = (backend, track);
             Ok(())

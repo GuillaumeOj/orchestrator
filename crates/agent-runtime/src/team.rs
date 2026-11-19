@@ -1677,17 +1677,17 @@ impl Runtime {
                 // §3.4: an absolute path only inside the run's feature folders
                 // kept in the app's data (canonical, so no `..` or link out).
                 let loc = crate::feature_docs::FeatureDocs::of(&cx.feature);
-                let app_file = artifact.trim().starts_with('/')
-                    && crate::feature_docs::in_app_dirs(&loc, Path::new(artifact.trim()));
-                if kind == "design" && artifact.trim().starts_with('/') && !app_file {
+                let abs = Some(artifact.trim()).filter(|a| a.starts_with('/'));
+                let app_file = abs.is_some_and(|a| crate::feature_docs::in_app_dirs(&loc, Path::new(a)));
+                if kind == "design" && abs.is_some() && !app_file {
                     let dirs = loc.app_dirs();
                     if dirs.is_empty() {
                         bail!("hand off a repo path (relative to your worktree), not an absolute path");
                     }
                     bail!("an absolute path must be an existing file in {}", dirs.join(" or "));
                 }
-                let meta = if app_file {
-                    Some(orch_team::artifact::app_file(artifact.trim()))
+                let meta = if let Some(a) = abs.filter(|_| app_file) {
+                    Some(orch_team::artifact::app_file(a))
                 } else {
                     orch_team::artifact::parse(artifact)
                 };

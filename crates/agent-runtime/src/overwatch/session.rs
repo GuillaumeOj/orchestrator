@@ -214,7 +214,7 @@ impl Runtime {
         reads.extend(worktrees);
         // Feature docs and designs kept in the app's data (read only, like the rest).
         for f in self.db.features(None).unwrap_or_default() {
-            reads.extend(crate::feature_docs::app_dirs(&crate::feature_docs::FeatureDocs::of(&f)));
+            reads.extend(crate::feature_docs::app_dirs_of(&f));
         }
         reads.push(day_dir.to_path_buf());
         reads.push(self.cfg.paths.agent_dir(ID).join("messages"));

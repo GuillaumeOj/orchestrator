@@ -1031,7 +1031,7 @@ impl Runtime {
         }
         let Some(seat) = rec.team.as_ref() else { return vec![] };
         let Ok(Some(f)) = self.db.feature(&seat.feature_id) else { return vec![] };
-        crate::feature_docs::app_dirs(&crate::feature_docs::FeatureDocs::of(&f))
+        crate::feature_docs::app_dirs_of(&f)
     }
 
     /// What `p`'s files may not touch: the same bounds when adding and at spawn.
@@ -1149,10 +1149,8 @@ impl Runtime {
         let project_files = self.spawn_project_files(id, project.as_deref(), &env.home, quiet);
         // Never the Overwatch's: it reads, never writes.
         // Created if missing (a folder the user removed): the grant needs it.
-        let feature_dirs: Vec<PathBuf> = if overwatch.is_some() { vec![] } else { self.feature_app_dirs(rec) }
-            .into_iter()
-            .filter(|d| std::fs::create_dir_all(d).is_ok())
-            .collect();
+        let feature_dirs: Vec<PathBuf> =
+            self.feature_app_dirs(rec).into_iter().filter(|d| std::fs::create_dir_all(d).is_ok()).collect();
         let ctx = CompileCtx {
             agent_id: id.into(),
             name: id.into(),

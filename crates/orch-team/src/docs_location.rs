@@ -73,18 +73,12 @@ impl DocsLocation {
     pub fn designs_with_docs(&self) -> bool {
         self.designs.kind == self.docs.kind && self.designs.dir == format!("{}/design", self.docs.dir)
     }
-    /// The absolute app folders (docs first), without one inside another
-    /// (designs in the docs folder's `design/`).
+    /// The absolute app folders (docs first); designs in the docs folder's
+    /// `design/` are covered by the docs folder.
     pub fn app_dirs(&self) -> Vec<String> {
-        let mut v: Vec<String> = vec![];
-        for l in [&self.docs, &self.designs].into_iter().filter(|l| l.is_app()) {
-            let inside = |a: &str, b: &str| a == b || a.starts_with(&format!("{}/", b.trim_end_matches('/')));
-            if !v.iter().any(|d| inside(&l.dir, d)) {
-                v.retain(|d| !inside(d, &l.dir));
-                v.push(l.dir.clone());
-            }
-        }
-        v
+        let docs = self.docs.is_app().then(|| self.docs.dir.clone());
+        let designs = (self.designs.is_app() && !self.designs_with_docs()).then(|| self.designs.dir.clone());
+        docs.into_iter().chain(designs).collect()
     }
 }
 
