@@ -101,7 +101,7 @@ describe('Project settings › Files', () => {
   it('sits second in the nav and lists rows with ~ paths, missing badge and hints', async () => {
     const { container, getByText } = await open();
     const nav = [...container.querySelectorAll('[role="tab"]')].map((b) => b.textContent.trim());
-    expect(nav.slice(0, 3)).toEqual(['General', 'Files', 'Tracker']);
+    expect(nav.slice(0, 4)).toEqual(['General', 'Files', 'Feature docs', 'Tracker']);
     expect(rows(container)).toHaveLength(3);
     expect(container.textContent).toContain('~/Brand');
     expect(container.textContent).toContain('▲ missing');

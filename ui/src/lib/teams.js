@@ -1,6 +1,7 @@
 // Teams in the UI (P2): run states, the team timeline's filters and copy,
 // and the Board's columns and moves. Pure: tested in test/teams.test.js.
 
+import { locationOf } from './featuredocs.js';
 import { plural, spaced } from './format.js';
 
 /** Team-run states (§6.2) → status colors (Penpot 02 Feature card). */
@@ -287,8 +288,10 @@ export function remoteLinkLabel(task) {
 /** The repo-relative path of a feature doc (R10: the line under the doc tabs), or null when the
  *  doc is not in the repo: no integration worktree yet, or a name that is not a plain file of the
  *  feature's folder. */
-export function docRepoPath(feature, name) {
+export function docRepoPath(feature, name, loc) {
   if (!feature?.integration_worktree || !feature.slug || !name) return null;
   if (name.startsWith('/') || name.split('/').includes('..') || /^[a-z]+:/i.test(name)) return null;
-  return `.orchestrator/features/${feature.slug}/${name}`;
+  const docs = locationOf(feature, loc).docs;
+  // Docs that are not saved in the repository have no repo path.
+  return docs.kind === 'repo' ? `${docs.dir}/${name}` : null;
 }

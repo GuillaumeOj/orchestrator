@@ -4,12 +4,13 @@
   // window flashes (backdropClose in lib/app.svelte.js).
   import { tooltip } from '../lib/tooltip.js';
 
-  /** @type {{ dirty: boolean, busy?: boolean, onrevert: () => void, onsave: () => void, revertKey?: string }} */
-  let { dirty, busy = false, onrevert, onsave, revertKey = '' } = $props();
+  /** @type {{ dirty: boolean, busy?: boolean, onrevert: () => void, onsave: () => void, revertKey?: string, blocked?: boolean, hint?: string }} */
+  let { dirty, busy = false, onrevert, onsave, revertKey = '', blocked = false, hint = '' } = $props();
 </script>
 
 <div class="sfoot foot">
   {#if dirty}<span class="dirty">Unsaved changes</span>{/if}
   <button type="button" class="btn" disabled={!dirty} use:tooltip={revertKey ? { label: 'Revert', key: revertKey } : null} onclick={onrevert}>Revert</button>
-  <button type="button" class="btn primary" disabled={busy || !dirty} use:tooltip={{ label: 'Save', key: '⌘⏎' }} onclick={onsave}>Save</button>
+  <button type="button" class="btn primary" disabled={busy || blocked || !dirty} use:tooltip={{ label: 'Save', key: '⌘⏎' }} onclick={onsave}>Save</button>
+  {#if hint}<span class="hint">{hint}</span>{/if}
 </div>

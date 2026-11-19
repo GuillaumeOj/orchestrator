@@ -9,6 +9,7 @@
   import { untrack } from 'svelte';
   import { activeAgents, agent, app, confirm, contextProject, deleteAgent, deleteFeature, features, focusCard, openAgent, openFeature, openProjectSettings, openSettings, openUrl, projects, refresh, setContext, toast } from '../lib/app.svelte.js';
   import { designTools, effectiveServers, kindLabel, nodeList } from '../lib/ecosystem.js';
+  import { resolveSetting, slashed } from '../lib/featuredocs.js';
   import { clock, expandHome, shortPath } from '../lib/format.js';
   import { blockOf } from '../lib/inbox.js';
   import { basisText, blockedLine, dialogEstimate, originChip, ranBeforeLine, staleBanner, staleOf, subIssuesLine, trackerName } from '../lib/intake.js';
@@ -65,6 +66,7 @@
   let offHours = $state(null); // planner_view.off_hours: the next window for "Run off-hours"
   let teamsView = $state(null);
   let registry = $state([]); // MCP servers the project sees (the Design tools line)
+  let docsSetting = $state(null); // the project's `settings.feature_docs` (where the lead writes the docs)
   /** The teams seen from `project_id` (its own and the global ones). A team
    *  that isn't among them, or an existing feature of another project, is
    *  dropped from the form. */
@@ -80,6 +82,9 @@
     invoke('mcp_registry_view', { project: project_id || null })
       .then((r) => launch.project_id === project_id && (registry = effectiveServers(r, project_id || null)))
       .catch(() => (registry = []));
+    invoke('project_settings', { project: project_id })
+      .then((r) => launch.project_id === project_id && (docsSetting = r?.settings?.feature_docs ?? null))
+      .catch(() => (docsSetting = null));
   }
   function setLaunchProject(project_id) {
     launch.project_id = project_id;
@@ -150,6 +155,13 @@
   // A feature whose run had a PR keeps its mode, even under 2 issues (the core allows the drop); otherwise per issue falls back to One PR.
   const mode = $derived(existingModeLocked ? (existingFeature.pr_mode ?? 'single') : modeFor(prMode, issueChips.length));
   const launchSlug = $derived(launch.existing ? (free.find((f) => f.id === launch.existing)?.slug ?? '') : launch.slug || slugify(launch.title));
+
+  // Where the lead writes the docs: an existing feature's own snapshot, else the project's setting resolved with the slug.
+  const launchDocs = $derived.by(() => {
+    const ex = launch.existing ? free.find((f) => f.id === launch.existing) : null;
+    if (ex?.docs_location?.docs?.dir) return ex.docs_location.docs;
+    return resolveSetting(docsSetting, launchSlug || '…').docs;
+  });
 
   async function launchTeamOnFeature() {
     if (busy || stale) return;
@@ -492,7 +504,7 @@
       {@render scopeNote()}
       <div class="note what">
         <span>• Creates <span class="mono">orch/{launchSlug || '…'}/integration</span> and the lead's worktree on it.</span>
-        <span>• The lead drafts spec.md (and ux-brief.md, api-contract.md) in <span class="mono">.orchestrator/features/{launchSlug || '…'}/</span>, then asks for the Spec gate.</span>
+        <span>• The lead drafts spec.md (and ux-brief.md, api-contract.md) {#if launchDocs.kind === 'repo'}in <span class="mono">{slashed(launchDocs.dir)}</span>{:else}(not saved in the repository, kept on this Mac){/if}, then asks for the Spec gate.</span>
         <span>• Specialists start after the gate, as the Governor and the live-agent cap allow.</span>
       </div>
       <label class="offh" use:tooltip={offHoursAllowed(offHours) ? null : { label: 'Run off-hours', detail: OFF_DISABLED }}><input type="checkbox" bind:checked={launch.off_hours} disabled={!offHoursAllowed(offHours)} /> Run off-hours{nextOffHours(offHours) ? ` (starts ${clock(nextOffHours(offHours))})` : ''}</label>

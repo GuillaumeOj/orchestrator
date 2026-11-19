@@ -486,6 +486,11 @@ input.field {
   margin-right: auto;
   color: var(--color-text-muted);
 }
+/* Why Save is off (a section with a failing field). */
+.sfoot > .hint {
+  color: var(--color-text-muted);
+  font: var(--text-caption);
+}
 input[role="switch"] {
   appearance: none;
   flex: none;

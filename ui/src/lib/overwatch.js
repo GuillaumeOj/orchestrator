@@ -188,8 +188,19 @@ export function refKind(url) {
   return { kind: 'doc', path: clean, name: clean.split('/').at(-1), section: safeDecode(hash) || null };
 }
 
-/** Where a feature doc lives: `.orchestrator/features/<slug>/<name>`. */
-export function featureDoc(path) {
+/** Which feature a doc path belongs to: the feature's docs folder (`docs_location`, in the repo) or
+ *  the legacy `.orchestrator/features/<slug>/<name>`. `features` are the known features. */
+export function featureDoc(path, features = []) {
+  for (const f of features) {
+    const dir = f.docs_location?.docs;
+    if (dir?.kind !== 'repo' || !dir.dir) continue;
+    const prefix = `${dir.dir.replace(/\/+$/, '')}/`;
+    const at = path.startsWith(prefix) ? 0 : path.indexOf(`/${prefix}`) + 1;
+    if (path.startsWith(prefix) || at > 0) {
+      const name = path.slice(at + prefix.length);
+      if (name) return { slug: f.slug, name };
+    }
+  }
   const m = /(?:^|\/)\.orchestrator\/features\/([^/]+)\/(.+)$/.exec(path);
   return m ? { slug: m[1], name: m[2] } : null;
 }

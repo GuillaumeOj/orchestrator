@@ -614,7 +614,7 @@
     }
     // The cited project first (a card's), else the focused one; two projects can share a feature slug.
     const project = ref.project ?? contextProject()?.id ?? null;
-    const fd = featureDoc(ref.path);
+    const fd = featureDoc(ref.path, features());
     const same = fd ? features().filter((x) => x.slug === fd.slug) : [];
     const f = same.find((x) => x.project_id === project) ?? same[0];
     // The feature pane lists the docs of the feature folder itself, not its sub-folders.
