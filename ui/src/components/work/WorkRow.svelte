@@ -111,7 +111,7 @@
     {#if slots.labels.more}<span class="up" data-fold use:tooltip={fit ? (n.upstream?.labels ?? []).filter(isShownLabel).join(', ') : ''}>+{slots.labels.more}</span>{/if}
     {#if slots.dep}<span class="dep" data-fold use:tooltip={slots.dep.tip}><span aria-hidden="true">{'\u{F0337}'}</span>{#if !compact} {slots.dep.text}{:else}<span class="sr">{slots.dep.text}</span>{/if}</span>{/if}
     {#if slots.prog}<span class="prog">{slots.prog}</span>{/if}
-    {#if slots.tail}<span class="tail" class:warn={slots.tail.warn}>{slots.tail.text}</span>{/if}
+    {#if slots.tail}<span class="tail" class:warn={slots.tail.warn} use:tooltip={slots.tail.tip ?? null}>{slots.tail.text}</span>{/if}
     {#if slots.mark}<span class="mark" use:tooltip={slots.mark.tip}>⚠ {slots.mark.text}</span>{/if}
     <span class="right" class:narrow>
       {#if slots.right?.chip}<AppChip chip={slots.right.chip} onopen={onchip} />{:else if slots.right?.rollup}<span class="rollup" use:tooltip={slots.right.tip}>{slots.right.rollup}</span>{/if}

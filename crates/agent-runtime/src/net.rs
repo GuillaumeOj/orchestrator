@@ -56,6 +56,36 @@ pub trait Net: Send + Sync + std::fmt::Debug {
     fn http(&self, req: &HttpRequest) -> Result<HttpResponse>;
     /// `gh auth status`: its output when logged in, else the error text.
     fn gh_auth_status(&self) -> Result<String>;
+    /// `gh auth refresh -h github.com -s <scope>` started without a TTY (gh-notes §1): its output
+    /// lines as they come and the process. `Err` when it cannot start (no gh).
+    fn gh_auth_refresh(&self, _scope: &str) -> Result<GhRefresh> {
+        bail!("gh auth refresh: not available")
+    }
+}
+
+/// A running `gh auth refresh`.
+pub struct GhRefresh {
+    /// Its stdout and stderr lines, as they come; disconnected once both streams end.
+    pub lines: std::sync::mpsc::Receiver<String>,
+    pub child: Box<dyn RefreshChild>,
+}
+
+/// The process of a [`GhRefresh`].
+pub trait RefreshChild: Send {
+    /// `Some(success)` once it exited.
+    fn try_wait(&mut self) -> Result<Option<bool>>;
+    fn kill(&mut self);
+}
+
+impl RefreshChild for std::process::Child {
+    fn try_wait(&mut self) -> Result<Option<bool>> {
+        Ok(std::process::Child::try_wait(self)?.map(|s| s.success()))
+    }
+
+    fn kill(&mut self) {
+        let _ = std::process::Child::kill(self);
+        let _ = self.wait();
+    }
 }
 
 /// The real one.
@@ -116,6 +146,35 @@ impl Net for SystemNet {
             bail!("{}", text.trim());
         }
         Ok(text)
+    }
+
+    fn gh_auth_refresh(&self, scope: &str) -> Result<GhRefresh> {
+        use std::io::BufRead;
+        let mut cmd = Command::new("gh");
+        // No TTY: gh prints the code and the URL and polls, without waiting for Enter or opening a browser.
+        cmd.args(["auth", "refresh", "-h", "github.com", "-s", scope])
+            .env("GH_PROMPT_DISABLED", "1")
+            .env("NO_COLOR", "1")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = cmd.spawn().context("gh auth refresh")?;
+        let (tx, lines) = std::sync::mpsc::channel();
+        let out: [Box<dyn std::io::Read + Send>; 2] = [
+            Box::new(child.stdout.take().context("gh: no stdout")?),
+            Box::new(child.stderr.take().context("gh: no stderr")?),
+        ];
+        for r in out {
+            let tx = tx.clone();
+            std::thread::spawn(move || {
+                for l in std::io::BufReader::new(r).lines().map_while(Result::ok) {
+                    if tx.send(l).is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+        Ok(GhRefresh { lines, child: Box::new(child) })
     }
 }
 
@@ -192,6 +251,30 @@ pub(crate) mod fake {
         pub routes: Mutex<Vec<(String, HttpResponse)>>,
         pub seen: Mutex<Vec<HttpRequest>>,
         pub gh: Mutex<Option<Result<String, String>>>,
+        /// What `gh auth refresh` does (none: gh is not installed); the scopes asked.
+        pub refresh: Mutex<Option<FakeRefresh>>,
+        pub refreshed: Mutex<Vec<String>>,
+    }
+
+    /// A fake `gh auth refresh`: prints `lines`, then exits as `exit` says once it is set.
+    #[derive(Clone, Debug, Default)]
+    pub struct FakeRefresh {
+        pub lines: Vec<String>,
+        pub exit: std::sync::Arc<Mutex<Option<bool>>>,
+        pub killed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    struct FakeChild(FakeRefresh);
+
+    impl RefreshChild for FakeChild {
+        fn try_wait(&mut self) -> Result<Option<bool>> {
+            Ok(*self.0.exit.lock().unwrap())
+        }
+
+        fn kill(&mut self) {
+            self.0.killed.store(true, std::sync::atomic::Ordering::SeqCst);
+            self.0.exit.lock().unwrap().get_or_insert(false);
+        }
     }
 
     impl FakeNet {
@@ -221,8 +304,20 @@ pub(crate) mod fake {
             match self.gh.lock().unwrap().clone() {
                 Some(Ok(s)) => Ok(s),
                 Some(Err(e)) => bail!("{e}"),
-                None => bail!("gh: not installed"),
+                None => bail!("gh auth status: No such file or directory (os error 2)"),
             }
+        }
+
+        fn gh_auth_refresh(&self, scope: &str) -> Result<GhRefresh> {
+            self.refreshed.lock().unwrap().push(scope.to_string());
+            let Some(f) = self.refresh.lock().unwrap().clone() else {
+                bail!("gh auth refresh: No such file or directory (os error 2)")
+            };
+            let (tx, lines) = std::sync::mpsc::channel();
+            for l in &f.lines {
+                let _ = tx.send(l.clone());
+            }
+            Ok(GhRefresh { lines, child: Box::new(FakeChild(f)) })
         }
     }
 }

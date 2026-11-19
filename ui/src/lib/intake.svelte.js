@@ -5,7 +5,7 @@
 
 import { app, askOverwatch, openProjectSettings, openSettings, openUrl, projects, toast } from './app.svelte.js';
 import { UNDO_MS } from './inbox.js';
-import { docPath, GH_SCOPE_COMMAND, integrationsRow, staleOf, staleToast } from './intake.js';
+import { docPath, ghScopeCommand, integrationsRow, scopeOf, staleOf, staleToast } from './intake.js';
 import { errText, invoke } from './ipc.js';
 
 /** Session-only state of the lane and of planning (notes §1.1, §8.1). */
@@ -167,11 +167,12 @@ export async function fixSource(src, refresh = () => refreshIntake([src.project]
   const code = src.error?.code;
   const fix = src.error?.fix;
   if (fix === 'gh_scope' || code === 'gh_scope') {
+    const command = ghScopeCommand(scopeOf(src.error));
     try {
-      await navigator.clipboard.writeText(GH_SCOPE_COMMAND);
+      await navigator.clipboard.writeText(command);
       toast('Copied. Run it in a terminal, then Refresh.');
     } catch {
-      toast(`Run it in a terminal, then Refresh: ${GH_SCOPE_COMMAND}`);
+      toast(`Run it in a terminal, then Refresh: ${command}`);
     }
   } else if (fix === 'integrations') openSettings('integrations', integrationsRow(code));
   // The Tracker fixes (limit the projects, turn off write-back) are made in Project settings › Tracker.

@@ -156,6 +156,9 @@ pub struct SourceError {
     pub fix: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retry_at_ms: Option<u64>,
+    /// The scope gh needs (`gh_scope` only): the one GitHub named as required.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
 }
 
 impl SourceError {
@@ -171,7 +174,7 @@ impl SourceError {
             Some((at, _)) => format!("{}…", &message[..at]),
             None => message,
         };
-        SourceError { code, message, fix, retry_at_ms: None }
+        SourceError { code, message, fix, retry_at_ms: None, scope: None }
     }
 
     pub fn json(&self) -> Value {
@@ -222,30 +225,69 @@ pub fn enc(s: &str) -> String {
 
 // ------------------------------------------------------------------ GitHub
 
-/// The text of a failure that says the network is not reachable.
-fn is_offline_text(lower: &str) -> bool {
+/// The (lower-cased) text of a failure that says the network is not reachable.
+pub fn is_offline_text(lower: &str) -> bool {
     [
         "could not resolve host",
+        "no such host",
         "network is unreachable",
+        "network unreachable",
         "no route to host",
         "connection refused",
         "dial tcp",
-        "network unreachable",
+        "error connecting to",
+        "i/o timeout",
+        "tls handshake timeout",
+        "timeout trying to log in",
     ]
     .iter()
     .any(|p| lower.contains(p))
 }
 
-/// The source error of a failed `gh` call.
+/// The (lower-cased) text of a failure that says gh is not installed.
+pub fn is_gh_missing_text(lower: &str) -> bool {
+    ["no such file", "not found in path", "program not found", "executable file not found"]
+        .iter()
+        .any(|p| lower.contains(p))
+}
+
+/// The first scope GitHub names as *required* in an insufficient-scopes text
+/// (`… requires one of the following scopes: ['project'], but your token has only been granted the: [...]`).
+/// The granted list that follows is never read.
+pub fn required_scope(text: &str) -> Option<String> {
+    const NEEDLE: &str = "requires one of the following scopes:";
+    let at = text.to_ascii_lowercase().find(NEEDLE)? + NEEDLE.len();
+    let rest = text[at..].trim_start().strip_prefix('[')?;
+    let list = &rest[..rest.find(']')?];
+    list.split(',')
+        .map(|s| s.trim().trim_matches(|c| c == '\'' || c == '"').trim())
+        .find(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+/// The advice of a `gh_scope` error.
+pub fn gh_scope_message(scope: &str) -> String {
+    format!("gh needs the {scope} scope: run `gh auth refresh -h github.com -s {scope}`")
+}
+
+/// The source error of a failed `gh` call that reads (a scope GitHub does not name is `read:project`).
 pub fn gh_error(e: &anyhow::Error) -> SourceError {
+    gh_error_or_scope(e, "read:project")
+}
+
+/// The source error of a failed `gh` call; `default_scope` is the scope of a `gh_scope` text that names none.
+pub fn gh_error_or_scope(e: &anyhow::Error, default_scope: &str) -> SourceError {
     // (an unreachable network is `offline`: the cache is shown, F15)
     let m = format!("{e:#}");
     let l = m.to_ascii_lowercase();
     let code = if is_offline_text(&l) {
         "offline"
-    } else if l.contains("no such file") || l.contains("not found in path") || l.contains("program not found") {
+    } else if is_gh_missing_text(&l) {
         "gh_missing"
-    } else if l.contains("read:project") || l.contains("insufficient_scopes") || l.contains("required scopes") {
+    } else if l.contains("insufficient_scopes")
+        || l.contains("required scopes")
+        || l.contains("requires one of the following scopes")
+    {
         "gh_scope"
     } else if l.contains("gh auth login")
         || l.contains("not logged")
@@ -263,7 +305,11 @@ pub fn gh_error(e: &anyhow::Error) -> SourceError {
     let message = match code {
         "gh_missing" => "the GitHub CLI (gh) is not installed".to_string(),
         "gh_auth" => "gh is not logged in: run `gh auth login`".to_string(),
-        "gh_scope" => "gh needs the read:project scope: run `gh auth refresh -s read:project`".to_string(),
+        "gh_scope" => {
+            // (read from GitHub's whole text, before `SourceError::new` clips the message)
+            let scope = required_scope(&m).unwrap_or_else(|| default_scope.to_string());
+            return SourceError { scope: Some(scope.clone()), ..SourceError::new(code, gh_scope_message(&scope)) };
+        }
         _ => m,
     };
     SourceError::new(code, message)
@@ -640,7 +686,7 @@ pub fn repo_docs_matches(dir: &Path, glob: &str, branch: &str) -> R<usize> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::sync::Arc;
 
@@ -699,6 +745,40 @@ mod tests {
         assert_eq!(SourceError::new("failed", "x").fix, None);
         let long = SourceError::new("failed", "y".repeat(500));
         assert_eq!(long.message.chars().count(), 200);
+    }
+
+    /// GitHub's real insufficient-scopes text for a board write (gh-notes §3).
+    pub(crate) const ADD_ITEM_SCOPES: &str = "Your token has not been granted the required scopes to execute this query. The 'addProjectV2ItemById' field requires one of the following scopes: ['project'], but your token has only been granted the: ['gist', 'read:org', 'read:project', 'repo'] scopes. Please modify your token's scopes at: https://github.com/settings/tokens.";
+
+    #[test]
+    fn gh_missing_is_only_a_gh_that_did_not_start() {
+        for t in ["fork/exec gh: no such file or directory", "exec: \"gh\": executable file not found in $path"] {
+            assert_eq!(gh_error(&anyhow::anyhow!("{t}")).code, "gh_missing", "{t}");
+        }
+        // GitHub's own "not installed" (an app) is not a missing gh.
+        let e = gh_error(&anyhow::anyhow!("gh: the GitHub App is not installed on this repository"));
+        assert_ne!(e.code, "gh_missing");
+    }
+
+    #[test]
+    fn a_scope_error_names_the_required_scope_not_the_granted_ones() {
+        let e = gh_error(&anyhow::anyhow!("gh: {ADD_ITEM_SCOPES}"));
+        assert_eq!((e.code, e.scope.as_deref(), e.fix), ("gh_scope", Some("project"), Some("gh_scope")));
+        assert_eq!(e.message, "gh needs the project scope: run `gh auth refresh -h github.com -s project`");
+        let read = "The 'projectV2' field requires one of the following scopes: ['read:project'], but your token has only been granted the: ['repo'] scopes.";
+        assert_eq!(gh_error(&anyhow::anyhow!("{read}")).scope.as_deref(), Some("read:project"));
+        // Named nowhere: the read default; the JSON carries the scope, other errors don't.
+        let e = gh_error(&anyhow::anyhow!("INSUFFICIENT_SCOPES"));
+        assert_eq!(e.json()["scope"], "read:project");
+        assert!(gh_error(&anyhow::anyhow!("boom")).json().get("scope").is_none());
+        // A long text still yields its scope (parsed before the message is clipped).
+        let long = format!("{} {ADD_ITEM_SCOPES}", "x".repeat(400));
+        assert_eq!(gh_error_or_scope(&anyhow::anyhow!("{long}"), "read:project").scope.as_deref(), Some("project"));
+        assert_eq!(
+            required_scope("requires one of the following scopes: [read:project, project]").as_deref(),
+            Some("read:project")
+        );
+        assert_eq!(required_scope("granted the: ['read:project']"), None);
     }
 
     #[test]

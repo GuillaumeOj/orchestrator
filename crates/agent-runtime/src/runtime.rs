@@ -268,6 +268,9 @@ pub struct Runtime {
     pub(crate) watches: crate::worktree_watch::Watches,
     /// The PR watcher's fetch clock; held for each PR check.
     pub(crate) pr_watch: Mutex<crate::pr::PrWatch>,
+    /// The `gh auth refresh` running for the user ([`Runtime::gh_grant_scope`]), and who hears its end.
+    pub(crate) gh_grant: Mutex<Option<crate::gh_access::Grant>>,
+    pub(crate) grant_sink: Mutex<Option<crate::gh_access::GrantSink>>,
 }
 
 /// Clocks and flags of the periodic work (`tick`, `housekeeping`).
@@ -621,6 +624,8 @@ impl Runtime {
             outcome_sink: Mutex::new(None),
             now: Default::default(),
             watches: Default::default(),
+            gh_grant: Mutex::new(None),
+            grant_sink: Mutex::new(None),
         });
         rt.handle_releases(released);
         if let Some(weeks) = rebuilt {

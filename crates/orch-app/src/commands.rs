@@ -800,6 +800,31 @@ pub async fn writeback_retry(core: CoreState<'_>, node: String) -> Res<Value> {
     blocking(core, move |c| c.runtime()?.writeback_retry(&node)).await
 }
 
+/// Repeats every failed write-back of a project (fix-write-back-github contract §4).
+#[tauri::command]
+pub async fn writeback_retry_all(core: CoreState<'_>, project: String) -> Res<Value> {
+    blocking(core, move |c| c.runtime()?.writeback_retry_all(&project)).await
+}
+
+/// The gh scopes a project's tracker needs vs what the login has (contract §2); runs `gh auth status`.
+#[tauri::command]
+pub async fn tracker_gh_access(core: CoreState<'_>, project: String) -> Res<Value> {
+    blocking(core, move |c| c.runtime()?.tracker_gh_access(&project)).await
+}
+
+/// Starts gh's device flow for `scope` and answers its one-time code (contract §3); its end is the
+/// `gh.grant` event.
+#[tauri::command]
+pub async fn gh_grant_scope(core: CoreState<'_>, scope: String) -> Res<Value> {
+    blocking(core, move |c| c.runtime()?.gh_grant_scope(&scope)).await
+}
+
+/// Cancels the running grant (contract §3).
+#[tauri::command]
+pub async fn gh_grant_cancel(core: CoreState<'_>) -> Res<Value> {
+    blocking(core, move |c| Ok(c.runtime()?.gh_grant_cancel())).await
+}
+
 /// `queue_off_hours`: `entry` and `task` are string ids per the contract
 /// (`"12"`, a task's `"T-12"` too); numbers are accepted as well.
 #[tauri::command]

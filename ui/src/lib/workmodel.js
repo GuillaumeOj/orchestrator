@@ -3,7 +3,7 @@
 // reads the app state, the clock or the core; callers pass the data. Tested in test/work-model.test.js.
 
 import { clock, dayHm, plural } from './format.js';
-import { ageText, GH_SCOPE_COMMAND, isShownLabel, shownLabels } from './intake.js';
+import { ageText, ghScopeCommand, isShownLabel, scopeWhat, shownLabels } from './intake.js';
 import { TRACKERS } from './source.js';
 import { backlogDir, trackerError } from './tracker.js';
 
@@ -261,10 +261,14 @@ export function rightOf(node, opts = {}) {
   return chip ? { chip } : null;
 }
 
-/** Tails after the slots (§11): deleted upstream (S14), write-back failed (S15), closed parent (S13). */
+/**
+ * Tails after the slots (§11): deleted upstream (S14), write-back failed (S15), closed parent (S13).
+ * @returns {{ warn: boolean, text: string, tip?: string } | null}
+ */
 export function tailOf(node) {
   if (node?.upstream?.deleted) return { warn: true, text: `Deleted in ${trackerName(node)}` };
-  if (node?.writeback?.status === 'failed') return { warn: true, text: 'write-back failed' };
+  if (node?.writeback?.status === 'failed')
+    return { warn: true, text: 'write-back failed', ...(node.writeback.message && { tip: node.writeback.message }) };
   if (isClosed(node) && node.children?.open > 0)
     return { warn: false, text: `closed · ${plural(node.children.open, 'open sub-issue')}` };
   return null;
@@ -645,10 +649,10 @@ export function statusLine(p, s, now = Date.now()) {
     if (code === 'gh_scope')
       return {
         tone: 'error',
-        text: `${p.name} · ${e.text} to read the board`,
+        text: `${p.name} · ${e.text} ${scopeWhat(e.scope)}`,
         fix: 'gh_scope',
         fixLabel: 'Copy command',
-        command: GH_SCOPE_COMMAND,
+        command: ghScopeCommand(e.scope),
         short: e.text,
       };
     const kept = s.refreshed_at_ms ? ` · items kept from ${ageText(s.refreshed_at_ms, now)}` : '';
