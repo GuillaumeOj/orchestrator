@@ -190,16 +190,21 @@ export function refKind(url) {
   const wrapped = /^(?:`([^`]+)`|<([^<>]+)>)$/.exec(u);
   if (wrapped) u = (wrapped[1] ?? wrapped[2]).trim();
   const [raw, ...rest] = u.split('#');
-  const hash = rest.join('#');
+  let path = raw.replace(/^(\.\/)+/, '');
+  let abs = false;
   if (u.startsWith('/')) {
-    const path = /%[0-9a-f]{2}/i.test(raw) ? safeDecode(raw) : raw;
-    if (!(wrapped || path !== raw || /\s/.test(path)) || !ABS_DOC.test(path) || path.split('/').includes('..'))
-      return null;
-    return { kind: 'doc', path, abs: true, name: path.split('/').at(-1), section: safeDecode(hash) || null };
-  }
-  if (!DOC.test(u) || raw.split('/').includes('..')) return null;
-  const clean = raw.replace(/^(\.\/)+/, '');
-  return { kind: 'doc', path: clean, name: clean.split('/').at(-1), section: safeDecode(hash) || null };
+    path = /%[0-9a-f]{2}/i.test(raw) ? safeDecode(raw) : raw;
+    abs = !!wrapped || path !== raw || /\s/.test(path);
+    if (!abs || !ABS_DOC.test(path)) return null;
+  } else if (!DOC.test(u)) return null;
+  if (path.split('/').includes('..')) return null;
+  return {
+    kind: 'doc',
+    path,
+    ...(abs && { abs }),
+    name: path.split('/').at(-1),
+    section: safeDecode(rest.join('#')) || null,
+  };
 }
 
 /** Which feature a doc path belongs to, by its resolved folders (`docs_location`): the docs or designs dir,
