@@ -398,10 +398,8 @@ impl Runtime {
             self.wb_resolve(project);
         }
         // (a write that failed meanwhile, on another node, is not one of these)
-        let ok = failed
-            .iter()
-            .filter(|(n, _)| !skipped.contains(&n.as_str()) && !left.iter().any(|(l, _)| l == n))
-            .count();
+        let ok =
+            failed.iter().filter(|(n, _)| !skipped.contains(&n.as_str()) && !left.iter().any(|(l, _)| l == n)).count();
         let (retried, skipped) = (failed.len() - skipped.len(), skipped.len());
         Ok(
             json!({"retried": retried, "ok": ok, "skipped": skipped, "failed": left.len(), "last_failure": last_failure(&left)}),
