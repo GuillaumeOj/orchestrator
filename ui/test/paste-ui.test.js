@@ -311,9 +311,9 @@ describe('Backspace and Delete next to a placeholder', () => {
     expect(ta.value).toBe('abcd');
   });
 
-  it.each(['deleteWordBackward'])('%s (⌥⌫, ⌃W) just after removes it whole too', async (type) => {
+  it('deleteWordBackward (⌥⌫) just after removes it whole too', async () => {
     await withPaste();
-    beforeInput(type);
+    beforeInput('deleteWordBackward');
     expect(ta.value).toBe('abcd');
   });
 
