@@ -3,7 +3,7 @@
 // reads the app state, the clock or the core; callers pass the data. Tested in test/work-model.test.js.
 
 import { clock, dayHm, plural } from './format.js';
-import { ageText, ghScopeCommand, isShownLabel, shownLabels } from './intake.js';
+import { ageText, ghScopeCommand, isShownLabel, scopeWhat, shownLabels } from './intake.js';
 import { TRACKERS } from './source.js';
 import { backlogDir, trackerError } from './tracker.js';
 
@@ -649,7 +649,7 @@ export function statusLine(p, s, now = Date.now()) {
     if (code === 'gh_scope')
       return {
         tone: 'error',
-        text: `${p.name} · ${e.text} ${e.scope === 'project' ? 'to move items on the board' : 'to read the board'}`,
+        text: `${p.name} · ${e.text} ${scopeWhat(e.scope)}`,
         fix: 'gh_scope',
         fixLabel: 'Copy command',
         command: ghScopeCommand(e.scope),

@@ -5,7 +5,7 @@
   // notices and the errors per code. ⌘⏎ saves. Replaces the Intake and Task backend sections.
   import { onMount, tick, untrack } from 'svelte';
   import { app, copyText, openSettings, openUrl, projects, toast } from '../lib/app.svelte.js';
-  import { ghScopeCommand, integrationsRow, scopeOf } from '../lib/intake.js';
+  import { ghScopeCommand, integrationsRow, scopeOf, scopeWhat } from '../lib/intake.js';
   import { errText, invoke, listen } from '../lib/ipc.js';
   import { BOARD_COLUMNS } from '../lib/options.js';
   import { ifCut, tooltip } from '../lib/tooltip.js';
@@ -190,13 +190,14 @@
   };
 
   function onGrant(p) {
-    if (!p) return;
+    // (a cancel already dropped its code: its late event must not drop the code of a grant asked right after)
+    if (!p || p.message === 'cancelled') return;
     grant = null;
     if (p.state === 'granted') grantNote = { ok: true, text: 'Access granted. Retrying failed writes…' };
     else if (p.state === 'done') {
       grantNote = { ok: true, text: `Access granted. ${retriedText(p.retried?.[project])}`.trim() };
       checkAccess();
-    } else if (p.message !== 'cancelled') grantNote = { ok: false, text: p.message || 'Could not grant access.', scope: p.scope };
+    } else grantNote = { ok: false, text: p.message || 'Could not grant access.', scope: p.scope };
   }
 
   async function grantAccess(scope) {
@@ -630,7 +631,7 @@
           <p class="muted hint">Shows its Status in Work and lets write-back move items on it.</p>
           {#if optsError?.code === 'gh_scope'}
             <div class="scope" data-gh-scope>
-              <p class="ferr" role="alert"><span aria-hidden="true">{'\u{F0026}'}</span> GitHub needs the {scopeOf(optsError)} scope to read the board.</p>
+              <p class="ferr" role="alert"><span aria-hidden="true">{'\u{F0026}'}</span> GitHub needs the {scopeOf(optsError)} scope {scopeWhat(scopeOf(optsError))}.</p>
               <p class="muted hint">Run <code>{ghScopeCommand(scopeOf(optsError))}</code>, then Preview.</p>
               <div><button class="btn" onclick={() => copyCommand(optsError)}>Copy command</button></div>
             </div>

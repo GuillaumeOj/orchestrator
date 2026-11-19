@@ -1,7 +1,7 @@
 // Project settings › Tracker (improve-intake design notes §10, api-contract §1). Pure: tested in
 // test/tracker-settings.test.js. The form is a TrackerSettings (contract §1) edited in place.
 
-import { errorInfo } from './intake.js';
+import { errorInfo, scopeWhat } from './intake.js';
 
 export const KINDS = [
   { id: 'local', label: 'Local' },
@@ -259,10 +259,15 @@ export function accessView(a) {
   const missing = a.missing ?? [];
   if (missing.length) {
     const scope = missing.includes('project') ? 'project' : missing[0];
-    const what = scope === 'project' ? 'to move items on the board' : 'to read the board';
-    return { state: 'missing', scope, canGrant: GRANTABLE.includes(scope), text: `GitHub needs the ${scope} scope ${what}.` };
+    return {
+      state: 'missing',
+      scope,
+      canGrant: GRANTABLE.includes(scope),
+      text: `GitHub needs the ${scope} scope ${scopeWhat(scope)}.`,
+    };
   }
-  if (a.granted == null && (a.needed ?? []).length) return { state: 'unknown', text: "Orchestrator can't check this gh login's scopes." };
+  if (a.granted == null && (a.needed ?? []).length)
+    return { state: 'unknown', text: "Orchestrator can't check this gh login's scopes." };
   const needed = a.needed ?? [];
   return { state: 'ok', text: `GitHub access OK${needed.length ? ` (${needed.join(', ')})` : ''}.` };
 }

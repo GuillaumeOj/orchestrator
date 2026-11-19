@@ -56,6 +56,8 @@
   const history = $derived(detail?.history ?? []);
   // Retry and Fix belong to the latest failed write-back only, and only while the node is still failed.
   const lastFailed = $derived(history.findLast((h) => h.what === 'writeback_failed'));
+  // (a failed node's Retry must be on screen: the short list opens up when the latest failure is older than its 8 rows)
+  const shownAll = $derived(historyAll || (node?.writeback?.status === 'failed' && !!lastFailed && history.indexOf(lastFailed) < history.length - 8));
   const feature = $derived(node ? featureOf(node) : null);
   const est = $derived(detail?.estimate ?? node?.estimate ?? null);
   const crumbList = $derived(crumbs(trail, narrow ? 3 : 4));
@@ -220,14 +222,14 @@
           {#if !detail}<p class="muted">Loading…</p>
           {:else if !history.length}<p class="muted">Nothing yet. Start it here.</p>
           {:else}
-            {#each historyAll ? history : history.slice(-8) as h, i (i)}
+            {#each shownAll ? history : history.slice(-8) as h, i (i)}
               <div class="hist" class:warn={h.what === 'writeback_failed'}>
                 <span class="muted when">{dayHm(h.at_ms)}</span>
                 <span>{historyText(h, node)}</span>
                 {#if h === lastFailed && node.writeback?.status === 'failed'}<button type="button" class="link" onclick={() => act('writeback')}>Retry</button>{#if node.writeback.code === 'gh_scope' && node.project}<button type="button" class="link" data-fix-writeback onclick={() => act('fix-writeback', node.project)}>Fix</button>{/if}{/if}
               </div>
             {/each}
-            {#if history.length > 8 && !historyAll}<button type="button" class="link" onclick={() => (historyAll = true)}>Show all</button>{/if}
+            {#if history.length > 8 && !shownAll}<button type="button" class="link" onclick={() => (historyAll = true)}>Show all</button>{/if}
           {/if}
         </section>
       {/if}

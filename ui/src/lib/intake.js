@@ -175,7 +175,10 @@ export function ageText(ms, now = Date.now()) {
 export const integrationsRow = (code) => (code?.startsWith('linear') ? 'linear' : 'github');
 
 /** The scope a `gh_scope` error names (GitHub's own; `read:project` when the error has none or it is not a scope name: it ends up in a command to paste). */
-export const scopeOf = (error) => (/^[\w:.-]+$/.test(error?.scope ?? '') ? error.scope : 'read:project');
+export const scopeOf = (error) => (/^[\w:.][\w:.-]*$/.test(error?.scope ?? '') ? error.scope : 'read:project');
+
+/** Why gh needs `scope`: `project` moves items on the board, `read:project` reads it. */
+export const scopeWhat = (scope) => (scope === 'project' ? 'to move items on the board' : 'to read the board');
 
 /** The command that adds `scope` to the gh login. */
 export const ghScopeCommand = (scope = 'read:project') => `gh auth refresh -h github.com -s ${scope}`;
@@ -193,7 +196,14 @@ export function errorInfo(error, source = {}, now = Date.now()) {
     String(s ?? '')
       .split('\n')[0]
       .slice(0, 120);
-  const t = (text, fix) => ({ code, text, fix, tip, retry_at_ms: error?.retry_at_ms ?? null, scope: code === 'gh_scope' ? scopeOf(error) : undefined });
+  const t = (text, fix) => ({
+    code,
+    text,
+    fix,
+    tip,
+    retry_at_ms: error?.retry_at_ms ?? null,
+    scope: code === 'gh_scope' ? scopeOf(error) : undefined,
+  });
   switch (code) {
     case 'gh_missing':
       return t('GitHub CLI not found', 'integrations');
