@@ -66,13 +66,13 @@
   let offHours = $state(null); // planner_view.off_hours: the next window for "Run off-hours"
   let teamsView = $state(null);
   let registry = $state([]); // MCP servers the project sees (the Design tools line)
-  let docsSetting = $state(null); // the project's `settings.feature_docs` (where the lead writes the docs)
+  let docsSetting = $state(undefined); // the project's `settings.feature_docs` (where the lead writes the docs)
   /** The teams seen from `project_id` (its own and the global ones). A team
    *  that isn't among them, or an existing feature of another project, is
    *  dropped from the form. */
   function loadTeams(project_id) {
     error = null;
-    docsSetting = null; // not the previous project's folders while this one loads
+    docsSetting = undefined; // not the previous project's folders while this one loads
     invoke('teams_view', { project: project_id || null })
       .then((v) => {
         if (launch.project_id !== project_id) return;
@@ -85,7 +85,7 @@
       .catch(() => (registry = []));
     invoke('project_settings', { project: project_id })
       .then((r) => launch.project_id === project_id && (docsSetting = r?.settings?.feature_docs ?? null))
-      .catch(() => (docsSetting = null));
+      .catch(() => (docsSetting = undefined));
   }
   function setLaunchProject(project_id) {
     launch.project_id = project_id;
@@ -162,7 +162,8 @@
     const ex = launch.existing ? free.find((f) => f.id === launch.existing) : null;
     // A feature created before the setting keeps the legacy folder (the backend never re-resolves it).
     if (ex) return locationOf(ex).docs;
-    return resolveSetting(docsSetting, launchSlug || '…').docs;
+    // Unknown (loading, or unreadable): no folder named rather than a default that may be wrong.
+    return docsSetting === undefined ? null : resolveSetting(docsSetting, launchSlug || '…').docs;
   });
 
   async function launchTeamOnFeature() {
@@ -506,7 +507,7 @@
       {@render scopeNote()}
       <div class="note what">
         <span>• Creates <span class="mono">orch/{launchSlug || '…'}/integration</span> and the lead's worktree on it.</span>
-        <span>• The lead drafts spec.md (and ux-brief.md, api-contract.md) {#if launchDocs.kind === 'repo'}in <span class="mono">{slashed(launchDocs.dir)}</span>{:else}(not saved in the repository, kept on this Mac){/if}, then asks for the Spec gate.</span>
+        <span>• The lead drafts spec.md (and ux-brief.md, api-contract.md) {#if !launchDocs}in the feature's docs folder{:else if launchDocs.kind === 'repo'}in <span class="mono">{slashed(launchDocs.dir)}</span>{:else}(not saved in the repository, kept on this Mac){/if}, then asks for the Spec gate.</span>
         <span>• Specialists start after the gate, as the Governor and the live-agent cap allow.</span>
       </div>
       <label class="offh" use:tooltip={offHoursAllowed(offHours) ? null : { label: 'Run off-hours', detail: OFF_DISABLED }}><input type="checkbox" bind:checked={launch.off_hours} disabled={!offHoursAllowed(offHours)} /> Run off-hours{nextOffHours(offHours) ? ` (starts ${clock(nextOffHours(offHours))})` : ''}</label>

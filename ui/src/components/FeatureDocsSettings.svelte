@@ -52,6 +52,8 @@
   /** Choosing another option also drops the backend's message: its path field is gone, so it could never be fixed. */
   const pick = (row, kind) => {
     draft[row].kind = kind;
+    // A designs folder starts as a suggestion (the docs' `design/`), not an empty, failing field.
+    if (row === 'designs' && kind === 'repo' && !draft.designs.path) draft.designs.path = draft.docs.kind === 'repo' && !errors.docs ? `${draft.docs.path.trim().replace(/\/+$/, '')}/design` : 'docs/design/{slug}';
     edit(row);
   };
 
@@ -73,7 +75,9 @@
       const now = await invoke('project_settings', { project });
       const settings = { ...now.settings, feature_docs: fromDraft(draft) };
       const r = await invoke('project_settings_set', { project, form: { settings, backend: now.backend, track_orchestrator_dir: now.track_orchestrator_dir } });
-      saved = toDraft(r?.settings?.feature_docs ?? settings.feature_docs);
+      // Not the stored settings (e.g. a confirmation the backend asks for): nothing was saved.
+      if (!r?.settings) throw new Error(`Could not save ${name}'s settings`);
+      saved = toDraft(r.settings.feature_docs);
       draft = toDraft(fromDraft(saved));
       serverErr = {};
       toast(`Saved ${name}'s settings`);

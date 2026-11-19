@@ -159,6 +159,13 @@ describe('Project settings › Feature docs', () => {
     expect(txt(container)).toContain('→ Not saved either');
   });
 
+  it('prefills a suggested designs folder when picking In the repository', async () => {
+    const { container } = await open(null);
+    await fireEvent.click(radio(container, 'designs', 'In the repository'));
+    expect(designsInput(container).value).toBe('.orchestrator/features/{slug}/design');
+    expect(saveBtn(container).disabled).toBe(false);
+  });
+
   it('shows validation errors under the field, disables Save and says why', async () => {
     const { container } = await open(null);
     await fireEvent.input(docsInput(container), { target: { value: 'docs/specs' } });
