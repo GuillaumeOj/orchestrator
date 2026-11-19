@@ -257,7 +257,9 @@ describe('context blocks: one component per type, in order', () => {
       expect(c.querySelector('textarea[aria-label="Your answer"]')).toBeNull(); // pending: hidden
       await fireEvent.click([...c.querySelectorAll('.actions button')].find((b) => b.textContent.trim() === 'Undo'));
       flushSync();
-      expect(c.querySelector('textarea[aria-label="Your answer"]').value).toBe('my words');
+      expect(/** @type {HTMLTextAreaElement} */ (c.querySelector('textarea[aria-label="Your answer"]')).value).toBe(
+        'my words',
+      );
     });
 
     it('⏎ in the field sends, Shift+⏎ does not', async () => {
