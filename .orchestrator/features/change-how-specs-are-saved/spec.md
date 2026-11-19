@@ -40,10 +40,12 @@ Two rows, **Docs** and **Designs**:
   slug). Refused: absolute paths, `..`, a component `.git`, empty components, no
   `{slug}`, over 200 characters. The section shows the resolved example
   (`docs/specs/checkout/`) as the user types.
-- *Not saved in the repository* keeps the files in
-  `<app data>/projects/<project id>/features/<slug>/{docs,design}/`. The section says so in
+- *Not saved in the repository* keeps the files in the feature's app folder
+  `<app data>/projects/<project id>/features/<slug>/`: docs in `docs/`, designs that are
+  not saved on their own (docs in the repository) in `design/`. The section says so in
   one line: "Kept on this Mac only, never committed. Deleted with the feature."
-- *With the docs* while docs are not saved = designs not saved either (same app folder).
+- *With the docs* always means `<docs folder>/design`, so while docs are not saved the
+  designs are in `<app folder>/docs/design/` and a doc's `design/x.png` link resolves.
 - Saved with the section's Save (⌘⏎), the same way as the other sections.
 
 ### 3.2 Snapshot at launch
@@ -71,8 +73,8 @@ from their worktree after a sync.
   call `request_spec_approval`. The spec gate reads the docs from that folder; it still
   refuses a dirty worktree (code), not the docs.
 - Designs: designers export straight into the app design folder and `handoff` that
-  absolute path; `handoff` accepts an absolute path only when it lies inside the run's
-  feature folder. Frontend reads them there, no sync needed for designs.
+  absolute path; `handoff` accepts an absolute path only when its canonical path lies
+  inside one of the feature's not-saved folders (its docs or designs app dir). Frontend reads them there, no sync needed for designs.
 - The Feature page, gate preview, Overwatch and Notion read the same folder. Images a doc
   links (`design/home.png`, relative to the doc) resolve against the docs folder and must
   land in the docs or designs folder of the feature.
@@ -90,7 +92,9 @@ today).
 
 Under the docs list, one line says where they live: "In the repository ·
 `docs/specs/checkout/`" or "Not saved in the repository" with a **Reveal in Finder**
-button (opens the app folder; the app opens it, not an agent).
+button (opens the app folder; the app opens it, not an agent). When the designs folder is
+not inside the docs folder, a second line "Designs · …" shows the same way, with its own
+Reveal in Finder when not saved (frames 5c/5d).
 
 ## 4. Out of scope
 

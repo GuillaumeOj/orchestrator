@@ -21,8 +21,11 @@ absent, so the UI always gets both rows).
 
 Write: `project_settings_set { project, form: { settings, backend, track_orchestrator_dir } }`
 as today, `settings.feature_docs` included. An invalid value fails the whole save with an
-error string starting with the field: `feature_docs.docs.path: must contain {slug}` /
-`feature_docs.designs.path: must be a path inside the repository`. Nothing is saved.
+error string `feature_docs.<docs|designs>.path: <message>`, where `<message>` is exactly
+the UI copy: `Must contain {slug}` (also for an empty path) · `Must be a path inside the
+repository` (absolute, `..`, `.git` in any case, `.`, backslash, empty part, a token other
+than `{slug}`) · `Too long (200 characters at most)`. The UI shows `<message>` under that
+field; it also runs the same checks itself before saving. Nothing is saved.
 
 ## 2. Feature snapshot
 
@@ -34,7 +37,10 @@ At feature creation the backend resolves and stores the locations on the feature
   "designs": { "kind": "app",  "dir": "/Users/…/Orchestrator/projects/<id>/features/checkout/design" } }
 ```
 
-`repo` dirs are relative to a worktree; `app` dirs are absolute. One resolver in
+`repo` dirs are relative to a worktree; `app` dirs are absolute. With `<app>` =
+`<app data>/projects/<id>/features/<slug>`: docs `app` → `<app>/docs`; designs
+`with_docs` → `<docs dir>/design` in every case (so `<app>/docs/design` when docs are not
+saved); designs `app` with docs in the repo → `<app>/design`. One resolver in
 `agent-runtime` (`FeatureDocs::of(feature) -> { docs: Loc, designs: Loc }` with
 `dir_in(worktree)`) replaces every hard-coded `.orchestrator/features/<slug>` read.
 
@@ -63,6 +69,7 @@ Finder (creates it if missing). Refused for a `repo` location.
   resolved dirs (repo: relative path; app: absolute path, "do not commit").
 - `app` dirs are added to each run agent's sandbox `allowWrite` and to its prompt's file
   list at spawn; the hard policy allows writes there.
-- `handoff` with kind `design` accepts an absolute path only inside the run's `app` dirs.
+- `handoff` with kind `design` accepts an absolute path only when its canonical path is
+  inside the feature's `app` docs or designs dir.
 - `request_spec_approval`: docs listed from the resolved docs dir; the clean-worktree
   check stays; `doc_lines[].path` is the repo-relative or absolute path.
