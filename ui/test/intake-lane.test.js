@@ -184,7 +184,10 @@ describe('lib/intake copy rules (notes §2.1, §4.2, §9)', () => {
       );
     expect(e('gh_auth')).toMatchObject({ text: 'GitHub: not logged in', fix: 'integrations', tip: 'raw message' });
     expect(e('gh_scope')).toMatchObject({ fix: 'gh_scope', text: 'GitHub needs the read:project scope' });
-    expect(I.errorInfo({ code: 'gh_scope', scope: 'project' })).toMatchObject({ scope: 'project', text: 'GitHub needs the project scope' });
+    expect(I.errorInfo({ code: 'gh_scope', scope: 'project' })).toMatchObject({
+      scope: 'project',
+      text: 'GitHub needs the project scope',
+    });
     expect(e('not_found')).toMatchObject({ fix: 'settings', text: 'acme/shop not found, or you have no access' });
     expect(e('linear_key').fix).toBe('integrations');
     expect(e('bad_glob').fix).toBe('settings');

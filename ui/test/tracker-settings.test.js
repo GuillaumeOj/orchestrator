@@ -112,7 +112,15 @@ beforeEach(() => {
   replies.tracker_options = GH_OPTS;
   replies.tracker_settings_set = (a) => ({ settings: a.settings, migration_notice: null });
   replies.tracker_notice_dismiss = undefined;
-  replies.tracker_gh_access = { gh: 'ok', account: 'me', needed: ['read:project', 'project'], granted: ['repo', 'project'], missing: [], failed_writes: 0, last_failure: null };
+  replies.tracker_gh_access = {
+    gh: 'ok',
+    account: 'me',
+    needed: ['read:project', 'project'],
+    granted: ['repo', 'project'],
+    missing: [],
+    failed_writes: 0,
+    last_failure: null,
+  };
   for (const k of Object.keys(listeners)) delete listeners[k];
   openUrl.mockClear();
   copyText.mockClear();
@@ -724,7 +732,12 @@ describe('Write back access row (fix-write-back-github §4.5)', () => {
     granted: ['repo', 'read:project'],
     missing: ['project'],
     failed_writes: 3,
-    last_failure: { node: 'gh:acme/shop#12', message: 'gh needs the project scope', code: 'gh_scope', scope: 'project' },
+    last_failure: {
+      node: 'gh:acme/shop#12',
+      message: 'gh needs the project scope',
+      code: 'gh_scope',
+      scope: 'project',
+    },
   };
 
   it('ok: muted line with the needed scopes, no action', async () => {
@@ -737,9 +750,16 @@ describe('Write back access row (fix-write-back-github §4.5)', () => {
 
   it('missing scope → Grant access → code → Open GitHub → done shows the retried result', async () => {
     replies.tracker_gh_access = MISSING;
-    replies.gh_grant_scope = { state: 'waiting', code: 'ABCD-1234', url: 'https://github.com/login/device', scope: 'project' };
+    replies.gh_grant_scope = {
+      state: 'waiting',
+      code: 'ABCD-1234',
+      url: 'https://github.com/login/device',
+      scope: 'project',
+    };
     const r = open(board());
-    await waitFor(() => expect(txt(row(r.container))).toContain('GitHub needs the project scope to move items on the board.'));
+    await waitFor(() =>
+      expect(txt(row(r.container))).toContain('GitHub needs the project scope to move items on the board.'),
+    );
     expect(txt(row(r.container))).toContain('3 write-backs failed: gh needs the project scope.');
     await fireEvent.click(r.getByRole('button', { name: 'Grant access' }));
     await waitFor(() => expect(row(r.container).getAttribute('data-wb-access')).toBe('granting'));
@@ -748,8 +768,16 @@ describe('Write back access row (fix-write-back-github §4.5)', () => {
     await fireEvent.click(r.getByRole('button', { name: 'Open GitHub' }));
     expect(openUrl).toHaveBeenCalledWith('https://github.com/login/device');
     expect(copyText).toHaveBeenCalledWith('ABCD-1234', 'the code');
-    replies.tracker_gh_access = { ...MISSING, granted: ['repo', 'project'], missing: [], failed_writes: 0, last_failure: null };
-    listeners.gh_grant({ payload: { state: 'done', scope: 'project', message: null, retried: { 'shop-api': { ok: 3, failed: 0 } } } });
+    replies.tracker_gh_access = {
+      ...MISSING,
+      granted: ['repo', 'project'],
+      missing: [],
+      failed_writes: 0,
+      last_failure: null,
+    };
+    listeners.gh_grant({
+      payload: { state: 'done', scope: 'project', message: null, retried: { 'shop-api': { ok: 3, failed: 0 } } },
+    });
     await waitFor(() => expect(txt(row(r.container))).toContain('Access granted. Retried 3: 3 done.'));
     await waitFor(() => expect(row(r.container).getAttribute('data-wb-access')).toBe('ok'));
     expect(row(r.container).querySelector('[data-failed-writes]')).toBeNull();
@@ -757,15 +785,29 @@ describe('Write back access row (fix-write-back-github §4.5)', () => {
 
   it('granted: code and Cancel go away at once, "retrying" shows; done adds skipped', async () => {
     replies.tracker_gh_access = MISSING;
-    replies.gh_grant_scope = { state: 'waiting', code: 'ABCD-1234', url: 'https://github.com/login/device', scope: 'project' };
+    replies.gh_grant_scope = {
+      state: 'waiting',
+      code: 'ABCD-1234',
+      url: 'https://github.com/login/device',
+      scope: 'project',
+    };
     const r = open(board());
     await waitFor(() => r.getByRole('button', { name: 'Grant access' }));
     await fireEvent.click(r.getByRole('button', { name: 'Grant access' }));
     await waitFor(() => r.getByRole('button', { name: 'Cancel' }));
     listeners.gh_grant({ payload: { state: 'granted', scope: 'project' } });
-    await waitFor(() => expect(txt(r.container.querySelector('[data-grant-note]'))).toContain('Retrying failed writes…'));
+    await waitFor(() =>
+      expect(txt(r.container.querySelector('[data-grant-note]'))).toContain('Retrying failed writes…'),
+    );
     expect(r.queryByRole('button', { name: 'Cancel' })).toBeNull();
-    listeners.gh_grant({ payload: { state: 'done', scope: 'project', message: null, retried: { 'shop-api': { ok: 2, skipped: 1, failed: 0 } } } });
+    listeners.gh_grant({
+      payload: {
+        state: 'done',
+        scope: 'project',
+        message: null,
+        retried: { 'shop-api': { ok: 2, skipped: 1, failed: 0 } },
+      },
+    });
     await waitFor(() => expect(txt(r.container)).toContain('Retried 2: 2 done · 1 cleared'));
   });
 
@@ -779,7 +821,12 @@ describe('Write back access row (fix-write-back-github §4.5)', () => {
 
   it('grant failed: its message and Copy command; Cancel calls gh_grant_cancel', async () => {
     replies.tracker_gh_access = MISSING;
-    replies.gh_grant_scope = { state: 'waiting', code: 'ABCD-1234', url: 'https://github.com/login/device', scope: 'project' };
+    replies.gh_grant_scope = {
+      state: 'waiting',
+      code: 'ABCD-1234',
+      url: 'https://github.com/login/device',
+      scope: 'project',
+    };
     replies.gh_grant_cancel = { ok: true, cancelled: true };
     const r = open(board());
     await waitFor(() => r.getByRole('button', { name: 'Grant access' }));
