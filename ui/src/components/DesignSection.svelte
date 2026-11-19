@@ -217,7 +217,7 @@
     {@const imgs = tiles.filter(previewable)}
     <div class="overlay" role="dialog" aria-modal="true" aria-label="Preview" style:top="{box.top}px" style:left="{box.left}px" style:width="{box.width}px" style:height="{box.height}px">
       <div class="cap">
-        <span><span aria-hidden="true">{'\u{F021F}'}</span> <b>{artifactTitle(a)}</b> {[big.w ? `${big.w} × ${big.h}` : null, p?.bytes != null ? size(p.bytes) : null, p?.source ? (p.source === 'branch' ? `${who(a.from_node)}'s branch` : 'integration branch') : null].filter(Boolean).map((x) => `· ${x}`).join(' ')}{#if p?.mime === 'image/svg+xml'} · SVG shown as an image{/if}</span>
+        <span><span aria-hidden="true">{'\u{F021F}'}</span> <b>{artifactTitle(a)}</b> {[big.w ? `${big.w} × ${big.h}` : null, p?.bytes != null ? size(p.bytes) : null, p?.source ? (p.source === 'branch' ? `${who(a.from_node)}'s branch` : p.source === 'app' ? 'kept on this Mac' : 'integration branch') : null].filter(Boolean).map((x) => `· ${x}`).join(' ')}{#if p?.mime === 'image/svg+xml'} · SVG shown as an image{/if}</span>
         <span class="grow"></span>
         <span class="muted">{imgs.findIndex((x) => x.id === big.id) + 1} / {imgs.length} · {big.fit ? 'Fit' : '100 %'}</span>
         <button type="button" class="icon-btn" aria-label="Close" use:tooltip={{ label: 'Close', key: 'esc' }} onclick={() => (big = null)}>{'\u{F0156}'}</button>

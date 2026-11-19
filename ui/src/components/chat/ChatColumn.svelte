@@ -623,6 +623,8 @@
     if (f && fd.design) return openFeature(f.id);
     // The feature pane lists the docs of the feature folder itself, not its sub-folders.
     if (f && !fd.name.includes('/')) return openFeature(f.id, fd.name, ref.section);
+    // An app-folder file is never opened in nvim.
+    if (ref.abs) return;
     // Another doc of the repo: in nvim, in the cited project.
     openEditor(ref.path, null, { projectId: project });
   }
