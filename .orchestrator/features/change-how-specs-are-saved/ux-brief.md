@@ -81,8 +81,8 @@ dark at x=0, Light at x=1660.
 - Dirty marker: blue dot + "Unsaved changes" centred on the title line, 16 px after it.
 - Feature page, designs outside the docs folder (lead decision): a second line under the docs
   line, "Designs · In the repository · `<path>`" or "Designs · Not saved in the repository" +
-  **Reveal in Finder**. Designs *With the docs* (in the repository: under the docs folder; not
-  saved: the feature's app folder, where `design/` sits next to `docs/`): docs line only (5a, 5b).
+  **Reveal in Finder**. Designs *With the docs* (always `<docs dir>/design`, also
+  `<app>/docs/design` when docs are not saved; api-contract §2): docs line only (5a, 5b).
 - Path after "In the repository · ": one space after the dot, path in the primary text colour.
 - Light palette = the Tokyo Night Day values the other Light settings frames use (window
   `#D0D5E3`, content `#E1E2E7`, text `#283E72`/`#495178`, accent `#2E7DE9`, error `#CE0A43`).
