@@ -493,6 +493,24 @@ describe('details panel rules (U1 visual QA)', () => {
       detail: { body: '', history: [{ what: 'writeback_failed', at_ms: 0 }] },
     });
     expect(plain.querySelector('[data-fix-writeback]')).toBeNull();
+    cleanup();
+    const old = details({
+      node: wn('gh:acme/shop#13', { writeback: { status: 'failed', code: 'gh_scope', scope: 'project' } }),
+      detail: {
+        body: '',
+        history: [
+          { what: 'writeback_failed', at_ms: 0 },
+          { what: 'writeback_failed', at_ms: 1 },
+        ],
+      },
+    });
+    expect(old.querySelectorAll('[data-fix-writeback]')).toHaveLength(1);
+    cleanup();
+    const healed = details({
+      node: wn('gh:acme/shop#13', { writeback: { status: 'ok' } }),
+      detail: { body: '', history: [{ what: 'writeback_failed', at_ms: 0 }] },
+    });
+    expect(healed.querySelector('.hist .link')).toBeNull();
   });
 
   it('deleted upstream (S14): Show feature only, no menu', () => {

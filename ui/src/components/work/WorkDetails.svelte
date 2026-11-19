@@ -54,6 +54,8 @@
   // `work_node(id, {children: true})` lists the first page in `child_nodes` (F36); `children` stays the counts.
   const children = $derived(kids ?? detail?.child_nodes ?? null);
   const history = $derived(detail?.history ?? []);
+  // Retry and Fix belong to the latest failed write-back only, and only while the node is still failed.
+  const lastFailed = $derived(history.findLast((h) => h.what === 'writeback_failed'));
   const feature = $derived(node ? featureOf(node) : null);
   const est = $derived(detail?.estimate ?? node?.estimate ?? null);
   const crumbList = $derived(crumbs(trail, narrow ? 3 : 4));
@@ -222,7 +224,7 @@
               <div class="hist" class:warn={h.what === 'writeback_failed'}>
                 <span class="muted when">{dayHm(h.at_ms)}</span>
                 <span>{historyText(h, node)}</span>
-                {#if h.what === 'writeback_failed'}<button type="button" class="link" onclick={() => act('writeback')}>Retry</button>{#if node.writeback?.status === 'failed' && node.writeback.code === 'gh_scope' && node.project}<button type="button" class="link" data-fix-writeback onclick={() => act('fix-writeback', node.project)}>Fix</button>{/if}{/if}
+                {#if h === lastFailed && node.writeback?.status === 'failed'}<button type="button" class="link" onclick={() => act('writeback')}>Retry</button>{#if node.writeback.code === 'gh_scope' && node.project}<button type="button" class="link" data-fix-writeback onclick={() => act('fix-writeback', node.project)}>Fix</button>{/if}{/if}
               </div>
             {/each}
             {#if history.length > 8 && !historyAll}<button type="button" class="link" onclick={() => (historyAll = true)}>Show all</button>{/if}
