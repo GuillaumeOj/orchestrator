@@ -58,20 +58,25 @@ Errors (as `{code, message}`): `interactive_only` (gh did not print a code witho
 `gh_missing`, `gh_auth` (not logged in: `refresh` needs a login), `failed`.
 
 A call while a grant runs answers the running one (same code; its `scope` tells the caller when it is another scope than asked). `gh_grant_cancel()` kills it (posts `failed`,
-`message: "cancelled"`).
+`message: "cancelled"`). The cancel frees the grant slot before it returns: a `gh_grant_scope` right after starts a new gh (new code).
 
 Event `gh_grant` (a Tauri webview event: the app emits it with `emit("gh_grant", …)`; Tauri event names have no dot):
 
 ```jsonc
-{ "state": "done" | "failed", "scope": "project", "message": "…" | null,
-  "retried": { "<project id>": { "ok": 3, "failed": 0 } } | null }   // done: writeback_retry_all of every GitHub-tracker project, by project (the grant has no project argument)
+{ "state": "granted" | "done" | "failed", "scope": "project", "message": "…" | null,
+  "retried": { "<project id>": { "ok": 3, "skipped": 0, "failed": 0 } } | null }   // done: writeback_retry_all of every GitHub-tracker project, by project (the grant has no project argument)
 ```
+
+`granted` is posted the moment gh exits 0 (`message` and `retried` absent): the UI drops the code and Cancel and shows
+"retrying". The retries run next, then `done` (with `retried`). `failed` is the only other end.
 
 ## 4. `writeback_retry_all(project: string)` → command
 
 ```jsonc
-{ "retried": 3, "ok": 3, "failed": 0, "last_failure": null | { "node": "…", "message": "…", "code": "…", "scope": "…" } }
+{ "retried": 3, "ok": 3, "skipped": 0, "failed": 0, "last_failure": null | { "node": "…", "message": "…", "code": "…", "scope": "…" } }
 ```
 
-When `failed == 0` after the run the project's open `writeback_failing` decision is resolved, also when nothing was
+A failed node the retry cannot write to (write-back turned off, the tracker is local, the node is gone or not an item of
+the project's tracker) is **skipped**: its failed status is cleared and it counts in `skipped`, not in `retried`, `ok` or `failed`.
+`writeback_retry` on such a node clears it the same way. When `failed == 0` after the run the project's open `writeback_failing` decision is resolved, also when nothing was
 retried (the decision can be stale). `writeback_retry` (one node) does the same when its success leaves no failed node. The intake topic is noted so Work and settings refresh (as `wb_record` already does).

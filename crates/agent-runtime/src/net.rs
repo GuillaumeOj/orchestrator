@@ -304,7 +304,7 @@ pub(crate) mod fake {
             match self.gh.lock().unwrap().clone() {
                 Some(Ok(s)) => Ok(s),
                 Some(Err(e)) => bail!("{e}"),
-                None => bail!("gh: not installed"),
+                None => bail!("gh auth status: No such file or directory (os error 2)"),
             }
         }
 
