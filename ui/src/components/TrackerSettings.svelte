@@ -5,7 +5,7 @@
   // notices and the errors per code. ⌘⏎ saves. Replaces the Intake and Task backend sections.
   import { onMount, tick, untrack } from 'svelte';
   import { app, copyText, openSettings, openUrl, projects, toast } from '../lib/app.svelte.js';
-  import { ghScopeCommand, integrationsRow, scopeOf } from '../lib/intake.js';
+  import { ghScopeCommand, integrationsRow, scopeOf, scopeWhat } from '../lib/intake.js';
   import { errText, invoke, listen } from '../lib/ipc.js';
   import { BOARD_COLUMNS } from '../lib/options.js';
   import { ifCut, tooltip } from '../lib/tooltip.js';
@@ -50,7 +50,8 @@
   $effect(() => {
     if (block !== 'write_back' || !form || blockSeen === app.window) return;
     blockSeen = app.window;
-    if (wbOn) untrack(checkAccess);
+    // (the first check is the effect below's: only a later Open settings, with an answer already in, checks again)
+    if (wbOn && access) untrack(checkAccess);
     tick().then(() => {
       const el = /** @type {HTMLElement | null} */ (document.querySelector('[data-wb-switch]'));
       el?.scrollIntoView?.({ block: 'center' });
@@ -147,7 +148,9 @@
     load();
     let off = () => {};
     let gone = false;
-    listen('gh_grant', (ev) => onGrant(ev.payload)).then((f) => (gone ? f() : (off = f)));
+    listen('gh_grant', (ev) => onGrant(ev.payload))
+      .then((f) => (gone ? f() : (off = f)))
+      .catch(() => {});
     return () => {
       gone = true;
       off();
@@ -169,7 +172,9 @@
     const mine = ++accessSeq;
     try {
       const a = await invoke('tracker_gh_access', { project });
-      if (mine === accessSeq) access = a;
+      if (mine !== accessSeq) return;
+      access = a;
+      if (grantNote?.scope && accessView(a).state === 'ok') grantNote = null; // a failed grant is stale once nothing is missing
     } catch (e) {
       if (mine === accessSeq) access = { gh: 'error', message: parseErr(e, errText).message ?? errText(e) };
     }
@@ -179,16 +184,22 @@
     if (wbOn) untrack(checkAccess);
   });
 
-  const retriedText = (r) =>
-    r && r.ok + r.failed > 0 ? `Retried ${r.ok + r.failed}: ${r.ok} done${r.failed ? `, ${r.failed} still failing` : ''}.` : '';
+  const retriedText = (r) => {
+    const n = (r?.ok ?? 0) + (r?.failed ?? 0);
+    const skipped = r?.skipped ? `${r.skipped} cleared (no longer written back)` : '';
+    const done = n ? `Retried ${n}: ${r.ok} done${r.failed ? `, ${r.failed} still failing` : ''}` : '';
+    return [done, skipped].filter(Boolean).join(' · ') + (done || skipped ? '.' : '');
+  };
 
   function onGrant(p) {
-    if (!p) return;
+    // (a cancel already dropped its code: its late event must not drop the code of a grant asked right after)
+    if (!p || p.message === 'cancelled') return;
     grant = null;
-    if (p.state === 'done') {
+    if (p.state === 'granted') grantNote = { ok: true, text: 'Access granted. Retrying failed writes…' };
+    else if (p.state === 'done') {
       grantNote = { ok: true, text: `Access granted. ${retriedText(p.retried?.[project])}`.trim() };
       checkAccess();
-    } else if (p.message !== 'cancelled') grantNote = { ok: false, text: p.message || 'Could not grant access.', scope: p.scope };
+    } else grantNote = { ok: false, text: p.message || 'Could not grant access.', scope: p.scope };
   }
 
   async function grantAccess(scope) {
@@ -218,7 +229,7 @@
     retrying = true;
     try {
       const r = await invoke('writeback_retry_all', { project });
-      grantNote = { ok: !r?.failed, text: r?.retried ? retriedText(r) : 'Nothing to retry.' };
+      grantNote = { ok: !r?.failed, text: retriedText(r) || 'Nothing to retry.' };
       await checkAccess();
     } catch (e) {
       toast(errText(e), { kind: 'error' });
@@ -622,7 +633,7 @@
           <p class="muted hint">Shows its Status in Work and lets write-back move items on it.</p>
           {#if optsError?.code === 'gh_scope'}
             <div class="scope" data-gh-scope>
-              <p class="ferr" role="alert"><span aria-hidden="true">{'\u{F0026}'}</span> GitHub needs the {scopeOf(optsError)} scope to read the board.</p>
+              <p class="ferr" role="alert"><span aria-hidden="true">{'\u{F0026}'}</span> GitHub needs the {scopeOf(optsError)} scope {scopeWhat(scopeOf(optsError))}.</p>
               <p class="muted hint">Run <code>{ghScopeCommand(scopeOf(optsError))}</code>, then Preview.</p>
               <div><button class="btn" onclick={() => copyCommand(optsError)}>Copy command</button></div>
             </div>

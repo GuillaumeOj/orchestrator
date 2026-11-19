@@ -479,7 +479,9 @@ describe('details panel rules (U1 visual QA)', () => {
 
   it('write-back failed (gh_scope): history line has Retry and a Fix that opens the Write back block', async () => {
     const act = vi.fn();
-    const n = wn('gh:acme/shop#13', { writeback: { status: 'failed', code: 'gh_scope', scope: 'project', message: 'm' } });
+    const n = wn('gh:acme/shop#13', {
+      writeback: { status: 'failed', code: 'gh_scope', scope: 'project', message: 'm' },
+    });
     const c = details({
       node: n,
       act,
@@ -493,6 +495,37 @@ describe('details panel rules (U1 visual QA)', () => {
       detail: { body: '', history: [{ what: 'writeback_failed', at_ms: 0 }] },
     });
     expect(plain.querySelector('[data-fix-writeback]')).toBeNull();
+    cleanup();
+    const old = details({
+      node: wn('gh:acme/shop#13', { writeback: { status: 'failed', code: 'gh_scope', scope: 'project' } }),
+      detail: {
+        body: '',
+        history: [
+          { what: 'writeback_failed', at_ms: 0 },
+          { what: 'writeback_failed', at_ms: 1 },
+        ],
+      },
+    });
+    expect(old.querySelectorAll('[data-fix-writeback]')).toHaveLength(1);
+    cleanup();
+    const healed = details({
+      node: wn('gh:acme/shop#13', { writeback: { status: 'ok' } }),
+      detail: { body: '', history: [{ what: 'writeback_failed', at_ms: 0 }] },
+    });
+    expect(healed.querySelector('.hist .link')).toBeNull();
+    cleanup();
+    // the latest failure is older than the short list's 8 rows: the list opens so that Retry is on screen
+    const buried = details({
+      node: wn('gh:acme/shop#13', { writeback: { status: 'failed', code: 'gh_scope', scope: 'project' } }),
+      detail: {
+        body: '',
+        history: [
+          { what: 'writeback_failed', at_ms: 0 },
+          ...Array.from({ length: 9 }, (_, i) => ({ what: 'started', at_ms: i + 1 })),
+        ],
+      },
+    });
+    expect(buried.querySelectorAll('.hist .link')).toHaveLength(2);
   });
 
   it('deleted upstream (S14): Show feature only, no menu', () => {
