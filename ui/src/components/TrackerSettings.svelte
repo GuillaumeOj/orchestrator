@@ -148,7 +148,9 @@
     load();
     let off = () => {};
     let gone = false;
-    listen('gh_grant', (ev) => onGrant(ev.payload)).then((f) => (gone ? f() : (off = f)));
+    listen('gh_grant', (ev) => onGrant(ev.payload))
+      .then((f) => (gone ? f() : (off = f)))
+      .catch(() => {});
     return () => {
       gone = true;
       off();
