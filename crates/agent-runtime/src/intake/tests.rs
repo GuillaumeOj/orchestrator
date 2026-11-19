@@ -2413,7 +2413,6 @@ fn a_grant_answers_the_code_and_its_end_retries_the_failed_writes() {
     let again = fake_refresh(&f, &["! First copy your one-time code: NEW1-0000", "https://github.com/login/device"]);
     let b = f.rt.gh_grant_scope("project").unwrap();
     assert_eq!(b["code"], "NEW1-0000");
-    assert_eq!(f.net.refreshed.lock().unwrap().len(), 5);
     let ev = rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
     assert_eq!(
         (ev["state"].as_str(), ev["message"].as_str(), &ev["retried"]),

@@ -135,10 +135,11 @@ impl Runtime {
         true
     }
 
-    /// Drops the failed status of a node whose write no longer applies (a retry skipped it).
-    fn wb_clear(&self, project: &str, node: &str) {
-        let _ = self.db.set_setting(&status_key(project, node), &Value::Null);
+    /// Drops the failed status of a node whose write no longer applies (a retry skipped it); whether it was dropped.
+    fn wb_clear(&self, project: &str, node: &str) -> bool {
+        let cleared = self.db.set_setting(&status_key(project, node), &Value::Null).is_ok();
         self.db.note([crate::intake::TOPIC]);
+        cleared
     }
 
     /// Whether `row` is an item of the tracker this project is set to.
@@ -379,15 +380,17 @@ impl Runtime {
             return Err(crate::issues::coded("not_found", format!("no project {project:?}"), None));
         }
         let failed = self.wb_failed(project);
-        let mut skipped = 0;
+        let mut skipped: Vec<&str> = vec![];
         for (node, st) in &failed {
             // (a status whose op does not read is left failed: it counts below)
             if let Ok(op) = serde_json::from_value::<WbOp>(st["op"].clone())
                 && !self.wb_run(project, node, &op)
             {
                 // Write-back off, the node gone or not the tracker's: there is nothing to retry, so nothing failed.
-                self.wb_clear(project, node);
-                skipped += 1;
+                // (one that could not be cleared stays failed and counts as retried)
+                if self.wb_clear(project, node) {
+                    skipped.push(node);
+                }
             }
         }
         let left = self.wb_failed(project);
@@ -395,8 +398,11 @@ impl Runtime {
             self.wb_resolve(project);
         }
         // (a write that failed meanwhile, on another node, is not one of these)
-        let ok = failed.iter().filter(|(n, _)| !left.iter().any(|(l, _)| l == n)).count();
-        let (ok, retried) = (ok - skipped, failed.len() - skipped);
+        let ok = failed
+            .iter()
+            .filter(|(n, _)| !skipped.contains(&n.as_str()) && !left.iter().any(|(l, _)| l == n))
+            .count();
+        let (retried, skipped) = (failed.len() - skipped.len(), skipped.len());
         Ok(
             json!({"retried": retried, "ok": ok, "skipped": skipped, "failed": left.len(), "last_failure": last_failure(&left)}),
         )
