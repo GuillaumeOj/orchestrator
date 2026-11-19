@@ -755,6 +755,20 @@ describe('Write back access row (fix-write-back-github §4.5)', () => {
     expect(row(r.container).querySelector('[data-failed-writes]')).toBeNull();
   });
 
+  it('granted: code and Cancel go away at once, "retrying" shows; done adds skipped', async () => {
+    replies.tracker_gh_access = MISSING;
+    replies.gh_grant_scope = { state: 'waiting', code: 'ABCD-1234', url: 'https://github.com/login/device', scope: 'project' };
+    const r = open(board());
+    await waitFor(() => r.getByRole('button', { name: 'Grant access' }));
+    await fireEvent.click(r.getByRole('button', { name: 'Grant access' }));
+    await waitFor(() => r.getByRole('button', { name: 'Cancel' }));
+    listeners.gh_grant({ payload: { state: 'granted', scope: 'project' } });
+    await waitFor(() => expect(txt(r.container.querySelector('[data-grant-note]'))).toContain('Retrying failed writes…'));
+    expect(r.queryByRole('button', { name: 'Cancel' })).toBeNull();
+    listeners.gh_grant({ payload: { state: 'done', scope: 'project', message: null, retried: { 'shop-api': { ok: 2, skipped: 1, failed: 0 } } } });
+    await waitFor(() => expect(txt(r.container)).toContain('Retried 2: 2 done · 1 cleared'));
+  });
+
   it('Copy command copies the command for the missing scope', async () => {
     replies.tracker_gh_access = MISSING;
     const r = open(board());

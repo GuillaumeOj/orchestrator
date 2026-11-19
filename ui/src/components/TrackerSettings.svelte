@@ -179,13 +179,18 @@
     if (wbOn) untrack(checkAccess);
   });
 
-  const retriedText = (r) =>
-    r && r.ok + r.failed > 0 ? `Retried ${r.ok + r.failed}: ${r.ok} done${r.failed ? `, ${r.failed} still failing` : ''}.` : '';
+  const retriedText = (r) => {
+    const n = (r?.ok ?? 0) + (r?.failed ?? 0);
+    const skipped = r?.skipped ? `${r.skipped} cleared (no longer written back)` : '';
+    const done = n ? `Retried ${n}: ${r.ok} done${r.failed ? `, ${r.failed} still failing` : ''}` : '';
+    return [done, skipped].filter(Boolean).join(' · ') + (done || skipped ? '.' : '');
+  };
 
   function onGrant(p) {
     if (!p) return;
     grant = null;
-    if (p.state === 'done') {
+    if (p.state === 'granted') grantNote = { ok: true, text: 'Access granted. Retrying failed writes…' };
+    else if (p.state === 'done') {
       grantNote = { ok: true, text: `Access granted. ${retriedText(p.retried?.[project])}`.trim() };
       checkAccess();
     } else if (p.message !== 'cancelled') grantNote = { ok: false, text: p.message || 'Could not grant access.', scope: p.scope };
@@ -218,7 +223,7 @@
     retrying = true;
     try {
       const r = await invoke('writeback_retry_all', { project });
-      grantNote = { ok: !r?.failed, text: r?.retried ? retriedText(r) : 'Nothing to retry.' };
+      grantNote = { ok: !r?.failed, text: retriedText(r) || 'Nothing to retry.' };
       await checkAccess();
     } catch (e) {
       toast(errText(e), { kind: 'error' });
