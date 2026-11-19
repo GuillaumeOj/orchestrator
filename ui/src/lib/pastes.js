@@ -99,10 +99,11 @@ export function wholeAt(text, caret, dir, pastes) {
   return wholeIn(text, pastes).find((t) => (dir === 'back' ? t.end === caret : t.start === caret)) ?? null;
 }
 
-/** Is the `@` at `at` typed inside a whole placeholder (then it opens no mention popup)? */
-export function atInPlaceholder(text, at, pastes) {
+/** Is the `@` at `at`, with the query typed after it up to `caret`, inside a whole placeholder (then it opens no mention popup)?
+ *  The typed `@query` is taken out first: what is left must be a whole placeholder around `at`. */
+export function atInPlaceholder(text, at, caret, pastes) {
   if (text[at] !== '@') return false;
-  const without = text.slice(0, at) + text.slice(at + 1);
+  const without = text.slice(0, at) + text.slice(caret);
   return wholeIn(without, pastes).some((t) => t.start < at && at < t.end);
 }
 

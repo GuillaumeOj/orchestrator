@@ -247,6 +247,35 @@ describe('a paste in the input', () => {
   });
 });
 
+describe('review fixes', () => {
+  it('a paste over a selection of 10 placeholders is not refused: the selection goes away', async () => {
+    await mount();
+    for (let i = 0; i < 10; i++) await paste(BIG(900 + i));
+    ta.setSelectionRange(0, ta.value.length);
+    await paste(BIG(950));
+    expect(alert()).toBeNull();
+    expect(ta.value).toBe('[Pasted text #11 · 950 chars]');
+  });
+
+  it('picking a mention mid-draft closes the popup and does not reopen it on the inserted token', async () => {
+    await mount();
+    await type('hello @re world', 9);
+    expect(c.querySelector('[data-mention-popup]')).not.toBeNull();
+    await key('Enter');
+    await settle();
+    expect(ta.value).toBe('hello @refunds world');
+    expect(c.querySelector('[data-mention-popup]')).toBeNull();
+  });
+
+  it('an @query typed inside a placeholder opens no popup', async () => {
+    await mount();
+    await paste(BIG(900));
+    const v = ta.value;
+    await type(`${v.slice(0, 8)}@x${v.slice(8)}`, 10);
+    expect(c.querySelector('[data-mention-popup]')).toBeNull();
+  });
+});
+
 describe('Backspace and Delete next to a placeholder', () => {
   const PH = placeholder(1, 900);
   async function withPaste(before = 'ab', after = 'cd') {

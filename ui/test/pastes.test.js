@@ -231,14 +231,18 @@ describe('an @ inside a placeholder', () => {
   it('is inside when removing it leaves a whole placeholder around it', () => {
     const at = 8;
     const typed = `${ph.slice(0, at)}@${ph.slice(at)}`;
-    expect(atInPlaceholder(typed, at, kept)).toBe(true);
+    expect(atInPlaceholder(typed, at, at + 1, kept)).toBe(true);
+  });
+  it('is inside with a query typed after it', () => {
+    const typed = `${ph.slice(0, 8)}@xy${ph.slice(8)}`;
+    expect(atInPlaceholder(typed, 8, 11, kept)).toBe(true);
   });
   it('is not inside right before or right after the placeholder', () => {
-    expect(atInPlaceholder(`@${ph}`, 0, kept)).toBe(false);
-    expect(atInPlaceholder(`${ph}@`, ph.length, kept)).toBe(false);
+    expect(atInPlaceholder(`@${ph}`, 0, 1, kept)).toBe(false);
+    expect(atInPlaceholder(`${ph}@`, ph.length, ph.length + 1, kept)).toBe(false);
   });
   it('is not inside text that is not a placeholder', () => {
-    expect(atInPlaceholder('see @refunds', 4, kept)).toBe(false);
+    expect(atInPlaceholder('see @refunds', 4, 12, kept)).toBe(false);
   });
 });
 

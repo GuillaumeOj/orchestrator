@@ -42,15 +42,23 @@
   const panelId = (n) => `paste-${e.id}-${n}`;
   const chipTip = (p) => (missing(p) ? 'Pasted text no longer available' : isOpen(p.n) ? 'Hide pasted text' : 'Show pasted text');
   const toggle = (p) => togglePaste(e.id, p.n, p.text != null);
+  // The chip that last toggled paste n: with the same placeholder twice, the focus goes back to that one.
+  const openers = {};
+  function chipClick(ev, p) {
+    openers[p.n] = ev.currentTarget;
+    toggle(p);
+  }
   function chipKey(ev, p) {
     if (ev.key !== 'Enter' && ev.key !== ' ') return;
     ev.preventDefault();
     ev.stopPropagation();
+    openers[p.n] = ev.currentTarget;
     toggle(p);
   }
   function closePanel(n) {
     pasteUi.open[pasteKey(e.id, n)] = false;
-    articleEl?.querySelector(`[data-paste-chip="${n}"]`)?.focus();
+    const chip = openers[n]?.isConnected ? openers[n] : articleEl?.querySelector(`[data-paste-chip="${n}"]`);
+    chip?.focus();
   }
   let articleEl = $state();
   // A feature is "removed" only once the features have loaded (an archived one is still listed).
@@ -109,7 +117,7 @@
   <div class="label muted">{user ? 'You' : 'Overwatch'} · {stamp}</div>
   {#if user}
     <!-- No whitespace between the runs: the body is pre-wrap. -->
-    <div class="body plain">{#each runs as r}{#if r.p}<span class="paste" class:missing={missing(r.p)} class:open={isOpen(r.p.n)} data-paste-chip={r.p.n} role="button" tabindex="0" aria-expanded={isOpen(r.p.n)} aria-controls={isOpen(r.p.n) ? panelId(r.p.n) : undefined} aria-label="{chipName(r.p)}{missing(r.p) ? ', no longer available' : ''}" use:tooltip={() => chipTip(r.p)} onclick={() => toggle(r.p)} onkeydown={(ev) => chipKey(ev, r.p)}><svg class="doc" viewBox="0 0 12 12" width="12" height="12" aria-hidden="true"><path d="M3 1.5h4l2.5 2.5v6.5h-6.5z M7 1.5v2.5h2.5 M4.5 6h3 M4.5 8h3" fill="none" stroke="currentColor" stroke-width="1" stroke-linejoin="round" />{#if missing(r.p)}<path d="M1.5 10.5l9-9" stroke="currentColor" stroke-width="1" />{/if}</svg>Pasted<span class="c-text">{' text'}</span>{' '}{chipParts(r.p).n}{' · '}{chipParts(r.p).chars}<span class="c-lines">{' · '}{chipParts(r.p).lines}</span></span>{:else if !r.m}{r.t}{:else if gone(r.m)}<span class="mention gone" use:tooltip={'Feature removed'}>{r.t}<span class="vh">{' (feature removed)'}</span></span>{:else}<span class="mention" role="link" tabindex="0" aria-label="Open feature {r.t}" use:tooltip={`${r.m.title} · ${r.m.project}`} onclick={() => openFeature(r.m.id)} onkeydown={(ev) => linkKey(ev, r.m.id)}>{r.t}</span>{/if}{/each}</div>
+    <div class="body plain">{#each runs as r}{#if r.p}<span class="paste" class:missing={missing(r.p)} class:open={isOpen(r.p.n)} data-paste-chip={r.p.n} role="button" tabindex="0" aria-expanded={isOpen(r.p.n)} aria-controls={isOpen(r.p.n) ? panelId(r.p.n) : undefined} aria-label="{chipName(r.p)}{missing(r.p) ? ', no longer available' : ''}" use:tooltip={() => chipTip(r.p)} onclick={(ev) => chipClick(ev, r.p)} onkeydown={(ev) => chipKey(ev, r.p)}><svg class="doc" viewBox="0 0 12 12" width="12" height="12" aria-hidden="true"><path d="M3 1.5h4l2.5 2.5v6.5h-6.5z M7 1.5v2.5h2.5 M4.5 6h3 M4.5 8h3" fill="none" stroke="currentColor" stroke-width="1" stroke-linejoin="round" />{#if missing(r.p)}<path d="M1.5 10.5l9-9" stroke="currentColor" stroke-width="1" />{/if}</svg>Pasted<span class="c-text">{' text'}</span>{' '}{chipParts(r.p).n}{' · '}{chipParts(r.p).chars}<span class="c-lines">{' · '}{chipParts(r.p).lines}</span></span>{:else if !r.m}{r.t}{:else if gone(r.m)}<span class="mention gone" use:tooltip={'Feature removed'}>{r.t}<span class="vh">{' (feature removed)'}</span></span>{:else}<span class="mention" role="link" tabindex="0" aria-label="Open feature {r.t}" use:tooltip={`${r.m.title} · ${r.m.project}`} onclick={() => openFeature(r.m.id)} onkeydown={(ev) => linkKey(ev, r.m.id)}>{r.t}</span>{/if}{/each}</div>
     {#each openNs as n (n)}
       <PastePanel entry={e.id} paste={pastes.get(n)} id={panelId(n)} onclose={() => closePanel(n)} {onannounce} />
     {/each}
@@ -228,7 +236,14 @@
   }
   .paste:focus-visible {
     outline: none;
-    box-shadow: 0 0 0 var(--border-width-focus) var(--color-focus);
+    box-shadow:
+      inset 0 0 0 1px color-mix(in srgb, var(--color-accent-default) 80%, transparent),
+      0 0 0 var(--border-width-focus) var(--color-focus);
+  }
+  .paste.open:focus-visible {
+    box-shadow:
+      inset 0 0 0 1px var(--color-accent-default),
+      0 0 0 var(--border-width-focus) var(--color-focus);
   }
   .paste.missing,
   .paste.missing:hover {
@@ -246,12 +261,12 @@
   .c-lines {
     display: none;
   }
-  @container feed (min-width: 340px) {
+  @container feed (min-width: 313px) {
     .c-text {
       display: inline;
     }
   }
-  @container feed (min-width: 460px) {
+  @container feed (min-width: 433px) {
     .c-lines {
       display: inline;
     }

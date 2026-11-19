@@ -559,7 +559,7 @@
       toFoot();
     } catch (err) {
       const entry = retry?.entry ?? {
-        id: `unsent-${++sendSeq}`,
+        id: `unsent-${Date.now()}-${++sendSeq}`, // unique across remounts: a panel's open state is keyed by it
         kind: 'text',
         author: 'user',
         text,

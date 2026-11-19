@@ -108,13 +108,15 @@
     if (!isLong(text)) return; // short or not text: pasted as today
     e.preventDefault();
     const chars = countChars(text);
-    const err = pasteError(field.value, chars, app.chatPastes);
+    // The selection this paste replaces does not count: its placeholders go away with it.
+    const rest = field.value.slice(0, field.selectionStart) + field.value.slice(field.selectionEnd);
+    const err = pasteError(rest, chars, app.chatPastes);
     if (err) {
       pasteErr = err;
       return;
     }
     const n = nextN(app.chatPastes);
-    app.chatPastes = keep(field.value, app.chatPastes, { n, text, chars, lines: countLines(text) });
+    app.chatPastes = keep(rest, app.chatPastes, { n, text, chars, lines: countLines(text) });
     edit(field.selectionStart, field.selectionEnd, placeholder(n, chars));
     onannounce(`Pasted ${spaced(chars)} characters as pasted text ${n}`);
   }
@@ -133,8 +135,9 @@
 
   /** The token at the caret decides the popup. Typing may open it; a caret move only updates or closes it. */
   function sync(typing) {
+    if (picking) return; // the pick's own edit fires an input event: it must not reopen the popup
     let t = field && app.data ? tokenAtCaret(field.value, field.selectionStart) : null;
-    if (t && atInPlaceholder(field.value, t.start, app.chatPastes)) t = null; // no `@` completes inside a placeholder
+    if (t && atInPlaceholder(field.value, t.start, field.selectionStart, app.chatPastes)) t = null; // no `@` completes inside a placeholder
     if (!t) {
       tok = null;
       closedFor = null;
@@ -158,12 +161,18 @@
     tok = null;
   }
 
+  let picking = false;
   async function pick(row) {
     const { text, caret } = insertToken(field.value, tok.start, field.selectionStart, row.token);
     app.chatMentions = [...app.chatMentions.filter((m) => m.token !== row.token), { token: row.token, kind: 'feature', id: row.id }];
     tok = null;
     closedFor = null;
-    replaceDraft(text, caret); // through the field's own editing: ⌘Z still restores a removed paste
+    picking = true;
+    try {
+      replaceDraft(text, caret); // through the field's own editing: ⌘Z still restores a removed paste
+    } finally {
+      picking = false;
+    }
     await tick();
     field?.setSelectionRange(caret, caret);
   }

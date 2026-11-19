@@ -11,6 +11,7 @@
   const st = $derived(paste.text != null ? { status: 'ok', text: paste.text } : (pasteUi.loaded[pasteKey(entry, paste.n)] ?? { status: 'loading' }));
   let copy = $state('Copy'); // 'Copy' | 'Copied' | 'Copy failed', back to Copy after 1.5 s
   let timer;
+  $effect(() => () => clearTimeout(timer));
 
   async function copyText() {
     try {
