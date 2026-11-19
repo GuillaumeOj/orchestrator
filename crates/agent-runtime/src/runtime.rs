@@ -1599,6 +1599,30 @@ impl Runtime {
 
     // ------------------------------------------------------------ hooks
 
+    /// A hook of a process that is gone: the agent is stopped, crashed or
+    /// deleted, with no live process. A hook names no process (a resume keeps
+    /// the session id), so the record says it. SessionStart always applies (a
+    /// respawn can send it before its process is recorded); SessionEnd changes
+    /// no state and closes the pane's open prompts. Takes `live` (a leaf lock),
+    /// so it may run under the store lock.
+    fn hook_of_gone_process(&self, id: &str, event: &HookEvent, state: AgentState) -> bool {
+        !matches!(event, HookEvent::SessionStart | HookEvent::SessionEnd)
+            && matches!(state, AgentState::Suspended | AgentState::Killed | AgentState::Error | AgentState::Archived)
+            && self.live_get(id).is_none()
+    }
+
+    /// [`Runtime::hook_of_gone_process`]: dropped, and a tool call fails closed.
+    fn hook_after_exit(
+        &self,
+        id: &str,
+        m: &HookMsg,
+        state: AgentState,
+        replay: bool,
+    ) -> (Option<HookOutput>, Vec<u64>) {
+        self.event(id, "hook_after_exit", json!({"event": m.event, "state": state, "replayed": replay}));
+        (if replay { None } else { HookOutput::fail_closed(&m.event) }, vec![])
+    }
+
     /// One hook from orch-hook. `conn` is watched for EOF while a PreToolUse
     /// is held (Esc in the pane kills orch-hook and no hook event reports it).
     pub fn on_hook(&self, m: &HookMsg, conn: Option<&UnixStream>) -> Option<HookOutput> {
@@ -1632,20 +1656,10 @@ impl Runtime {
         };
         // A hook of a process that is gone (in flight at its exit, or late):
         // it must not wake the agent with no process to paste into, which the
-        // pump would then never resume. A hook names no process (a resume
-        // keeps the session id), so the record says it: stopped or crashed,
-        // with no live process. SessionStart always applies: a respawn can
-        // send it before its process is recorded.
-        if m.event != HookEvent::SessionStart
-            && matches!(rec.tracker.state, AgentState::Suspended | AgentState::Killed | AgentState::Error)
-            && self.live_get(id).is_none()
-        {
-            self.event(
-                id,
-                "hook_after_exit",
-                json!({"event": m.event, "state": rec.tracker.state, "replayed": replay}),
-            );
-            return (if replay { None } else { HookOutput::fail_closed(&m.event) }, vec![]);
+        // pump would then never resume. Checked again under the store lock
+        // below: the exit can land between here and the state change.
+        if self.hook_of_gone_process(id, &m.event, rec.tracker.state) {
+            return self.hook_after_exit(id, m, rec.tracker.state, replay);
         }
         let mut p = HookPayload::parse(&m.payload);
         if m.event == HookEvent::UserPromptSubmit {
@@ -1682,10 +1696,14 @@ impl Runtime {
         }
         // Applied under the store lock: concurrent hooks (parallel tool calls)
         // must not overwrite each other's transitions.
-        let (tracker, effects) = self
+        // `Err`: the process exited since the check above (the state it left).
+        let applied = self
             .store
             .write(|s| {
                 let a = s.agents.get_mut(id)?;
+                if self.hook_of_gone_process(id, &m.event, a.tracker.state) {
+                    return Some(Err(a.tracker.state));
+                }
                 let effects = state::apply(&mut a.tracker, &m.event, &p);
                 let now = now_ms();
                 // The call's start and short input: the record's activity, and
@@ -1702,11 +1720,15 @@ impl Runtime {
                 }
                 a.last_event = Some(m.event.to_string());
                 a.last_event_at_ms = Some(now);
-                Some((a.tracker.clone(), effects))
+                Some(Ok((a.tracker.clone(), effects)))
             })
             .ok()
-            .flatten()
-            .unwrap_or_else(|| (rec.tracker.clone(), vec![]));
+            .flatten();
+        let (tracker, effects) = match applied {
+            Some(Ok(applied)) => applied,
+            Some(Err(state)) => return self.hook_after_exit(id, m, state, replay),
+            None => (rec.tracker.clone(), vec![]),
+        };
         for fx in effects {
             self.on_effect(&rec, fx, &p);
         }
@@ -3766,6 +3788,20 @@ pub(crate) mod tests {
         // The respawn's own SessionStart, even before its process is recorded.
         rt.on_hook(&hook("SessionStart", json!({"source": "resume"})), None);
         assert_eq!(rt.store.read(|s| s.agents["a1"].tracker.state), AgentState::Idle);
+    }
+
+    /// A deleted agent's late Stop does not bring it back as `Idle`; a gone
+    /// process's SessionEnd is no turn and is not reported as dropped.
+    #[test]
+    fn a_late_stop_does_not_undelete_an_agent() {
+        let (_d, rt) = test_runtime(false);
+        rt.store.write(|s| s.agents.get_mut("a1").unwrap().tracker.state = AgentState::Archived).unwrap();
+        rt.on_hook(&hook("Stop", json!({"background_tasks": []})), None);
+        rt.on_hook(&hook("SessionEnd", json!({"reason": "other"})), None);
+        assert_eq!(rt.store.read(|s| s.agents["a1"].tracker.state), AgentState::Archived);
+        rt.db.flush().unwrap();
+        let dropped = rt.db.events(0, Some("a1"), Some("hook_after_exit"), 10).unwrap();
+        assert_eq!(dropped.len(), 1, "{dropped:?}");
     }
 
     #[test]
