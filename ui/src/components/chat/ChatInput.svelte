@@ -121,16 +121,17 @@
     onannounce(`Pasted ${spaced(chars)} characters as pasted text ${n}`);
   }
 
-  /** ⌫ just after a placeholder, ⌦ just before it (⌥⌫ too): the whole placeholder goes, ⌘Z brings it back. */
+  /** ⌫ / ⌦ (and ⌃H, ⌃D, ⌥⌫, ⌥⌦: whatever key) just after / before a placeholder: the whole placeholder goes, ⌘Z brings it back.
+   *  On `beforeinput`, where every such key arrives as a `delete*` inputType; our own edit below selects the token, so it is not caught again. */
   function removeWhole(e) {
-    const back = e.key === 'Backspace';
-    if ((!back && e.key !== 'Delete') || e.metaKey || e.ctrlKey || field.selectionStart !== field.selectionEnd) return false;
+    const back = e.inputType === 'deleteContentBackward' || e.inputType === 'deleteWordBackward';
+    if (!back && e.inputType !== 'deleteContentForward' && e.inputType !== 'deleteWordForward') return;
+    if (e.isComposing || field.selectionStart !== field.selectionEnd) return;
     const t = wholeAt(field.value, field.selectionStart, back ? 'back' : 'forward', app.chatPastes);
-    if (!t) return false;
+    if (!t) return;
     e.preventDefault();
     edit(t.start, t.end, '');
     onannounce(`Removed pasted text ${t.n}`);
-    return true;
   }
 
   /** The token at the caret decides the popup. Typing may open it; a caret move only updates or closes it. */
@@ -201,7 +202,6 @@
   function onkeydown(e) {
     if (pasteErr && !['Shift', 'Meta', 'Control', 'Alt'].includes(e.key)) pasteErr = '';
     if (open && !e.isComposing && e.keyCode !== 229 && mentionKey(e)) return;
-    if (!e.isComposing && e.keyCode !== 229 && removeWhole(e)) return;
     if (e.key === 'Enter' && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey && !e.isComposing && e.keyCode !== 229) {
       e.preventDefault();
       submit();
@@ -227,6 +227,7 @@
     bind:value={app.chatDraft}
     {onkeydown}
     {onpaste}
+    onbeforeinput={removeWhole}
     oninput={(e) => sync(typed(/** @type {any} */ (e).inputType))}
     onkeyup={() => sync(false)}
     onclick={() => sync(false)}

@@ -56,6 +56,9 @@ async function type(value, caret = value.length) {
   await fireEvent.input(ta);
 }
 const key = (k, o = {}) => fireEvent.keyDown(ta, { key: k, ...o });
+/** A `beforeinput` of `inputType`; false when it was cancelled (the field's own deletion did not run). */
+const beforeInput = (inputType) =>
+  ta.dispatchEvent(new InputEvent('beforeinput', { inputType, bubbles: true, cancelable: true }));
 /** A paste event; true when the default (the native insertion) was left alone. */
 async function paste(data) {
   const ev = new Event('paste', { bubbles: true, cancelable: true });
@@ -124,6 +127,12 @@ describe('a paste in the input', () => {
     expect(ta.selectionStart).toBe(ta.value.length);
     expect(app.chatPastes).toEqual([{ n: 1, text: BIG(5000), chars: 5000, lines: 1 }]);
     expect(live()).toBe('Pasted 5 000 characters as pasted text 1');
+  });
+
+  it('counts like the core: code points, str::lines over CRLF (a trailing newline adds no line)', async () => {
+    await mount();
+    await paste(`${Array.from({ length: 12 }, () => '😀').join('\r\n')}\r\n`);
+    expect(app.chatPastes.map(({ chars, lines }) => ({ chars, lines }))).toEqual([{ chars: 12 + 11 + 1, lines: 12 }]);
   });
 
   it('801 characters and 11 lines are both over the threshold', async () => {
@@ -287,8 +296,8 @@ describe('Backspace and Delete next to a placeholder', () => {
 
   it('Backspace just after removes the whole placeholder; the paste is kept for ⌘Z', async () => {
     await withPaste();
-    const ev = await key('Backspace');
-    expect(ev).toBe(false); // preventDefault: the native deletion did not run
+    expect(beforeInput('deleteContentBackward')).toBe(false); // preventDefault: the native deletion did not run
+    await settle();
     expect(ta.value).toBe('abcd');
     expect(ta.selectionStart).toBe(2);
     expect(app.chatPastes.length).toBe(1);
@@ -298,36 +307,51 @@ describe('Backspace and Delete next to a placeholder', () => {
   it('Delete just before removes it whole', async () => {
     await withPaste();
     ta.setSelectionRange(2, 2);
-    await key('Delete');
+    beforeInput('deleteContentForward');
     expect(ta.value).toBe('abcd');
   });
 
-  it('⌥⌫ just after removes it whole too', async () => {
+  it.each(['deleteWordBackward'])('%s (⌥⌫, ⌃W) just after removes it whole too', async (type) => {
     await withPaste();
-    await key('Backspace', { altKey: true });
+    beforeInput(type);
     expect(ta.value).toBe('abcd');
+  });
+
+  it('deleteWordForward (⌥⌦) just before removes it whole too', async () => {
+    await withPaste();
+    ta.setSelectionRange(2, 2);
+    beforeInput('deleteWordForward');
+    expect(ta.value).toBe('abcd');
+  });
+
+  it('a plain keydown Backspace is left alone: the beforeinput handles it, once', async () => {
+    await withPaste();
+    expect(await key('Backspace')).toBe(true); // not prevented, nothing removed by the key handler
+    expect(ta.value).toContain(PH);
+    expect(live()).not.toBe('Removed pasted text 1');
   });
 
   it("elsewhere, and with a selection, the deletion is the field's own", async () => {
     await withPaste();
     ta.setSelectionRange(1, 1);
-    expect(await key('Backspace')).toBe(true);
+    expect(beforeInput('deleteContentBackward')).toBe(true);
     ta.setSelectionRange(2 + PH.length, 2 + PH.length);
-    expect(await key('Delete')).toBe(true);
+    expect(beforeInput('deleteContentForward')).toBe(true);
     ta.setSelectionRange(0, 2 + PH.length);
-    expect(await key('Backspace')).toBe(true);
+    expect(beforeInput('deleteContentBackward')).toBe(true);
+    expect(beforeInput('insertText')).toBe(true);
     expect(ta.value).toContain(PH);
   });
 
-  it('an edited placeholder is plain text: Backspace is native', async () => {
+  it('an edited placeholder is plain text: the deletion is native', async () => {
     await withPaste();
     await type(`ab${PH.replace('900', '90')}cd`, 2 + PH.length - 1);
-    expect(await key('Backspace')).toBe(true);
+    expect(beforeInput('deleteContentBackward')).toBe(true);
   });
 
   it('after the removal the paste is not sent', async () => {
     await withPaste('see ', '!');
-    await key('Backspace');
+    beforeInput('deleteContentBackward');
     await key('Enter');
     await settle();
     expect(sends()).toEqual([{ text: 'see !' }]);

@@ -222,7 +222,7 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    vertical-align: baseline;
+    vertical-align: top; /* an overflow-hidden inline-block has its baseline at its bottom edge: baseline would grow the line box */
     cursor: pointer;
   }
   .paste .doc {
