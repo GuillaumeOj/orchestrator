@@ -266,7 +266,8 @@ impl Runtime {
 
     /// `gh_grant_cancel()`: kills the running grant (it posts `failed`, "cancelled").
     pub fn gh_grant_cancel(&self) -> Value {
-        let running = crate::intake::lock(&self.gh_grant).as_ref().map(|g| g.cancel.store(true, Ordering::SeqCst));
+        // The slot is freed here, not when gh has died: a grant asked right after starts its own gh.
+        let running = crate::intake::lock(&self.gh_grant).take().map(|g| g.cancel.store(true, Ordering::SeqCst));
         json!({"ok": true, "cancelled": running.is_some()})
     }
 
@@ -276,7 +277,7 @@ impl Runtime {
         scope: &str,
         lines: std::sync::mpsc::Receiver<String>,
         mut child: Box<dyn RefreshChild>,
-        cancel: &AtomicBool,
+        cancel: &Arc<AtomicBool>,
     ) {
         let until = Instant::now() + GRANT_TIMEOUT;
         let mut last: Option<String> = None;
@@ -308,9 +309,17 @@ impl Runtime {
                 Ok(None) => std::thread::sleep(POLL),
             }
         };
-        *crate::intake::lock(&self.gh_grant) = None;
+        {
+            // (a cancel already freed the slot, and a later grant may hold it)
+            let mut slot = crate::intake::lock(&self.gh_grant);
+            if slot.as_ref().is_some_and(|g| Arc::ptr_eq(&g.cancel, cancel)) {
+                *slot = None;
+            }
+        }
         let detail = match outcome {
             Ok(()) => {
+                // gh has the scope: say so before the retries (which can take a while).
+                self.post_grant(&json!({"state": "granted", "scope": scope}));
                 let mut retried = serde_json::Map::new();
                 for p in self.db.projects(false).unwrap_or_default() {
                     // (with write-back off there is nothing to retry)
@@ -319,14 +328,16 @@ impl Runtime {
                         _ => continue,
                     }
                     if let Ok(r) = self.writeback_retry_all(&p.id) {
-                        retried.insert(p.id.clone(), json!({"ok": r["ok"], "failed": r["failed"]}));
+                        retried.insert(
+                            p.id.clone(),
+                            json!({"ok": r["ok"], "skipped": r["skipped"], "failed": r["failed"]}),
+                        );
                     }
                 }
                 json!({"state": "done", "scope": scope, "message": null, "retried": retried})
             }
             Err(m) => json!({"state": "failed", "scope": scope, "message": m, "retried": null}),
         };
-        self.event("-", "gh.grant", detail.clone());
         let _ = self.db.audit(
             "core",
             None,
@@ -335,9 +346,15 @@ impl Runtime {
             detail["state"].as_str().unwrap_or(""),
             detail.clone(),
         );
+        self.post_grant(&detail);
+    }
+
+    /// Posts a `gh.grant` state: the event, then the app's webview sink.
+    fn post_grant(&self, detail: &Value) {
+        self.event("-", "gh.grant", detail.clone());
         let sink = crate::intake::lock(&self.grant_sink).clone();
         if let Some(f) = sink {
-            f(&detail);
+            f(detail);
         }
     }
 }
@@ -384,7 +401,7 @@ mod tests {
             "offline"
         );
         assert_eq!(gh_state_of_failure("error connecting to api.github.com"), "offline");
-        assert_eq!(gh_state_of_failure("gh: not installed"), "missing");
+        assert_eq!(gh_state_of_failure("gh: executable file not found in $PATH"), "missing");
     }
 
     #[test]

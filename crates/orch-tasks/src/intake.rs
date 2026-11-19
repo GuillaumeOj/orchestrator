@@ -246,7 +246,7 @@ pub fn is_offline_text(lower: &str) -> bool {
 
 /// The (lower-cased) text of a failure that says gh is not installed.
 pub fn is_gh_missing_text(lower: &str) -> bool {
-    ["no such file", "not found in path", "program not found", "executable file not found", "not installed"]
+    ["no such file", "not found in path", "program not found", "executable file not found"]
         .iter()
         .any(|p| lower.contains(p))
 }
@@ -749,6 +749,16 @@ pub(crate) mod tests {
 
     /// GitHub's real insufficient-scopes text for a board write (gh-notes §3).
     pub(crate) const ADD_ITEM_SCOPES: &str = "Your token has not been granted the required scopes to execute this query. The 'addProjectV2ItemById' field requires one of the following scopes: ['project'], but your token has only been granted the: ['gist', 'read:org', 'read:project', 'repo'] scopes. Please modify your token's scopes at: https://github.com/settings/tokens.";
+
+    #[test]
+    fn gh_missing_is_only_a_gh_that_did_not_start() {
+        for t in ["fork/exec gh: no such file or directory", "exec: \"gh\": executable file not found in $path"] {
+            assert_eq!(gh_error(&anyhow::anyhow!("{t}")).code, "gh_missing", "{t}");
+        }
+        // GitHub's own "not installed" (an app) is not a missing gh.
+        let e = gh_error(&anyhow::anyhow!("gh: the GitHub App is not installed on this repository"));
+        assert_ne!(e.code, "gh_missing");
+    }
 
     #[test]
     fn a_scope_error_names_the_required_scope_not_the_granted_ones() {
