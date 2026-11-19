@@ -332,7 +332,7 @@ describe('the input (notes §2)', () => {
     await fireEvent.keyDown(field(c), { key: 'Enter' });
     expect(calls.filter(([k]) => k === 'chat_send')).toEqual([]);
     expect(text(c.querySelector('[role=alert]'))).toBe(
-      'Too long for a message. Put it in a file and ask the Overwatch to read it.',
+      'Too long for a message. A paste of over 800 characters or 10 lines is sent as a file; shorter text stays in the message.',
     );
   });
 

@@ -78,6 +78,7 @@
     stripText,
     workingText,
   } from '../../lib/overwatch.js';
+  import { pastesContext } from '../../lib/pastes.js';
   import { nextSpec, nextSpecText } from '../../lib/program.js';
   import { tooltip } from '../../lib/tooltip.js';
   import OutcomeRow from '../OutcomeRow.svelte';
@@ -536,18 +537,20 @@
     input?.focus();
   }
 
-  /** The context a send carries: the planning tag's project and the mentioned features (`{kind, id}`). */
-  function sendContext(mentions) {
-    const plan = planContext();
-    if (!mentions.length) return plan;
-    return { ...plan, mentions: mentions.map((m) => ({ kind: m.kind, id: m.id })) };
+  /** The context a send carries: the planning tag's project, the mentioned features (`{kind, id}`) and the pasted texts (`{n, text}`). */
+  function sendContext(mentions, pastes = []) {
+    const ctx = /** @type {{ plan?: any, mentions?: any[], pastes?: any[] }} */ ({ ...planContext() });
+    if (mentions.length) ctx.mentions = mentions.map((m) => ({ kind: m.kind, id: m.id }));
+    if (pastes.length) ctx.pastes = pastesContext(pastes);
+    return Object.keys(ctx).length ? ctx : undefined;
   }
 
   /** Send: the core writes the entry and wakes the Overwatch; a refusal keeps the text at the foot (notes §2.2).
-   *  `mentions` are the resolved snapshots; a refused send keeps them on its unsent entry so it renders like a sent one. */
-  async function sendMessage(text, mentions = [], retry = null) {
+   *  `mentions` are the resolved snapshots and `pastes` the kept `{ n, text, chars, lines }`; a refused send keeps both on its
+   *  unsent entry so it renders like a sent one (chips open from memory) and Retry sends them again. */
+  async function sendMessage(text, mentions = [], pastes = [], retry = null) {
     // A message sent while the planning tag shows is a planning message (the tag stays after a send).
-    const context = retry ? retry.context : sendContext(mentions); // a retry keeps its own (or no) context
+    const context = retry ? retry.context : sendContext(mentions, pastes); // a retry keeps its own (or no) context
     try {
       const r = await invoke('chat_send', context ? { text, context } : { text });
       if (r?.entry && context?.plan) plannedEntries[r.entry.id] = context.plan;
@@ -561,7 +564,7 @@
         author: 'user',
         text,
         at_ms: Date.now(),
-        ...(mentions.length ? { meta: { mentions } } : {}),
+        ...(mentions.length || pastes.length ? { meta: { ...(mentions.length ? { mentions } : {}), ...(pastes.length ? { pastes } : {}) } } : {}),
       };
       unsent = [...unsent.filter((u) => u !== retry), { entry, why: errText(err), context }];
     }
@@ -569,7 +572,7 @@
 
   function retrySend(u) {
     unsent = unsent.filter((x) => x !== u);
-    sendMessage(u.entry.text, u.entry.meta?.mentions ?? [], u);
+    sendMessage(u.entry.text, u.entry.meta?.mentions ?? [], u.entry.meta?.pastes ?? [], u);
   }
 
   /** Remove: a message still waiting for the Overwatch (notes F10). */
@@ -858,6 +861,8 @@
   function onKey(e) {
     if (e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey) return;
     if (isTypingTarget(e.target)) return;
+    // A pasted text's panel takes its own keys (arrows and ⎵ scroll, ⇥ moves): not a card shortcut (design-notes §3).
+    if (e.target.closest?.('.paste-panel')) return;
     // A long reply takes its own ⏎ (Show more); it is not a card (notes §2.1).
     if (e.key === 'Enter' && e.target.closest?.('article.text')) return;
     const key = e.key === 'Enter' ? 'enter' : e.key.length === 1 ? e.key : e.key.toLowerCase();
@@ -1049,6 +1054,7 @@
           refok={refOk}
           onreplyto={jumpEntry}
           onremove={() => discard(it.entry)}
+          onannounce={(m) => (announce = m)}
         />
       {:else if it.type === 'group'}
         <div class="sep group" role="separator" data-group>{it.label.toUpperCase()}</div>
@@ -1102,7 +1108,7 @@
       {/if}
     {/each}
     {#each unsent as u (u.entry.id)}
-      <ChatText item={{ entry: u.entry }} {ow} failed={u.why} onretry={() => retrySend(u)} />
+      <ChatText item={{ entry: u.entry }} {ow} failed={u.why} onretry={() => retrySend(u)} onannounce={(m) => (announce = m)} />
     {/each}
     {#if working}
       <p class="muted working" data-working>{workingText(working, tick5)}</p>
@@ -1426,6 +1432,7 @@
     gap: var(--space-sm);
     padding: var(--space-md);
     outline: none;
+    container: feed / inline-size; /* the paste chips' width tiers (allow-long-text design-notes §2) */
   }
   /* 8 px between cards, 4 px after a line (Penpot 04.3). */
   .feed > :global(article.line) {
