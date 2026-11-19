@@ -29,7 +29,7 @@
   import Menu from '../Menu.svelte';
   import BriefBody from './BriefBody.svelte';
 
-  /** @type {{ d: any, line?: any, selected?: boolean, marked?: boolean, pending?: any, ref?: any, replying?: string | null, pulse?: boolean, deciding?: boolean, refok?: (ref: any) => boolean, handed?: number | null, entries?: any, choices?: string[][], onkey?: (key: string) => void, onact?: (id: string) => void, onreply?: (text: string | null) => void, onjump?: () => void, onhold?: (held: boolean) => void, onref?: (ref: any) => void, onscope?: (scope: string) => void, menu?: boolean, onmenu?: (open: boolean) => void }} */
+  /** @type {{ d: any, line?: any, selected?: boolean, marked?: boolean, pending?: any, ref?: any, replying?: string | null, pulse?: boolean, deciding?: boolean, refok?: (ref: any) => boolean, handed?: number | null, entries?: any, choices?: string[][], notes?: string, onkey?: (key: string) => void, onact?: (id: string) => void, onreply?: (text: string | null) => void, onjump?: () => void, onhold?: (held: boolean) => void, onref?: (ref: any) => void, onscope?: (scope: string) => void, menu?: boolean, onmenu?: (open: boolean) => void }} */
   let {
     d,
     line = null,
@@ -44,6 +44,7 @@
     handed = null,
     entries = {},
     choices = $bindable([]),
+    notes = $bindable(''),
     onkey = () => {},
     onact = () => {},
     onreply = () => {},
@@ -75,7 +76,7 @@
   const acting = $derived(live && !pending && waitsOnUser);
   const keyed = $derived((d.actions ?? []).filter((x) => x.key));
   const options = $derived(blockOf(d, 'options'));
-  const answered = $derived(!!options && options.questions.every((_, i) => choices[i]?.length));
+  const answered = $derived(!!options && (options.questions.every((_, i) => choices[i]?.length) || !!notes.trim()));
   // What still opens something once it is settled: the pane, the PR, the Notion page.
   const opens = $derived((d.actions ?? []).filter((x) => x.id === 'open' || x.key === 'o'));
   const prUrl = $derived(d.lifecycle?.effect === 'pr_opened' ? d.lifecycle.effect_detail : null);
@@ -191,10 +192,24 @@
   // A reply being written never collapses under the cursor (notes §2.1); a
   // card that leaves (filtered out, settled elsewhere) lets go of its hold.
   $effect(() => {
-    const held = !!text.trim();
+    const held = !!text.trim() || !!notes.trim();
     untrack(() => onhold(held)); // the parent's set of held cards is not this effect's input
   });
   $effect(() => () => onhold(false));
+
+  // The free-text answer under the options: ⏎ answers, Shift+⏎ a new line, Esc gives the focus back.
+  function notesKey(e) {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopPropagation();
+      const from = e.currentTarget;
+      from.blur();
+      from.closest('[tabindex]')?.focus();
+    } else if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+      e.preventDefault();
+      onkey('enter');
+    }
+  }
 
   function replyKey(e) {
     if (e.key === 'Escape') {
@@ -238,6 +253,9 @@
     {/if}
   {:else}
     <ContextBlocks decision={d} bind:choices onjump={(id) => onref({ kind: 'chat', id })} />
+  {/if}
+  {#if acting && options}
+    <textarea class="field" rows="2" bind:value={notes} onkeydown={notesKey} aria-label="Your answer" placeholder="Add details or answer in your own words · ⏎ to send"></textarea>
   {/if}
   {#if d.kind === 'rule_proposal' && d.payload?.declined_before && live}
     <p class="muted note" data-second-ask>Not now on {dayTime(d.payload.declined_at_ms)}. It won't be asked again if you decline.</p>

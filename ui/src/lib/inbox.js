@@ -163,6 +163,13 @@ export const cut = (text, n) => {
 /** "Answer: Clerk\nCard, Apple Pay": the chosen labels per question, one line each. */
 export const answerText = (choices) => choices.map((c) => c.join(', ')).join('\n');
 
+/** The message of an Answer: the choices, a blank line, then the free text (trimmed); either alone when the other is empty. */
+export const answerMessage = (choices, text) => {
+  const t = (text ?? '').trim();
+  const c = choices.some((x) => x?.length) ? answerText(choices) : '';
+  return c && t ? `${c}\n\n${t}` : c || t;
+};
+
 // ---------------------------------------------------------------- copy
 
 const who = (d) => (agentOf(d) ? ` · ${agentOf(d)}` : '');

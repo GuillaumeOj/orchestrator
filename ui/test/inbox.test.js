@@ -2,6 +2,7 @@
 import { describe, expect, it } from 'vitest';
 import { baseName, waited } from '../src/lib/format.js';
 import {
+  answerMessage,
   answerText,
   collapse,
   decisionToast,
@@ -113,6 +114,9 @@ describe('card triage', () => {
 
   it('an answer: the chosen labels per question, one line each', () => {
     expect(answerText([['Clerk'], ['Card', 'Apple Pay']])).toBe('Clerk\nCard, Apple Pay');
+    expect(answerMessage([['Clerk']], ' more ')).toBe('Clerk\n\nmore');
+    expect(answerMessage([], ' more ')).toBe('more');
+    expect(answerMessage([['Clerk']], '  ')).toBe('Clerk');
   });
 
   it('text helpers and the undo window', () => {

@@ -203,9 +203,14 @@ fn error_block(text: &str, detail: Option<&str>) -> Value {
     b
 }
 
+fn or_text<'a>(text: &'a str, fallback: &'a str) -> &'a str {
+    if text.is_empty() { fallback } else { text }
+}
+
 /// The `options` block: every question of a multi-question
 /// `AskUserQuestion` (`payload.questions`), else the `ask_user` options.
-fn options_block(p: &Value) -> Option<Value> {
+/// `fallback` stands in for a question whose own text is empty (the card's title text).
+fn options_block(p: &Value, fallback: &str) -> Option<Value> {
     if let Some(qs) = p.get("questions").and_then(Value::as_array).filter(|q| !q.is_empty()) {
         let questions: Vec<Value> = qs
             .iter()
@@ -220,7 +225,8 @@ fn options_block(p: &Value) -> Option<Value> {
                         o => json!({"label": s(o, "label"), "description": o.get("description")}),
                     })
                     .collect();
-                json!({"question": s(q, "question"), "header": q.get("header"),
+                let text = if qs.len() == 1 { or_text(s(q, "question"), fallback) } else { s(q, "question") };
+                json!({"question": text, "header": q.get("header"),
                        "multi": q.get("multiSelect").or_else(|| q.get("multi")).and_then(Value::as_bool).unwrap_or(false),
                        "options": options})
             })
@@ -229,7 +235,9 @@ fn options_block(p: &Value) -> Option<Value> {
     }
     let opts = p.get("options").and_then(Value::as_array).filter(|o| !o.is_empty())?;
     let options: Vec<Value> = opts.iter().filter_map(Value::as_str).map(|l| json!({"label": l})).collect();
-    Some(json!({"type": "options", "questions": [{"question": s(p, "question"), "multi": false, "options": options}]}))
+    Some(
+        json!({"type": "options", "questions": [{"question": or_text(s(p, "question"), fallback), "multi": false, "options": options}]}),
+    )
 }
 
 fn last_message(p: &Value) -> Option<Value> {
@@ -460,8 +468,11 @@ fn stored(cx: &Ctx, i: &InboxItem) -> Decision {
             let q = if s(p, "question").is_empty() { body_line.as_str() } else { s(p, "question") };
             let n = p.get("questions").and_then(Value::as_array).map_or(1, Vec::len);
             let title = if n > 1 { format!("{} · {n} questions", cut(q, 60)) } else { cut(q, 80) };
-            let mut ctx = vec![markdown(q, None)];
-            ctx.extend(options_block(p));
+            // The options block carries the question text itself; a leading markdown block would repeat it.
+            let mut ctx = match options_block(p, q) {
+                Some(options) => vec![options],
+                None => vec![markdown(q, None)],
+            };
             ctx.extend(last_message(p));
             let actions = vec![act("answer", "Answer", Some("enter")), act("reject", "Dismiss", Some("r")), OPEN_PANE];
             (title, String::new(), ctx, actions)

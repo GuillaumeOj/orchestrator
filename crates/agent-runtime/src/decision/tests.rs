@@ -139,8 +139,8 @@ fn a_question_with_several_questions_lists_them_all() {
     );
     let d = f.one("q-1");
     assert_eq!(d.title, "Which auth provider? · 2 questions");
-    assert_eq!(types(&d), ["markdown", "options", "last_message"]);
-    let qs = &d.context[1]["questions"];
+    assert_eq!(types(&d), ["options", "last_message"]);
+    let qs = &d.context[0]["questions"];
     assert_eq!(
         qs[1],
         json!({"question": "Which db?", "header": "DB", "multi": true,
@@ -151,8 +151,27 @@ fn a_question_with_several_questions_lists_them_all() {
     // `ask_user` with options: one question.
     f.item(Some("front-1"), "question", "front-1: pick", json!({"question": "pick", "options": ["a", "b"]}));
     let d = f.one("q-2");
-    assert_eq!(d.context[1]["questions"][0]["options"], json!([{"label": "a"}, {"label": "b"}]));
+    assert_eq!(d.context[0]["questions"][0]["options"], json!([{"label": "a"}, {"label": "b"}]));
     assert_eq!(d.thread_prev.as_deref(), Some("q-1"), "the previous decision of the run");
+}
+
+#[test]
+fn a_question_with_options_has_no_markdown_block() {
+    let mut f = Fx::default();
+    f.member("front-1", "front");
+    let text = "CI failed on PR #415.\n\nPlease re-run: `gh run rerun 1 --failed`?";
+    f.item(Some("front-1"), "question", "front-1: CI failed", json!({"question": text, "options": ["yes", "no"]}));
+    let d = f.one("q-1");
+    assert_eq!(types(&d), ["options"]);
+    assert_eq!(d.context[0]["questions"][0]["question"], text);
+    // Without options the question stays a markdown block.
+    f.item(Some("front-1"), "question", "front-1: which db?", json!({"question": "which db?"}));
+    let d = f.one("q-2");
+    assert_eq!(types(&d), ["markdown"]);
+    // An empty `question` falls back to the item's text, in the options block too.
+    f.item(Some("front-1"), "question", "front-1: pick one", json!({"question": "", "options": ["a"]}));
+    let d = f.one("q-3");
+    assert_eq!(d.context[0]["questions"][0]["question"], "pick one");
 }
 
 #[test]

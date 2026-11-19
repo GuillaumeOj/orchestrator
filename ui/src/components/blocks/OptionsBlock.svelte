@@ -3,6 +3,8 @@
   // AskUserQuestion, "Question 2 of 3 · Auth", options as radios (single) or
   // checkboxes (multi: "Pick any"), each "label — description". `choices` holds
   // the chosen labels per question (Answer ⏎ sends them).
+  import Markdown from '../Markdown.svelte';
+
   let { block, choices = $bindable([]), name = 'q' } = $props();
   const questions = $derived(block.questions ?? []);
 
@@ -18,7 +20,7 @@
     <legend class="bh">
       {questions.length > 1 ? `Question ${qi + 1} of ${questions.length}` : 'Question'}{q.multi ? ' · Pick any' : q.header ? ` · ${q.header}` : ''}
     </legend>
-    <div class="text"><b>{q.question}</b></div>
+    <Markdown text={q.question} />
     {#each q.options as o (o.label)}
       {@const on = (choices[qi] ?? []).includes(o.label)}
       <label class="opt">

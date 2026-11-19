@@ -25,6 +25,7 @@ const { applyNow } = await import('../src/lib/now.svelte.js');
 const { LIFECYCLE } = await import('../src/lib/status.js');
 const { UNDO_MS } = await import('../src/lib/inbox.js');
 const { default: ChatColumn } = await import('../src/components/chat/ChatColumn.svelte');
+const { default: DecisionCard } = await import('../src/components/chat/DecisionCard.svelte');
 const { default: ContextBlocks } = await import('../src/components/ContextBlocks.svelte');
 const { default: LifecycleMarker } = await import('../src/components/LifecycleMarker.svelte');
 const { default: WaitingChip } = await import('../src/components/WaitingChip.svelte');
@@ -56,12 +57,11 @@ const question = (over = {}) =>
     title: 'Which auth provider? · 2 questions',
     created_ms: Date.now() - 10 * MIN,
     context: [
-      { type: 'markdown', text: 'Which auth provider?\n\nWhich payment methods?' },
       {
         type: 'options',
         questions: [
           {
-            question: 'Which auth provider?',
+            question: 'Which **auth provider**?\n\nUse `clerk` if unsure.',
             header: 'Auth',
             multi: false,
             options: [
@@ -202,6 +202,84 @@ describe('context blocks: one component per type, in order', () => {
     expect(answer.disabled).toBe(false);
     await fireEvent.click(answer);
     expect(app.pending[0]).toMatchObject({ item: 'q-3', action: 'answer', message: 'Clerk\nCard, Apple Pay' });
+  });
+
+  describe('question as Markdown and the free-text answer', () => {
+    const answerBtn = (c) => [...c.querySelectorAll('.actions button')].find((b) => b.textContent.startsWith('Answer'));
+    const setup = (d = question()) => {
+      app.now = nowOf(app.data, { decisions: [d] });
+      return render(ChatColumn);
+    };
+    const pickBoth = async (c) => {
+      for (const l of ['Clerk', 'Card'])
+        await fireEvent.click(
+          [...block(c, 'options').querySelectorAll('label')]
+            .find((x) => x.textContent.includes(l))
+            .querySelector('input'),
+        );
+    };
+
+    it('shows the question once, as Markdown', () => {
+      const { container: c } = setup();
+      const opts = block(c, 'options');
+      expect(opts.querySelectorAll('p').length).toBeGreaterThanOrEqual(2);
+      expect(opts.querySelector('code').textContent).toBe('clerk');
+      expect(c.textContent.match(/Use /g)).toHaveLength(1);
+      expect(block(c, 'markdown')).toBeNull();
+    });
+
+    it('text alone enables Answer and is sent alone', async () => {
+      const { container: c } = setup();
+      const field = c.querySelector('textarea[aria-label="Your answer"]');
+      expect(field.getAttribute('rows')).toBe('2');
+      expect(answerBtn(c).disabled).toBe(true);
+      await fireEvent.input(field, { target: { value: '  my own words \n' } });
+      flushSync();
+      expect(answerBtn(c).disabled).toBe(false);
+      await fireEvent.click(answerBtn(c));
+      expect(app.pending[0]).toMatchObject({ item: 'q-3', action: 'answer', message: 'my own words' });
+    });
+
+    it('choices + text: choices, a blank line, the text', async () => {
+      const { container: c } = setup();
+      await pickBoth(c);
+      await fireEvent.input(c.querySelector('textarea[aria-label="Your answer"]'), { target: { value: 'details' } });
+      flushSync();
+      await fireEvent.click(answerBtn(c));
+      expect(app.pending[0]).toMatchObject({ action: 'answer', message: 'Clerk\nCard\n\ndetails' });
+    });
+
+    it('Undo keeps the typed text, like the choices', async () => {
+      const { container: c } = setup();
+      await fireEvent.input(c.querySelector('textarea[aria-label="Your answer"]'), { target: { value: 'my words' } });
+      flushSync();
+      await fireEvent.click(answerBtn(c));
+      expect(c.querySelector('textarea[aria-label="Your answer"]')).toBeNull(); // pending: hidden
+      await fireEvent.click([...c.querySelectorAll('.actions button')].find((b) => b.textContent.trim() === 'Undo'));
+      flushSync();
+      expect(/** @type {HTMLTextAreaElement} */ (c.querySelector('textarea[aria-label="Your answer"]')).value).toBe(
+        'my words',
+      );
+    });
+
+    it('⏎ in the field sends, Shift+⏎ does not', async () => {
+      const { container: c } = setup();
+      const field = c.querySelector('textarea[aria-label="Your answer"]');
+      await fireEvent.input(field, { target: { value: 'hello' } });
+      flushSync();
+      await fireEvent.keyDown(field, { key: 'Enter', shiftKey: true });
+      expect(app.pending).toHaveLength(0);
+      await fireEvent.keyDown(field, { key: 'Enter' });
+      expect(app.pending[0]).toMatchObject({ action: 'answer', message: 'hello' });
+    });
+
+    it('no field on a read-only line', () => {
+      const d = question({
+        lifecycle: { state: 'effect', effect: 'answered', decided_by: 'user', decided_ms: Date.now() },
+      });
+      const { container } = render(DecisionCard, { d, line: { state: 'effect', by: 'you' } });
+      expect(container.querySelector('textarea[aria-label="Your answer"]')).toBeNull();
+    });
   });
 });
 
