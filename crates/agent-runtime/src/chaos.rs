@@ -600,6 +600,15 @@ impl Sim {
         self.rt.store.read(|s| s.agents[agent].tracker.state)
     }
 
+    /// Idle, every turn of the agent done.
+    pub fn all_done(&self, agent: &str) -> bool {
+        self.state(agent) == AgentState::Idle
+            && self
+                .rt
+                .store
+                .read(|s| s.turns.iter().filter(|t| t.agent_id == agent).all(|t| t.status == TurnStatus::Done))
+    }
+
     pub fn events(&self, agent: &str, kind: &str) -> Vec<Value> {
         self.rt.db.flush().unwrap();
         self.rt.db.events(0, Some(agent), Some(kind), 200).unwrap().into_iter().map(|e| e.detail).collect()
@@ -850,15 +859,19 @@ mod scenarios {
     fn team_with_lead(
         tweak: impl FnOnce(&mut crate::runtime::RuntimeConfig),
     ) -> (Sim, tempfile::TempDir, orch_store::TeamRun, Cli) {
+        team_with_lead_by(tweak, |sim| sim.attach(LEAD))
+    }
+
+    /// [`team_with_lead`], the lead's fake CLI started by `attach`.
+    fn team_with_lead_by(
+        tweak: impl FnOnce(&mut crate::runtime::RuntimeConfig),
+        attach: impl FnOnce(&Sim) -> Cli,
+    ) -> (Sim, tempfile::TempDir, orch_store::TeamRun, Cli) {
         let sim = Sim::new(tweak);
         sim.short_bounds();
         let (rd, run) = sim.team();
-        let cli = sim.attach(LEAD);
-        sim.until("the lead's brief done", 30, || {
-            sim.state(LEAD) == AgentState::Idle
-                && cli.saw("Fix the X bug.")
-                && sim.rt.store.read(|s| s.turns.iter().filter(|t| t.agent_id == LEAD).all(|t| t.status == T::Done))
-        });
+        let cli = attach(&sim);
+        sim.until("the lead's brief done", 30, || cli.saw("Fix the X bug.") && sim.all_done(LEAD));
         (sim, rd, run, cli)
     }
 
@@ -869,16 +882,14 @@ mod scenarios {
     /// approval once.
     #[test]
     fn a_model_switch_never_kills_a_paste_in_flight() {
-        let sim = Sim::new(|_| {});
-        sim.short_bounds();
-        let (_rd, _run) = sim.team();
-        let cli = sim.attach_on(LEAD, None);
-        cli.set(|s| s.delay_submit = Some(Duration::from_millis(300)));
-        sim.until("the lead's brief done", 30, || {
-            sim.state(LEAD) == AgentState::Idle
-                && cli.saw("Fix the X bug.")
-                && sim.rt.store.read(|s| s.turns.iter().filter(|t| t.agent_id == LEAD).all(|t| t.status == T::Done))
-        });
+        let (sim, _rd, _run, cli) = team_with_lead_by(
+            |_| {},
+            |sim| {
+                let cli = sim.attach_on(LEAD, None);
+                cli.set(|s| s.delay_submit = Some(Duration::from_millis(300)));
+                cli
+            },
+        );
         let approval = sim.rt.store.read(|s| {
             s.turns.iter().find(|t| t.agent_id == LEAD && t.kind == TurnKind::User).map(|t| t.id.clone()).unwrap()
         });
@@ -899,10 +910,7 @@ mod scenarios {
         assert!(sim.rt.live(LEAD).is_none());
         sim.rt.user_message(&run.id, "lead", "back after the suspend").unwrap();
         sim.until("the message after the resume", 30, || cli.saw("back after the suspend"));
-        sim.until("idle on the new process", 30, || {
-            sim.state(LEAD) == AgentState::Idle
-                && sim.rt.store.read(|s| s.turns.iter().filter(|t| t.agent_id == LEAD).all(|t| t.status == T::Done))
-        });
+        sim.until("idle on the new process", 30, || sim.all_done(LEAD));
         assert!(sim.rt.live(LEAD).is_some(), "resumed");
         assert!(sim.events(LEAD, "hook_after_exit").is_empty());
     }

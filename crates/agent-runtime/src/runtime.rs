@@ -2906,25 +2906,25 @@ impl Runtime {
     /// One agent's turn picked by [`delivery::pick_turn`]: admission, a
     /// resume or a restart when the process is gone, then the paste.
     fn pump_one(&self, rec: &AgentRecord, turn: &TurnRow, now: u64) -> Result<()> {
-        // FR-819: a new task is where the model may change (never mid-turn).
-        // With a process, the switch waits for the delivery gate and for no
-        // stop under way: a paste in flight (`ready_at` 0 until the Stop) or a
-        // running turn still reads `Idle` until its UserPromptSubmit arrives,
-        // and a switch then kills the process that holds it. Its late hooks
-        // used to wake the agent with no process (fix-flaky-test-xyz): keep
-        // this check before `task_boundary`.
-        if turn.kind == TurnKind::Task && turn.admission == Admission::Pending {
-            if let Some(l) = self.live_get(&rec.id)
-                && (rec.tracker.stop_intent != StopIntent::None
-                    || delivery::can_deliver(&self.gate(rec, &l, turn, now)).is_err())
-            {
-                return Ok(());
-            }
-            if self.task_boundary(rec) {
-                return Ok(());
-            }
+        let live = self.live_get(&rec.id);
+        // On a process: nothing goes while a stop is under way (a model
+        // switch, a fresh session for the next task: the turn goes to the
+        // next process) or the delivery gate is closed.
+        // Checked before `task_boundary` (fix-flaky-test-xyz): a paste in
+        // flight (`ready_at` 0 until the Stop) still reads `Idle` until its
+        // UserPromptSubmit arrives, and a model switch then killed the
+        // process holding it; its late hooks woke the agent with no process.
+        if let Some(l) = &live
+            && (rec.tracker.stop_intent != StopIntent::None
+                || delivery::can_deliver(&self.gate(rec, l, turn, now)).is_err())
+        {
+            return Ok(());
         }
-        let Some(l) = self.live_get(&rec.id) else {
+        // FR-819: a new task is where the model may change (never mid-turn).
+        if turn.kind == TurnKind::Task && turn.admission == Admission::Pending && self.task_boundary(rec) {
+            return Ok(());
+        }
+        let Some(l) = live else {
             // A suspended agent with work is resumed through the Governor
             // (FR-403), which also holds the spawn until a process slot is
             // free under memory pressure (FR-203).
@@ -3005,12 +3005,7 @@ impl Runtime {
             }
             return Ok(());
         };
-        // A stop under way (a model switch, a fresh session for the next
-        // task): the turn goes to the next process.
-        if rec.tracker.stop_intent != StopIntent::None {
-            return Ok(());
-        }
-        if delivery::can_deliver(&self.gate(rec, &l, turn, now)).is_err() || !self.admit_turn(rec, turn, false) {
+        if !self.admit_turn(rec, turn, false) {
             return Ok(());
         }
         // The agent's next queued turns ride along (one turn, one paste), up
@@ -3782,8 +3777,7 @@ pub(crate) mod tests {
         assert_eq!(rec.tracker.state, AgentState::Suspended, "still gone: the pump resumes it");
         assert!(rt.with_governor(|g| g.queue().is_empty() && !g.is_live(&AgentId("a1".into()))), "no Governor turn");
         assert_eq!(rt.store.read(|s| s.turns[0].status), TurnStatus::Queued, "{task_id} waits for the resume");
-        rt.db.flush().unwrap();
-        let dropped = rt.db.events(0, Some("a1"), Some("hook_after_exit"), 10).unwrap();
+        let dropped = events_of(&rt, "hook_after_exit");
         assert_eq!(dropped.len(), 4, "{dropped:?}");
         // The respawn's own SessionStart, even before its process is recorded.
         rt.on_hook(&hook("SessionStart", json!({"source": "resume"})), None);
@@ -3799,8 +3793,7 @@ pub(crate) mod tests {
         rt.on_hook(&hook("Stop", json!({"background_tasks": []})), None);
         rt.on_hook(&hook("SessionEnd", json!({"reason": "other"})), None);
         assert_eq!(rt.store.read(|s| s.agents["a1"].tracker.state), AgentState::Archived);
-        rt.db.flush().unwrap();
-        let dropped = rt.db.events(0, Some("a1"), Some("hook_after_exit"), 10).unwrap();
+        let dropped = events_of(&rt, "hook_after_exit");
         assert_eq!(dropped.len(), 1, "{dropped:?}");
     }
 
