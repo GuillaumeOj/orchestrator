@@ -649,7 +649,7 @@ export function statusLine(p, s, now = Date.now()) {
     if (code === 'gh_scope')
       return {
         tone: 'error',
-        text: `${p.name} · ${e.text} to read the board`,
+        text: `${p.name} · ${e.text} ${e.scope === 'project' ? 'to move items on the board' : 'to read the board'}`,
         fix: 'gh_scope',
         fixLabel: 'Copy command',
         command: ghScopeCommand(e.scope),

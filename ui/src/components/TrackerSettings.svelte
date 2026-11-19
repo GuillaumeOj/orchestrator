@@ -50,7 +50,8 @@
   $effect(() => {
     if (block !== 'write_back' || !form || blockSeen === app.window) return;
     blockSeen = app.window;
-    if (wbOn) untrack(checkAccess);
+    // (the first check is the effect below's: only a later Open settings, with an answer already in, checks again)
+    if (wbOn && access) untrack(checkAccess);
     tick().then(() => {
       const el = /** @type {HTMLElement | null} */ (document.querySelector('[data-wb-switch]'));
       el?.scrollIntoView?.({ block: 'center' });
@@ -169,7 +170,9 @@
     const mine = ++accessSeq;
     try {
       const a = await invoke('tracker_gh_access', { project });
-      if (mine === accessSeq) access = a;
+      if (mine !== accessSeq) return;
+      access = a;
+      if (grantNote?.scope && accessView(a).state === 'ok') grantNote = null; // a failed grant is stale once nothing is missing
     } catch (e) {
       if (mine === accessSeq) access = { gh: 'error', message: parseErr(e, errText).message ?? errText(e) };
     }

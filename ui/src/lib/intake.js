@@ -174,8 +174,8 @@ export function ageText(ms, now = Date.now()) {
 /** Where a `fix` of `integrations` lands: the Settings › Integrations row of the source. */
 export const integrationsRow = (code) => (code?.startsWith('linear') ? 'linear' : 'github');
 
-/** The scope a `gh_scope` error names (GitHub's own; `read:project` when the error has none). */
-export const scopeOf = (error) => error?.scope || 'read:project';
+/** The scope a `gh_scope` error names (GitHub's own; `read:project` when the error has none or it is not a scope name: it ends up in a command to paste). */
+export const scopeOf = (error) => (/^[\w:.-]+$/.test(error?.scope ?? '') ? error.scope : 'read:project');
 
 /** The command that adds `scope` to the gh login. */
 export const ghScopeCommand = (scope = 'read:project') => `gh auth refresh -h github.com -s ${scope}`;
