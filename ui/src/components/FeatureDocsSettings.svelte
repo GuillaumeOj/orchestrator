@@ -120,7 +120,7 @@
         {#if draft.docs.kind === 'repo'}
           <div class="sub">
             <input class="field mono" class:bad={errors.docs} aria-label="Docs folder" aria-invalid={!!errors.docs} aria-describedby={errors.docs ? 'fd-docs-err' : undefined} bind:value={draft.docs.path} oninput={() => edit('docs')} spellcheck="false" />
-            {#if errors.docs}<span class="ferr" id="fd-docs-err" role="alert">{errors.docs}</span>{:else}<span class="muted ex mono">{docsExample}</span>{/if}
+            {#if errors.docs}<span class="ferr" id="fd-docs-err" role="alert">{errors.docs}</span>{:else}<span class="muted mono">{docsExample}</span>{/if}
             <span class="muted hint">{'{slug}'} is the feature's short name</span>
           </div>
         {/if}
@@ -135,12 +135,12 @@
       <span class="lab" id="fd-designs">Designs</span>
       <div class="opts">
         <label class="opt" class:on={draft.designs.kind === 'with_docs'}><input type="radio" name="fd-designs" checked={draft.designs.kind === 'with_docs'} onchange={() => pick('designs', 'with_docs')} /> With the docs</label>
-        {#if draft.designs.kind === 'with_docs' && designsExample}<span class="muted ex mono sub">{designsExample}</span>{/if}
+        {#if draft.designs.kind === 'with_docs' && designsExample}<span class="muted mono sub">{designsExample}</span>{/if}
         <label class="opt" class:on={draft.designs.kind === 'repo'}><input type="radio" name="fd-designs" checked={draft.designs.kind === 'repo'} onchange={() => pick('designs', 'repo')} /> In the repository</label>
         {#if draft.designs.kind === 'repo'}
           <div class="sub">
             <input class="field mono" class:bad={errors.designs} aria-label="Designs folder" aria-invalid={!!errors.designs} aria-describedby={errors.designs ? 'fd-designs-err' : undefined} bind:value={draft.designs.path} oninput={() => edit('designs')} spellcheck="false" />
-            {#if errors.designs}<span class="ferr" id="fd-designs-err" role="alert">{errors.designs}</span>{:else}<span class="muted ex mono">{designsExample}</span>{/if}
+            {#if errors.designs}<span class="ferr" id="fd-designs-err" role="alert">{errors.designs}</span>{:else}<span class="muted mono">{designsExample}</span>{/if}
           </div>
         {/if}
         <label class="opt" class:on={draft.designs.kind === 'app'}><input type="radio" name="fd-designs" checked={draft.designs.kind === 'app'} onchange={() => pick('designs', 'app')} /> Not saved in the repository</label>
@@ -204,9 +204,6 @@
     margin: 0 0 var(--space-xs) var(--space-lg);
   }
   .mono {
-    font: var(--text-mono);
-  }
-  .ex {
     font: var(--text-mono);
   }
   .field.bad {
