@@ -1630,6 +1630,23 @@ impl Runtime {
             // Fail closed: an agent the core doesn't know is not governed.
             return (if replay { None } else { HookOutput::fail_closed(&m.event) }, vec![]);
         };
+        // A hook of a process that is gone (in flight at its exit, or late):
+        // it must not wake the agent with no process to paste into, which the
+        // pump would then never resume. A hook names no process (a resume
+        // keeps the session id), so the record says it: stopped or crashed,
+        // with no live process. SessionStart always applies: a respawn can
+        // send it before its process is recorded.
+        if m.event != HookEvent::SessionStart
+            && matches!(rec.tracker.state, AgentState::Suspended | AgentState::Killed | AgentState::Error)
+            && self.live_get(id).is_none()
+        {
+            self.event(
+                id,
+                "hook_after_exit",
+                json!({"event": m.event, "state": rec.tracker.state, "replayed": replay}),
+            );
+            return (if replay { None } else { HookOutput::fail_closed(&m.event) }, vec![]);
+        }
         let mut p = HookPayload::parse(&m.payload);
         if m.event == HookEvent::UserPromptSubmit {
             self.bind_command(id, &mut p);
@@ -2850,12 +2867,40 @@ impl Runtime {
         admission == Admission::Admitted
     }
 
+    /// What the delivery gate reads for `turn` on the agent's process.
+    fn gate(&self, rec: &AgentRecord, l: &Live, turn: &TurnRow, now: u64) -> GateInputs {
+        GateInputs {
+            live: !l.pty.has_exited(),
+            idle: rec.tracker.state == AgentState::Idle,
+            trust_dialog: rec.trust_dialog || l.pty.output.trust_dialog.load(Ordering::Relaxed),
+            background_tasks: rec.tracker.background_tasks,
+            waits_on_background: delivery::waits_on_background(turn.kind),
+            ready_at_ms: Some(l.ready_at_ms.load(Ordering::SeqCst)).filter(|t| *t > 0),
+            last_user_input_ms: Some(l.last_user_input_ms.load(Ordering::SeqCst)).filter(|t| *t > 0),
+            now_ms: now,
+        }
+    }
+
     /// One agent's turn picked by [`delivery::pick_turn`]: admission, a
     /// resume or a restart when the process is gone, then the paste.
     fn pump_one(&self, rec: &AgentRecord, turn: &TurnRow, now: u64) -> Result<()> {
         // FR-819: a new task is where the model may change (never mid-turn).
-        if turn.kind == TurnKind::Task && turn.admission == Admission::Pending && self.task_boundary(rec) {
-            return Ok(());
+        // With a process, the switch waits for the delivery gate and for no
+        // stop under way: a paste in flight (`ready_at` 0 until the Stop) or a
+        // running turn still reads `Idle` until its UserPromptSubmit arrives,
+        // and a switch then kills the process that holds it. Its late hooks
+        // used to wake the agent with no process (fix-flaky-test-xyz): keep
+        // this check before `task_boundary`.
+        if turn.kind == TurnKind::Task && turn.admission == Admission::Pending {
+            if let Some(l) = self.live_get(&rec.id)
+                && (rec.tracker.stop_intent != StopIntent::None
+                    || delivery::can_deliver(&self.gate(rec, &l, turn, now)).is_err())
+            {
+                return Ok(());
+            }
+            if self.task_boundary(rec) {
+                return Ok(());
+            }
         }
         let Some(l) = self.live_get(&rec.id) else {
             // A suspended agent with work is resumed through the Governor
@@ -2943,17 +2988,7 @@ impl Runtime {
         if rec.tracker.stop_intent != StopIntent::None {
             return Ok(());
         }
-        let gate = GateInputs {
-            live: !l.pty.has_exited(),
-            idle: rec.tracker.state == AgentState::Idle,
-            trust_dialog: rec.trust_dialog || l.pty.output.trust_dialog.load(Ordering::Relaxed),
-            background_tasks: rec.tracker.background_tasks,
-            waits_on_background: delivery::waits_on_background(turn.kind),
-            ready_at_ms: Some(l.ready_at_ms.load(Ordering::SeqCst)).filter(|t| *t > 0),
-            last_user_input_ms: Some(l.last_user_input_ms.load(Ordering::SeqCst)).filter(|t| *t > 0),
-            now_ms: now,
-        };
-        if delivery::can_deliver(&gate).is_err() || !self.admit_turn(rec, turn, false) {
+        if delivery::can_deliver(&self.gate(rec, &l, turn, now)).is_err() || !self.admit_turn(rec, turn, false) {
             return Ok(());
         }
         // The agent's next queued turns ride along (one turn, one paste), up
@@ -3601,9 +3636,11 @@ pub(crate) mod tests {
         insert_live(rt, id, pty, model, task);
     }
 
-    /// `id` is live behind `pty` (a fake terminal), ready for input.
-    pub(crate) fn insert_test_live_with(rt: &Runtime, id: &str, pty: PtyProcess) {
-        insert_live(rt, id, pty, None, 0);
+    /// `id` is live behind `pty` (a fake terminal), ready for input, on
+    /// `model` (`None`: no `--model`) and its seat's task, as a spawn records it.
+    pub(crate) fn insert_test_live_with(rt: &Runtime, id: &str, pty: PtyProcess, model: Option<&str>) {
+        let task = rt.store.read(|s| s.agents.get(id).and_then(|a| a.team.as_ref()).and_then(|t| t.task)).unwrap_or(0);
+        insert_live(rt, id, pty, model, task);
         if let Some(l) = rt.live_get(id) {
             l.ready_at_ms.store(1, Ordering::SeqCst);
         }
@@ -3693,6 +3730,42 @@ pub(crate) mod tests {
         let out = rt.on_hook(&hook("PermissionRequest", json!({"prompt_id": "p2"})), None).expect("parked");
         assert_eq!(out.0["hookSpecificOutput"]["decision"]["message"], crate::inbox::PARKED_MESSAGE);
         assert_eq!(rt.store.read(|s| s.agents["a1"].tracker.state), AgentState::Working);
+    }
+
+    /// fix-flaky-test-xyz: the hooks a process sent after its exit (a turn in
+    /// flight when a suspend ended it) leave the agent suspended, so the pump
+    /// resumes it for its queued turn; they used to make it `Idle` with no
+    /// process, and the turn waited forever. Its next process's SessionStart
+    /// applies as ever.
+    #[test]
+    fn a_hook_after_the_exit_does_not_wake_a_gone_agent() {
+        let (_d, rt) = test_runtime(false);
+        rt.store
+            .write(|s| {
+                let a = s.agents.get_mut("a1").unwrap();
+                a.spawns = 1;
+                a.tracker.state = AgentState::Suspended;
+            })
+            .unwrap();
+        let task = TurnRow::queued("a1", "the brief", TurnKind::Task, Admission::Pending);
+        let task_id = task.id.clone();
+        rt.store.write(|s| s.turns.push(task)).unwrap();
+        assert!(rt.live("a1").is_none());
+        rt.on_hook(&hook("UserPromptSubmit", json!({"prompt": "[t:0123abcd] the answer"})), None);
+        let out = rt.on_hook(&hook("PreToolUse", json!({"tool_name": "Bash"})), None);
+        assert_eq!(out.unwrap().0["hookSpecificOutput"]["permissionDecision"], "deny", "fails closed");
+        rt.on_hook(&hook("PostToolUse", json!({"tool_name": "Bash"})), None);
+        rt.on_hook(&hook("Stop", json!({"background_tasks": []})), None);
+        let rec = rt.store.read(|s| s.agents["a1"].clone());
+        assert_eq!(rec.tracker.state, AgentState::Suspended, "still gone: the pump resumes it");
+        assert!(rt.with_governor(|g| g.queue().is_empty() && !g.is_live(&AgentId("a1".into()))), "no Governor turn");
+        assert_eq!(rt.store.read(|s| s.turns[0].status), TurnStatus::Queued, "{task_id} waits for the resume");
+        rt.db.flush().unwrap();
+        let dropped = rt.db.events(0, Some("a1"), Some("hook_after_exit"), 10).unwrap();
+        assert_eq!(dropped.len(), 4, "{dropped:?}");
+        // The respawn's own SessionStart, even before its process is recorded.
+        rt.on_hook(&hook("SessionStart", json!({"source": "resume"})), None);
+        assert_eq!(rt.store.read(|s| s.agents["a1"].tracker.state), AgentState::Idle);
     }
 
     #[test]

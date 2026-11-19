@@ -219,7 +219,7 @@ impl FakeDialog {
         );
         pty.output.push(&diff_frame(2));
         *out.lock().unwrap() = Some(pty.output.clone());
-        insert_test_live_with(rt, id, pty);
+        insert_test_live_with(rt, id, pty, None);
         FakeDialog { out, keys }
     }
 
@@ -332,7 +332,7 @@ fn the_window_ends_in_the_fallback_when_the_layout_is_unknown() {
     let pty = crate::pty::echoing_fake(Box::new(|_| {}));
     pty.output.push(b"Quick safety check\n  Trust this folder?  [y/N]\n");
     let out = pty.output.clone();
-    insert_test_live_with(&rt, ID, pty);
+    insert_test_live_with(&rt, ID, pty, None);
     let t = now_ms();
     rt.pump_trust(t);
     rt.pump_trust(t + WINDOW_MS - 1);

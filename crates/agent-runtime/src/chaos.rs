@@ -435,8 +435,15 @@ impl Sim {
     }
 
     /// Gives `agent` a live fake CLI now (as if it had been started and had
-    /// passed SessionStart), idle and ready for input.
+    /// passed SessionStart), idle and ready for input, on its role's model
+    /// as a spawn starts it (so its first task needs no model switch).
     pub fn attach(&self, agent: &str) -> Cli {
+        let model = self.rt.store.read(|s| s.agents[agent].role.model.clone());
+        self.attach_on(agent, model.as_deref())
+    }
+
+    /// [`Sim::attach`] on `model` (`None`: a process started with no `--model`).
+    pub fn attach_on(&self, agent: &str, model: Option<&str>) -> Cli {
         let cli = self.cli(agent);
         let sid = self.rt.store.read(|s| s.agents[agent].session_id.clone());
         let (weak, id) = (Arc::downgrade(&self.rt), agent.to_string());
@@ -451,7 +458,7 @@ impl Sim {
         let _ = pid_cell.set(pty.pid);
         cli.started.store(false, Ordering::SeqCst);
         let (pid, pgid) = (pty.pid, pty.pgid);
-        insert_test_live_with(&self.rt, agent, pty);
+        insert_test_live_with(&self.rt, agent, pty, model);
         let end = Instant::now() + Duration::from_secs(5);
         while !cli.started.load(Ordering::SeqCst) && Instant::now() < end {
             std::thread::sleep(Duration::from_millis(10));
@@ -501,7 +508,12 @@ impl Sim {
         let turns = self.rt.store.read(|s| {
             s.turns
                 .iter()
-                .map(|t| format!("{} {:?} attempts={} body={}", t.id, t.status, t.attempts, t.body))
+                .map(|t| {
+                    format!(
+                        "{} {} {:?} {:?} {:?} attempts={} body={}",
+                        t.id, t.agent_id, t.kind, t.status, t.admission, t.attempts, t.body
+                    )
+                })
                 .collect::<Vec<_>>()
         });
         let lim = self.rt.with_governor(|g| {
@@ -510,21 +522,38 @@ impl Sim {
                 g.actions().iter().rev().take(6).map(|a| format!("{:?} {}", a.action, a.reason)).collect::<Vec<_>>()
             )
         });
-        let agents = self.rt.store.read(|s| {
-            s.agents
-                .values()
-                .map(|a| {
-                    format!(
-                        "{} {:?} flag={:?} resume_failed={} crashes={}",
-                        a.id,
-                        a.tracker.state,
-                        a.flag,
-                        a.resume_failed,
-                        a.crash_restarts.len()
-                    )
-                })
-                .collect::<Vec<_>>()
-        });
+        let recs = self.rt.store.read(|s| s.agents.values().cloned().collect::<Vec<_>>());
+        let _ = self.rt.db.flush();
+        let agents: Vec<String> = recs
+            .iter()
+            .map(|a| {
+                let live = match self.rt.live(&a.id) {
+                    Some(l) => format!("yes(pid={} model={:?} exited={})", l.pty.pid, l.model, l.pty.has_exited()),
+                    None => "no".into(),
+                };
+                // The agent's last runtime events, oldest first.
+                let mut events: Vec<String> = self
+                    .rt
+                    .db
+                    .events(0, Some(&a.id), None, 12)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|e| format!("{} {}", e.kind, e.detail.to_string().chars().take(160).collect::<String>()))
+                    .collect();
+                events.reverse();
+                format!(
+                    "{} {:?} live={live} pid={:?} stop_intent={:?} background_tasks={} flag={:?} resume_failed={} crashes={}\n  events: {events:#?}",
+                    a.id,
+                    a.tracker.state,
+                    a.pid,
+                    a.tracker.stop_intent,
+                    a.tracker.background_tasks,
+                    a.flag,
+                    a.resume_failed,
+                    a.crash_restarts.len()
+                )
+            })
+            .collect();
         let inbox = self
             .rt
             .store
@@ -831,6 +860,51 @@ mod scenarios {
                 && sim.rt.store.read(|s| s.turns.iter().filter(|t| t.agent_id == LEAD).all(|t| t.status == T::Done))
         });
         (sim, rd, run, cli)
+    }
+
+    /// fix-flaky-test-xyz: a slow CLI reads `Idle` for a while after the
+    /// approval's paste. The brief behind it needs a model switch: it waits
+    /// for the approval's turn to end, never kills the process holding it,
+    /// and the brief then runs on the respawned process. The model sees the
+    /// approval once.
+    #[test]
+    fn a_model_switch_never_kills_a_paste_in_flight() {
+        let sim = Sim::new(|_| {});
+        sim.short_bounds();
+        let (_rd, _run) = sim.team();
+        let cli = sim.attach_on(LEAD, None);
+        cli.set(|s| s.delay_submit = Some(Duration::from_millis(300)));
+        sim.until("the lead's brief done", 30, || {
+            sim.state(LEAD) == AgentState::Idle
+                && cli.saw("Fix the X bug.")
+                && sim.rt.store.read(|s| s.turns.iter().filter(|t| t.agent_id == LEAD).all(|t| t.status == T::Done))
+        });
+        let approval = sim.rt.store.read(|s| {
+            s.turns.iter().find(|t| t.agent_id == LEAD && t.kind == TurnKind::User).map(|t| t.id.clone()).unwrap()
+        });
+        let seen = cli.lines().iter().filter(|l| l.starts_with("DONE[") && l.contains(&approval)).count();
+        assert_eq!(seen, 1, "the approval ran once: {:?}", cli.lines());
+        assert_eq!(sim.events(LEAD, "model_switch").len(), 1);
+        assert!(sim.events(LEAD, "hook_after_exit").is_empty(), "no turn was cut by the switch");
+        assert!(sim.rt.live(LEAD).is_some_and(|l| l.model.as_deref() == Some("opus")));
+    }
+
+    /// A suspended lead is resumed for its next message: the new process's
+    /// SessionStart and first turn apply as usual.
+    #[test]
+    fn a_suspended_lead_resumes_and_its_first_turn_completes() {
+        let (sim, _rd, run, cli) = team_with_lead(|_| {});
+        sim.rt.suspend(LEAD).unwrap();
+        assert_eq!(sim.state(LEAD), AgentState::Suspended);
+        assert!(sim.rt.live(LEAD).is_none());
+        sim.rt.user_message(&run.id, "lead", "back after the suspend").unwrap();
+        sim.until("the message after the resume", 30, || cli.saw("back after the suspend"));
+        sim.until("idle on the new process", 30, || {
+            sim.state(LEAD) == AgentState::Idle
+                && sim.rt.store.read(|s| s.turns.iter().filter(|t| t.agent_id == LEAD).all(|t| t.status == T::Done))
+        });
+        assert!(sim.rt.live(LEAD).is_some(), "resumed");
+        assert!(sim.events(LEAD, "hook_after_exit").is_empty());
     }
 
     /// F9: a panic in a step of the team tick is an event, and delivery goes on.

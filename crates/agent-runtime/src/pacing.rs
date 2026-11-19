@@ -299,7 +299,8 @@ mod tests {
     use super::*;
     use crate::power::{FakePower, PowerAssertion};
     use crate::runtime::tests::{insert_test_live, test_agent, test_cfg};
-    use crate::state::TurnOrigin;
+    use crate::state::{StopIntent, TurnOrigin};
+    use crate::store::{Admission, TurnRow, TurnStatus};
 
     #[derive(Debug, Default)]
     struct Battery(AtomicBool);
@@ -456,6 +457,45 @@ mod tests {
         assert_eq!(rt.turn_model(&rec(&rt, "a1")).as_deref(), Some("sonnet"));
         assert!(rt.task_boundary(&rec(&rt, "a1")));
         assert_eq!(switches(&rt)[1], json!({"from": "opus", "to": "sonnet", "why": "restore"}));
+    }
+
+    /// fix-flaky-test-xyz: a pasted turn reads `Idle` until its
+    /// UserPromptSubmit; a task behind it does not switch the model (and so
+    /// kill the process) meanwhile. Once the turn is over and the agent can
+    /// take input, the switch happens.
+    #[test]
+    fn a_model_switch_waits_for_a_paste_in_flight() {
+        let d = tempfile::Builder::new().prefix("orchrt").tempdir_in(orch_protocol::test_tmp()).unwrap();
+        let rt = Runtime::new(test_cfg(d.path(), false)).unwrap();
+        agent(&rt, d.path(), "a1", "sonnet", None);
+        seat_on(&rt, "a1", 1, Some("opus"));
+        insert_test_live(&rt, "a1", Some("sonnet"), 0, d.path());
+        rt.live("a1").unwrap().ready_at_ms.store(1, Ordering::SeqCst);
+        idle(&rt, "a1");
+        let (user, task) = (
+            TurnRow::queued("a1", "the user's answer", TurnKind::User, Admission::Pending),
+            TurnRow::queued("a1", "the next task", TurnKind::Task, Admission::Pending),
+        );
+        let (user_id, task_id) = (user.id.clone(), task.id.clone());
+        rt.store.write(|s| s.turns.extend([task, user])).unwrap();
+        let status = |id: &str| rt.store.read(|s| s.turns.iter().find(|t| t.id == id).unwrap().status);
+        let stop = || rt.store.read(|s| s.agents["a1"].tracker.stop_intent);
+
+        rt.pump();
+        assert_eq!(status(&user_id), TurnStatus::Delivering, "the user's turn first, alone");
+        // Its UserPromptSubmit has not come: the record still says idle.
+        assert_eq!(rec(&rt, "a1").tracker.state, AgentState::Idle);
+        rt.pump();
+        assert_eq!(stop(), StopIntent::None, "no stop while the paste is in flight");
+        assert!(switches(&rt).is_empty(), "{:?}", switches(&rt));
+        assert_eq!(status(&task_id), TurnStatus::Queued);
+
+        // The turn ran and ended; the agent takes input again: the switch.
+        rt.store.write(|s| s.turns.iter_mut().find(|t| t.id == user_id).unwrap().status = TurnStatus::Done).unwrap();
+        rt.live("a1").unwrap().ready_at_ms.store(1, Ordering::SeqCst);
+        rt.pump();
+        assert_eq!(switches(&rt), vec![json!({"from": "sonnet", "to": "opus", "why": "task"})]);
+        assert_eq!(status(&task_id), TurnStatus::Queued, "the task goes to the respawned process");
     }
 
     /// An explicit task model wins over a downgrade in force.
