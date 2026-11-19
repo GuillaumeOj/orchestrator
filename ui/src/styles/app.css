@@ -486,8 +486,12 @@ input.field {
   margin-right: auto;
   color: var(--color-text-muted);
 }
-/* Why Save is off (a section with a failing field). */
+/* Why Save is off (a section with a failing field); the left group takes the free space. */
+.sfoot > .dirty:has(+ .hint) {
+  margin-right: 0;
+}
 .sfoot > .hint {
+  margin-right: auto;
   color: var(--color-text-muted);
   font: var(--text-caption);
 }

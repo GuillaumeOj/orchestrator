@@ -49,6 +49,11 @@
     // Typing again clears the backend's message for that field.
     if (serverErr[row]) serverErr = { ...serverErr, [row]: undefined };
   };
+  /** Choosing another option also drops the backend's message: its path field is gone, so it could never be fixed. */
+  const pick = (row, kind) => {
+    draft[row].kind = kind;
+    edit(row);
+  };
 
   export function hasChanges() {
     return dirty;
@@ -107,7 +112,7 @@
     <div class="row" data-row="docs" role="radiogroup" aria-labelledby="fd-docs">
       <span class="lab" id="fd-docs">Docs</span>
       <div class="opts">
-        <label class="opt" class:on={draft.docs.kind === 'repo'}><input type="radio" name="fd-docs" checked={draft.docs.kind === 'repo'} onchange={() => (draft.docs.kind = 'repo')} /> In the repository</label>
+        <label class="opt" class:on={draft.docs.kind === 'repo'}><input type="radio" name="fd-docs" checked={draft.docs.kind === 'repo'} onchange={() => pick('docs', 'repo')} /> In the repository</label>
         {#if draft.docs.kind === 'repo'}
           <div class="sub">
             <input class="field mono" class:bad={errors.docs} aria-label="Docs folder" aria-invalid={!!errors.docs} aria-describedby={errors.docs ? 'fd-docs-err' : undefined} bind:value={draft.docs.path} oninput={() => edit('docs')} spellcheck="false" />
@@ -115,7 +120,7 @@
             <span class="muted hint">{'{slug}'} is the feature's short name</span>
           </div>
         {/if}
-        <label class="opt" class:on={draft.docs.kind === 'app'}><input type="radio" name="fd-docs" checked={draft.docs.kind === 'app'} onchange={() => (draft.docs.kind = 'app')} /> Not saved in the repository</label>
+        <label class="opt" class:on={draft.docs.kind === 'app'}><input type="radio" name="fd-docs" checked={draft.docs.kind === 'app'} onchange={() => pick('docs', 'app')} /> Not saved in the repository</label>
         {#if draft.docs.kind === 'app'}<p class="muted hint sub">Kept on this Mac only, never committed. Deleted with the feature.</p>{/if}
       </div>
     </div>
@@ -125,16 +130,16 @@
     <div class="row" data-row="designs" role="radiogroup" aria-labelledby="fd-designs">
       <span class="lab" id="fd-designs">Designs</span>
       <div class="opts">
-        <label class="opt" class:on={draft.designs.kind === 'with_docs'}><input type="radio" name="fd-designs" checked={draft.designs.kind === 'with_docs'} onchange={() => (draft.designs.kind = 'with_docs')} /> With the docs</label>
+        <label class="opt" class:on={draft.designs.kind === 'with_docs'}><input type="radio" name="fd-designs" checked={draft.designs.kind === 'with_docs'} onchange={() => pick('designs', 'with_docs')} /> With the docs</label>
         {#if draft.designs.kind === 'with_docs' && designsExample}<span class="muted ex mono sub">{designsExample}</span>{/if}
-        <label class="opt" class:on={draft.designs.kind === 'repo'}><input type="radio" name="fd-designs" checked={draft.designs.kind === 'repo'} onchange={() => (draft.designs.kind = 'repo')} /> In the repository</label>
+        <label class="opt" class:on={draft.designs.kind === 'repo'}><input type="radio" name="fd-designs" checked={draft.designs.kind === 'repo'} onchange={() => pick('designs', 'repo')} /> In the repository</label>
         {#if draft.designs.kind === 'repo'}
           <div class="sub">
             <input class="field mono" class:bad={errors.designs} aria-label="Designs folder" aria-invalid={!!errors.designs} aria-describedby={errors.designs ? 'fd-designs-err' : undefined} bind:value={draft.designs.path} oninput={() => edit('designs')} spellcheck="false" />
             {#if errors.designs}<span class="ferr" id="fd-designs-err" role="alert">{errors.designs}</span>{:else}<span class="muted ex mono">{designsExample}</span>{/if}
           </div>
         {/if}
-        <label class="opt" class:on={draft.designs.kind === 'app'}><input type="radio" name="fd-designs" checked={draft.designs.kind === 'app'} onchange={() => (draft.designs.kind = 'app')} /> Not saved in the repository</label>
+        <label class="opt" class:on={draft.designs.kind === 'app'}><input type="radio" name="fd-designs" checked={draft.designs.kind === 'app'} onchange={() => pick('designs', 'app')} /> Not saved in the repository</label>
         {#if draft.designs.kind === 'app'}<p class="muted hint sub">Kept on this Mac only, never committed. Deleted with the feature.</p>{/if}
       </div>
     </div>

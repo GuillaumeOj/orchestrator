@@ -279,6 +279,13 @@ describe('Feature page · where the docs live', () => {
     expect(container.querySelector('[data-docpath]')).toBeNull();
   });
 
+  it('designs With the docs while docs are not saved: the docs line only', async () => {
+    const { container } = await show(
+      view({ docs: { kind: 'app', dir: '/app/docs' }, designs: { kind: 'app', dir: '/app/docs/design' } }),
+    );
+    expect(container.querySelector('[data-loc="designs"]')).toBeNull();
+  });
+
   it('designs outside the docs folder get their own line', async () => {
     const { container } = await show(
       view({ docs: { kind: 'repo', dir: 'docs/specs/checkout' }, designs: { kind: 'app', dir: '/app/design' } }),

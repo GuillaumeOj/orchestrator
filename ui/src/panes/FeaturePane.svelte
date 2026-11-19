@@ -380,12 +380,7 @@
             <div class="tabs" role="tablist">
               {#each v.docs as d (d)}<button class="tab" class:on={doc.name === d} role="tab" aria-selected={doc.name === d} onclick={() => ((anchor = null), showDoc(d))}>{d}</button>{/each}
             </div>
-            {#if loc}
-              <div class="loc" data-docs-location>
-                {@render where(loc.docs, 'docs', '')}
-                {#if designsLine}{@render where(loc.designs, 'designs', 'Designs · ')}{/if}
-              </div>
-            {/if}
+            {@render locations()}
             {#if docPath}
               <div class="docpath" data-docpath>
                 <span class="mono muted ell" use:tooltip={docPath}>{docPath}</span>
@@ -394,12 +389,7 @@
             {/if}
             <div class="rendered"><Markdown text={doc.text} feature={spec.featureId} ondoc={openSibling} {anchor} {anchorAsked} /></div>
           {:else}
-            {#if loc}
-              <div class="loc" data-docs-location>
-                {@render where(loc.docs, 'docs', '')}
-                {#if designsLine}{@render where(loc.designs, 'designs', 'Designs · ')}{/if}
-              </div>
-            {/if}
+            {@render locations()}
             <p class="muted">No docs yet: the lead writes them in the spec step.</p>
           {/if}
         </section>
@@ -463,6 +453,15 @@
   </div>
   {#if v}<HintRow hints={tasksFocused ? taskHints : paneHints} />{/if}
 </div>
+
+{#snippet locations()}
+  {#if loc}
+    <div class="loc" data-docs-location>
+      {@render where(loc.docs, 'docs', '')}
+      {#if designsLine}{@render where(loc.designs, 'designs', 'Designs · ')}{/if}
+    </div>
+  {/if}
+{/snippet}
 
 {#snippet where(l, which, label)}
   <div class="locline" data-loc={which}>

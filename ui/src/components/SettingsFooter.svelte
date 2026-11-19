@@ -10,7 +10,7 @@
 
 <div class="sfoot foot">
   {#if dirty}<span class="dirty">Unsaved changes</span>{/if}
+  {#if hint}<span class="hint">{hint}</span>{/if}
   <button type="button" class="btn" disabled={!dirty} use:tooltip={revertKey ? { label: 'Revert', key: revertKey } : null} onclick={onrevert}>Revert</button>
   <button type="button" class="btn primary" disabled={busy || blocked || !dirty} use:tooltip={{ label: 'Save', key: '⌘⏎' }} onclick={onsave}>Save</button>
-  {#if hint}<span class="hint">{hint}</span>{/if}
 </div>

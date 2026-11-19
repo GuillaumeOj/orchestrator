@@ -9,7 +9,7 @@
   import { untrack } from 'svelte';
   import { activeAgents, agent, app, confirm, contextProject, deleteAgent, deleteFeature, features, focusCard, openAgent, openFeature, openProjectSettings, openSettings, openUrl, projects, refresh, setContext, toast } from '../lib/app.svelte.js';
   import { designTools, effectiveServers, kindLabel, nodeList } from '../lib/ecosystem.js';
-  import { resolveSetting, slashed } from '../lib/featuredocs.js';
+  import { locationOf, resolveSetting, slashed } from '../lib/featuredocs.js';
   import { clock, expandHome, shortPath } from '../lib/format.js';
   import { blockOf } from '../lib/inbox.js';
   import { basisText, blockedLine, dialogEstimate, originChip, ranBeforeLine, staleBanner, staleOf, subIssuesLine, trackerName } from '../lib/intake.js';
@@ -72,6 +72,7 @@
    *  dropped from the form. */
   function loadTeams(project_id) {
     error = null;
+    docsSetting = null; // not the previous project's folders while this one loads
     invoke('teams_view', { project: project_id || null })
       .then((v) => {
         if (launch.project_id !== project_id) return;
@@ -159,7 +160,8 @@
   // Where the lead writes the docs: an existing feature's own snapshot, else the project's setting resolved with the slug.
   const launchDocs = $derived.by(() => {
     const ex = launch.existing ? free.find((f) => f.id === launch.existing) : null;
-    if (ex?.docs_location?.docs?.dir) return ex.docs_location.docs;
+    // A feature created before the setting keeps the legacy folder (the backend never re-resolves it).
+    if (ex) return locationOf(ex).docs;
     return resolveSetting(docsSetting, launchSlug || '…').docs;
   });
 
