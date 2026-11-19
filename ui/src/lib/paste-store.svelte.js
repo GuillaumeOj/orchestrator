@@ -34,10 +34,6 @@ export function togglePaste(entry, n, local) {
   if (open && !local && !pasteUi.loaded[k]) loadPaste(entry, n);
 }
 
-export function closePaste(entry, n) {
-  pasteUi.open[pasteKey(entry, n)] = false;
-}
-
 /** For tests. */
 export function resetPastes() {
   for (const k of Object.keys(pasteUi.open)) delete pasteUi.open[k];
