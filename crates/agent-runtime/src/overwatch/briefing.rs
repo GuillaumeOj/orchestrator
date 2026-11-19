@@ -130,17 +130,7 @@ impl Runtime {
             for f in features.iter().filter(|f| f.project_id == p.id && !f.archived) {
                 let Some(run) = runs.iter().find(|r| r.feature_id == f.id) else { continue };
                 // Feature docs, spec.md first (the feature folder, links refused).
-                let files: Vec<String> = f
-                    .integration_worktree
-                    .as_ref()
-                    .map(|w| {
-                        let dir = w.join(".orchestrator/features").join(&f.slug);
-                        crate::team::feature_docs(w, &f.slug)
-                            .into_iter()
-                            .map(|n| dir.join(n).display().to_string())
-                            .collect()
-                    })
-                    .unwrap_or_default();
+                let files: Vec<String> = crate::feature_docs::doc_paths_of(f);
                 out.push(format!(
                     "  - feature {} ({}) · run {} {:?}{}",
                     f.title,

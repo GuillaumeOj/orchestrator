@@ -28,7 +28,7 @@ outside that list is unknown (−32602), and the core checks again (`Runtime::on
 | `ask_user(question, options?)` | team | An Inbox question; the reply comes back as a turn. |
 | `create_task(title, node, body?, depends_on?, status?)` | lead | A task in the project's backend (Local / GitHub); only once the spec is approved. |
 | `update_task(id, status?, notes?, node?)` | team | Status, note; reassign (lead). Specialists: own tasks, not Done. |
-| `request_spec_approval(summary)` | lead | The spec gate (docs committed in `.orchestrator/features/<slug>/`). |
+| `request_spec_approval(summary)` | lead | The spec gate (docs in the feature's docs folder: committed when it is in the repository, default `.orchestrator/features/<slug>/`). |
 | `merge(branch, task?)` | lead | The core merges `orch/<slug>/<node>-<n>` into the integration branch (outside the sandbox, hooks off); a conflict aborts and the owner is told; `task` → Done. |
 | `report_done(summary, task?)` | specialist | Task → Review, a report to the node it reports to. Refused with uncommitted changes. |
 | `sync_integration()` | specialist | The core merges the integration branch into the agent's branch; a conflict is left for the agent to fix and commit. |

@@ -488,6 +488,7 @@ pub(crate) mod tests {
             archived: false,
             issues: refs.iter().map(|r| IssueLink::new(r)).collect(),
             pr_mode: mode,
+            docs_location: None,
         }
     }
 

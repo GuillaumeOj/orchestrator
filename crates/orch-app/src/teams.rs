@@ -309,6 +309,13 @@ impl Core {
         rt.db.project(project_id)?.ok_or_else(|| anyhow!("no project {project_id}"))?;
         let mut raw = f.settings;
         raw.remove("external_files");
+        // Checked first: an invalid folder fails the whole save, its message
+        // naming the field (`feature_docs.docs.path: Must contain {slug}`).
+        // Absent from the form: the stored value stays.
+        let feature_docs = match raw.remove("feature_docs") {
+            None | Some(Value::Null) => None,
+            Some(v) => Some(orch_team::FeatureDocsSetting::from_form(&v).map_err(|e| anyhow!(e))?),
+        };
         let mut general: ProjectSettings = serde_json::from_value(Value::Object(raw))?;
         let old = rt.db.tracker(project_id)?;
         let new = old.clone().with_backend(&f.backend);
@@ -320,6 +327,11 @@ impl Core {
         rt.db.update_project_settings(project_id, move |e| {
             // FR-112: the stored list stays as the transaction read it.
             general.external_files = std::mem::take(&mut e.settings.external_files);
+            if let Some(fd) = feature_docs {
+                general.feature_docs = fd;
+            } else {
+                general.feature_docs = std::mem::take(&mut e.settings.feature_docs);
+            }
             e.settings = general;
             (e.backend, e.track_orchestrator_dir) = (backend, track);
             Ok(())

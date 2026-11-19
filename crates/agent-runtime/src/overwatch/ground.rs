@@ -4,7 +4,7 @@
 //! on the integration branch's worktree, or `chat:<id>` of an earlier
 //! decision the user answered.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::runtime::Runtime;
 use crate::store::AgentRecord;
@@ -28,8 +28,9 @@ impl Runtime {
         let Some(worktree) = worktree else {
             return Err(format!("{source}: no feature or project folder to read it from"));
         };
-        // Relative to the worktree (`docs/x.md`, `.orchestrator/features/f/x.md`)
-        // or to the feature folder (`api-contract.md`).
+        // Relative to the worktree (`docs/x.md`, `.orchestrator/features/f/x.md`),
+        // to the feature's docs folder (`api-contract.md`), or that folder's
+        // absolute path when it is kept in the app's data.
         let mut candidates = vec![worktree.join(path)];
         if let Some(f) = &feature_dir {
             candidates.push(f.join(path));
@@ -61,9 +62,9 @@ impl Runtime {
         let Some(seat) = &a.team else { return (Some(crate::paths::real(&a.repo)), None) };
         let feature = self.db.feature(&seat.feature_id).ok().flatten();
         let wt = feature.as_ref().and_then(|f| f.integration_worktree.clone());
-        let dir = feature.map(|f| Path::new(".orchestrator/features").join(f.slug));
+        let dir = feature.as_ref().and_then(crate::feature_docs::docs_dir_of);
         match (wt, dir) {
-            (Some(w), Some(d)) => (Some(w.clone()), Some(w.join(d))),
+            (Some(w), Some(d)) => (Some(w), Some(d)),
             _ => (None, None),
         }
     }

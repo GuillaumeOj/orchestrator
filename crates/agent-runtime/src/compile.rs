@@ -56,6 +56,65 @@ pub fn project_files_prompt(files: &[SpawnFile]) -> Option<String> {
     Some(out)
 }
 
+/// The head of the Feature folders section (change-how-specs-are-saved §3.4).
+pub const FEATURE_DIRS_INTRO: &str = "## Feature folders\nThis feature's docs and designs are not saved in the repository: they live in these folders of the app's data, outside your worktree, read & write for every agent of the team. Never commit them and never copy them into the repository.";
+
+/// The Feature folders section, `None` when every folder is in the repository.
+pub fn feature_dirs_prompt(dirs: &[PathBuf]) -> Option<String> {
+    if dirs.is_empty() {
+        return None;
+    }
+    let mut out = FEATURE_DIRS_INTRO.to_string();
+    for d in dirs {
+        out.push_str(&format!("\n- `{}/`", d.display()));
+    }
+    Some(out)
+}
+
+/// The feature folders as folders a project file would be (read & write).
+fn feature_spawn_files(ctx: &CompileCtx) -> Vec<SpawnFile> {
+    ctx.feature_dirs
+        .iter()
+        .map(|p| SpawnFile {
+            path: p.clone(),
+            kind: FileKind::Folder,
+            access: FileAccess::Write,
+            note: None,
+            missing: false,
+        })
+        .collect()
+}
+
+/// `Edit` denies for the app's data folder: all of it, or, when the agent
+/// has feature folders in it, everything there but the way down to them
+/// (what exists at compile time; the hard policy refuses the rest anyway).
+fn app_root_edit_denies(root: &Path, keep: &[PathBuf]) -> Vec<String> {
+    let keep: Vec<&PathBuf> = keep.iter().filter(|k| k.starts_with(root) && k.as_path() != root).collect();
+    if keep.is_empty() {
+        return vec![format!("Edit({}/**)", rule_path(root))];
+    }
+    fn walk(dir: &Path, keep: &[&PathBuf], out: &mut Vec<String>) {
+        let Ok(rd) = std::fs::read_dir(dir) else { return };
+        let mut entries: Vec<PathBuf> = rd.flatten().map(|e| e.path()).collect();
+        entries.sort();
+        for p in entries {
+            if keep.iter().any(|k| **k == p) {
+                continue;
+            }
+            if keep.iter().any(|k| k.starts_with(&p)) && p.is_dir() && !p.is_symlink() {
+                walk(&p, keep, out);
+            } else {
+                let r = rule_path(&p);
+                out.push(format!("Edit({r})"));
+                out.push(format!("Edit({r}/**)"));
+            }
+        }
+    }
+    let mut out = vec![];
+    walk(root, &keep, &mut out);
+    out
+}
+
 /// Credential stores made unreadable (ADR-009 decision 1). `true` = directory.
 /// `~/.gitconfig` is deliberately absent: denying it breaks git (P0).
 pub const CREDENTIAL_STORES: &[(&str, bool)] = &[
@@ -126,6 +185,10 @@ pub struct CompileCtx {
     pub git_identity: (String, String),
     /// FR-112: the project's files, re-checked at spawn.
     pub project_files: Vec<SpawnFile>,
+    /// The run's feature folders kept in the app's data (docs, designs; not
+    /// saved in the repository), read & write like a project folder. Empty
+    /// for a solo agent and the Overwatch.
+    pub feature_dirs: Vec<PathBuf>,
     /// The `[[sandbox]]` allowances that apply (spec §3.1), validated;
     /// empty for the Overwatch.
     pub sandbox: Allowances,
@@ -250,15 +313,17 @@ fn agent_rules(role: &Role, ctx: &CompileCtx, tools: &[String]) -> Rules {
         deny.push(format!("Edit({abs}/**)"));
     }
     deny.push(format!("Read({}/**)", rule_path(&ctx.app_root.join("state"))));
-    deny.push(format!("Edit({}/**)", rule_path(&ctx.app_root)));
+    deny.extend(app_root_edit_denies(&ctx.app_root, &ctx.feature_dirs));
     deny.extend(role.deny_rules.iter().cloned());
     let mut allow = role.allow_rules.clone();
     // FR-206: long turns are files in the agent's own `messages/` (outside
     // the worktree): reading them must not prompt. Nothing else of the app root.
     allow.push(format!("Read({}/**)", rule_path(&ctx.agent_dir.join("messages"))));
     allow.extend(tools.iter().map(|t| format!("mcp__{ORCH_MCP_SERVER}__{t}")));
-    // FR-112: project files. Missing ones are in the prompt only.
-    let present: Vec<&SpawnFile> = ctx.project_files.iter().filter(|f| !f.missing).collect();
+    // FR-112: project files. Missing ones are in the prompt only. The
+    // feature folders kept in the app's data get the same rules.
+    let feature = feature_spawn_files(ctx);
+    let present: Vec<&SpawnFile> = ctx.project_files.iter().chain(&feature).filter(|f| !f.missing).collect();
     for f in &present {
         let r = rule_path(&f.path);
         let pat = if f.kind == FileKind::Folder { format!("{r}/**") } else { r.clone() };
@@ -409,8 +474,12 @@ pub fn compile(role: &Role, ctx: &CompileCtx) -> Compiled {
     args.push("--permission-mode".into());
     args.push(role.permission_mode.as_flag().into());
     // FR-112: folders of the project files are working directories too (never for the Overwatch).
-    let present: Vec<&SpawnFile> =
-        if ctx.overwatch.is_some() { vec![] } else { ctx.project_files.iter().filter(|f| !f.missing).collect() };
+    let feature = feature_spawn_files(ctx);
+    let present: Vec<&SpawnFile> = if ctx.overwatch.is_some() {
+        vec![]
+    } else {
+        ctx.project_files.iter().chain(&feature).filter(|f| !f.missing).collect()
+    };
     for f in present.iter().filter(|f| f.kind == FileKind::Folder) {
         args.push("--add-dir".into());
         args.push(f.path.display().to_string());
@@ -427,6 +496,10 @@ pub fn compile(role: &Role, ctx: &CompileCtx) -> Compiled {
         None => preamble.to_string(),
     };
     if let Some(section) = project_files_prompt(&ctx.project_files).filter(|_| ctx.overwatch.is_none()) {
+        prompt.push_str("\n\n");
+        prompt.push_str(&section);
+    }
+    if let Some(section) = feature_dirs_prompt(&ctx.feature_dirs).filter(|_| ctx.overwatch.is_none()) {
         prompt.push_str("\n\n");
         prompt.push_str(&section);
     }
@@ -490,6 +563,7 @@ pub(crate) mod tests {
             env,
             git_identity: ("N".into(), "e@x".into()),
             project_files: vec![],
+            feature_dirs: vec![],
             sandbox: Allowances::default(),
             overwatch: None,
         }

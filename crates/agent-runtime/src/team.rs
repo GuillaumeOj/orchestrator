@@ -19,7 +19,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Result, anyhow, bail};
 use governor::{AgentId, TurnKind};
 use orch_git::commit::MergeOutcome;
 use orch_protocol::{WorktreeKindSpec, now_ms};
@@ -92,6 +92,7 @@ impl RunCtx {
             base: self.feature.base.clone(),
             issues: self.feature.issue_refs(),
             per_issue: self.feature.pr_mode == orch_store::PrMode::PerIssue,
+            docs: crate::feature_docs::FeatureDocs::of(&self.feature),
         }
     }
 }
@@ -422,6 +423,11 @@ impl Runtime {
                     archived: false,
                     issues: vec![],
                     pr_mode: Default::default(),
+                    // §3.2: the setting as it is now; later changes don't move it.
+                    docs_location: Some(project.typed_settings().feature_docs.resolve(
+                        &spec.slug,
+                        &crate::feature_docs::app_base(&self.cfg.paths.root, &project.id, &spec.slug).to_string_lossy(),
+                    )),
                 }
             }
         };
@@ -457,6 +463,8 @@ impl Runtime {
             feature.brief = spec.brief.trim().to_string();
         }
         self.db.upsert_feature(&feature)?;
+        // §3.4: the app folders exist before any agent is told about them.
+        crate::feature_docs::create_app_dirs(&crate::feature_docs::FeatureDocs::of(&feature))?;
         let run = TeamRun {
             id: format!("run-{}", &uuid::Uuid::new_v4().simple().to_string()[..10]),
             team_id: team.id.clone(),
@@ -514,7 +522,7 @@ impl Runtime {
         let hint =
             format!("{}{hint}", self.source_item_hint(&cx.run.id).map(|h| format!("{h}\n\n")).unwrap_or_default());
         format!(
-            "ORCH: you lead the team on feature {} ({}). Brief from the user:\n\n{}\n\n{hint}Follow your protocol: write the docs in {}, commit them, then call mcp__orch__request_spec_approval.",
+            "ORCH: you lead the team on feature {} ({}). Brief from the user:\n\n{}\n\n{hint}Follow your protocol: write the docs in {}, {}, then call mcp__orch__request_spec_approval.",
             feature.title,
             feature.slug,
             if feature.brief.is_empty() {
@@ -522,7 +530,8 @@ impl Runtime {
             } else {
                 &feature.brief
             },
-            cx.fctx().docs_dir()
+            cx.fctx().docs_dir(),
+            if cx.fctx().docs_in_app() { "do not commit them (not saved in the repository)" } else { "commit them" }
         )
     }
 
@@ -1490,7 +1499,13 @@ impl Runtime {
         }
         f.archived = true;
         self.db.upsert_feature(&f)?;
-        let out = json!({"deleted": f.slug, "agents": agents, "worktrees": worktrees});
+        // §3.4: its docs and designs kept in the app's data go with it
+        // (archiving a run keeps them). A failure is reported, not fatal.
+        let app_folder = match crate::feature_docs::remove_app_base(&self.cfg.paths.root, &f.project_id, &f.slug) {
+            Ok(removed) => json!({"removed": removed}),
+            Err(e) => json!({"error": format!("{e:#}")}),
+        };
+        let out = json!({"deleted": f.slug, "agents": agents, "worktrees": worktrees, "app_folder": app_folder});
         self.db.audit("user", None, "feature_deleted", Some(&f.slug), "ok", out.clone())?;
         Ok(out)
     }
@@ -1659,6 +1674,23 @@ impl Runtime {
                     bail!("kind is doc, design or build");
                 }
                 let note = str_arg(args, "note").unwrap_or("");
+                // §3.4: an absolute path only inside the run's feature folders
+                // kept in the app's data (canonical, so no `..` or link out).
+                let loc = crate::feature_docs::FeatureDocs::of(&cx.feature);
+                let app_file = artifact.trim().starts_with('/')
+                    && crate::feature_docs::in_app_dirs(&loc, Path::new(artifact.trim()));
+                if kind == "design" && artifact.trim().starts_with('/') && !app_file {
+                    let dirs = loc.app_dirs();
+                    if dirs.is_empty() {
+                        bail!("hand off a repo path (relative to your worktree), not an absolute path");
+                    }
+                    bail!("an absolute path must be an existing file in {}", dirs.join(" or "));
+                }
+                let meta = if app_file {
+                    Some(orch_team::artifact::app_file(artifact.trim()))
+                } else {
+                    orch_team::artifact::parse(artifact)
+                };
                 let id = self.db.add_artifact(&Artifact {
                     id: 0,
                     feature_id: cx.feature.id.clone(),
@@ -1669,7 +1701,7 @@ impl Runtime {
                     to_node: Some(to.into()),
                     note: cut(note, 2_000),
                     created_at_ms: now_ms(),
-                    meta: orch_team::artifact::parse(artifact),
+                    meta,
                 })?;
                 let body = if kind == "design" {
                     // Spec §3.2: the recipient gets the repo paths of every image exported so far.
@@ -2106,11 +2138,21 @@ impl Runtime {
                     bail!("the spec gate is for a run in spec (this one is {})", effective(&cx.run).label());
                 }
                 let summary = str_arg(args, "summary").ok_or_else(|| anyhow!("`summary` is required"))?;
+                let loc = crate::feature_docs::FeatureDocs::of(&cx.feature);
+                // Docs kept in the app's data are never committed; the worktree
+                // (code) must still be clean.
                 let st = orch_git::git(&rec.worktree, &["status", "--porcelain"])?;
                 if !st.trim().is_empty() {
-                    bail!("commit the docs with mcp__orch__commit first");
+                    bail!(
+                        "{}",
+                        if loc.docs.is_app() {
+                            "commit your changes with mcp__orch__commit first (the docs stay uncommitted)"
+                        } else {
+                            "commit the docs with mcp__orch__commit first"
+                        }
+                    );
                 }
-                let docs = feature_docs(&rec.worktree, &cx.feature.slug);
+                let docs = crate::feature_docs::feature_docs(&loc, &rec.worktree);
                 if docs.is_empty() {
                     bail!("no docs in {}: write spec.md first", FeatureCtx::docs_dir(&cx.fctx()));
                 }
@@ -2121,7 +2163,7 @@ impl Runtime {
                     json!({"action": "spec_approval", "run": cx.run.id, "feature": cx.feature.slug, "feature_id": cx.feature.id,
                            "summary": cut(summary, 4_000), "docs": docs, "worktree": rec.worktree,
                            "branch": cx.feature.integration_branch(),
-                           "doc_lines": doc_lines(&rec.worktree, &FeatureCtx::docs_dir(&cx.fctx()), &docs)}),
+                           "doc_lines": crate::feature_docs::doc_lines(&loc, &rec.worktree, &docs)}),
                     crate::inbox::PRIORITY_GATE,
                 )?;
                 self.advance_run(&cx.run.id, RunState::SpecGate, "spec gate asked")?;
@@ -2152,10 +2194,12 @@ impl Runtime {
                 "ORCH: approved: proceed. The user approved the spec. Create the tasks with mcp__orch__create_task (each to one node, with depends_on); they start by themselves.".to_string()
             })
         } else {
+            let in_app = self.run_ctx(run_id).is_ok_and(|cx| cx.fctx().docs_in_app());
             self.advance_run(run_id, RunState::Spec, "spec sent back").map(|_| {
                 format!(
-                    "ORCH: the user did not approve the spec.{} Revise the docs, commit, and call mcp__orch__request_spec_approval again.",
-                    message.map(|m| format!(" They said: {m}")).unwrap_or_default()
+                    "ORCH: the user did not approve the spec.{} Revise the docs, {}and call mcp__orch__request_spec_approval again.",
+                    message.map(|m| format!(" They said: {m}")).unwrap_or_default(),
+                    if in_app { "" } else { "commit, " }
                 )
             })
         };
@@ -2223,105 +2267,6 @@ impl Runtime {
         }
         json!(by_feature)
     }
-}
-
-/// The docs folder of a feature in a worktree, canonical. Refused when it
-/// (or `.orchestrator`) is a symlink out of the worktree: every read below
-/// is confined to it.
-fn feature_docs_dir(worktree: &Path, slug: &str) -> Result<std::path::PathBuf> {
-    let dir = worktree.join(".orchestrator").join("features").join(slug);
-    let (Ok(dir), Ok(top)) = (dir.canonicalize(), worktree.canonicalize()) else { bail!("not found") };
-    if !dir.starts_with(&top) {
-        bail!("outside the feature folder");
-    }
-    Ok(dir)
-}
-
-/// `[{path, lines}]` of the feature's docs (the spec gate's `docs` block).
-fn doc_lines(worktree: &Path, dir: &str, docs: &[String]) -> Value {
-    let files: Vec<Value> = docs
-        .iter()
-        .map(|d| {
-            let path = format!("{}/{d}", dir.trim_end_matches('/'));
-            let lines = std::fs::read_to_string(worktree.join(&path)).map(|t| t.lines().count()).unwrap_or(0);
-            json!({"path": path, "lines": lines})
-        })
-        .collect();
-    json!(files)
-}
-
-/// The markdown files in the feature's docs folder of a worktree.
-pub fn feature_docs(worktree: &Path, slug: &str) -> Vec<String> {
-    let mut v: Vec<String> = feature_docs_dir(worktree, slug)
-        .and_then(|dir| Ok(std::fs::read_dir(dir)?))
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter(|e| e.path().extension().is_some_and(|x| x == "md"))
-        .map(|e| e.file_name().to_string_lossy().into_owned())
-        .collect();
-    v.sort_by_key(|n| (n != "spec.md", n.clone()));
-    v
-}
-
-/// Reads one doc of a feature from a worktree (for the gate preview and the
-/// Feature pane), refusing anything outside the docs folder.
-pub fn read_feature_doc(worktree: &Path, slug: &str, name: &str) -> Result<String> {
-    if name.contains('/') || name.contains("..") || !name.ends_with(".md") {
-        bail!("invalid doc name {name:?}");
-    }
-    let p = feature_docs_dir(worktree, slug).with_context(|| format!("docs of {slug}"))?.join(name);
-    let text = std::fs::read_to_string(&p).with_context(|| format!("read {}", p.display()))?;
-    Ok(cut(&text, 200_000))
-}
-
-/// An image a feature doc points at (`design/home.png`), read from the docs
-/// folder of a worktree as `{mime, data_b64, bytes}`. Refuses anything that
-/// leaves the folder (`..`, absolute, a symlink to outside it), a symlink
-/// as the file itself, a non-image and a file over `MAX_PREVIEW_BYTES`.
-pub fn read_feature_asset(worktree: &Path, slug: &str, path: &str) -> Result<Value> {
-    use crate::artifacts::{MAX_PREVIEW_BYTES, base64, too_large};
-    use std::io::Read;
-    use std::os::unix::fs::OpenOptionsExt;
-    use std::path::Component;
-    let not_found = || anyhow!("not found");
-    // A leading `./` is a `CurDir` component.
-    let rel = Path::new(path);
-    if !rel.components().all(|c| matches!(c, Component::Normal(_) | Component::CurDir)) {
-        bail!("outside the feature folder");
-    }
-    let mime = orch_team::artifact::doc_image_mime(path).ok_or_else(|| anyhow!("not an image"))?;
-    let dir = feature_docs_dir(worktree, slug)?;
-    let p = dir.join(rel);
-    if std::fs::symlink_metadata(&p).map_err(|_| not_found())?.file_type().is_symlink() {
-        bail!("outside the feature folder");
-    }
-    let real = p.canonicalize().map_err(|_| not_found())?;
-    if !real.starts_with(&dir) {
-        bail!("outside the feature folder");
-    }
-    // The checks above are on the path; the read is on a handle that can't
-    // follow a symlink swapped in as the file since (a directory above it
-    // swapped in between is not caught), re-checked and capped (the worktree
-    // is the agents' to change while we read).
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-        .open(&real)
-        .map_err(|_| not_found())?;
-    let meta = file.metadata().map_err(|_| not_found())?;
-    if !meta.is_file() {
-        return Err(not_found());
-    }
-    if meta.len() > MAX_PREVIEW_BYTES {
-        return Err(too_large(meta.len()));
-    }
-    let mut bytes = Vec::with_capacity(meta.len() as usize);
-    file.take(MAX_PREVIEW_BYTES + 1).read_to_end(&mut bytes).map_err(|_| not_found())?;
-    if bytes.len() as u64 > MAX_PREVIEW_BYTES {
-        return Err(too_large(bytes.len() as u64));
-    }
-    Ok(json!({"mime": mime, "data_b64": base64(&bytes), "bytes": bytes.len()}))
 }
 
 #[cfg(test)]
@@ -3327,60 +3272,5 @@ pub(crate) mod tests {
     fn solo_sessions_have_only_the_solo_tools() {
         let (_d, rt) = test_runtime(false);
         assert!(call(&rt, "a1", "send_message", json!({"to": "x", "body": "y"})).1.contains("not one of your tools"));
-    }
-
-    #[test]
-    fn docs_are_read_only_from_the_feature_folder() {
-        let d = tempfile::tempdir().unwrap();
-        let dir = d.path().join(".orchestrator/features/f");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("spec.md"), "# S").unwrap();
-        std::fs::write(dir.join("api-contract.md"), "# A").unwrap();
-        assert_eq!(feature_docs(d.path(), "f"), vec!["spec.md", "api-contract.md"]);
-        assert_eq!(read_feature_doc(d.path(), "f", "spec.md").unwrap(), "# S");
-        for bad in ["../x.md", "a/b.md", "spec.txt"] {
-            assert!(read_feature_doc(d.path(), "f", bad).is_err());
-        }
-    }
-
-    #[test]
-    fn assets_are_images_confined_to_the_feature_folder() {
-        let d = tempfile::tempdir().unwrap();
-        let dir = d.path().join(".orchestrator/features/f");
-        std::fs::create_dir_all(dir.join("design")).unwrap();
-        std::fs::write(dir.join("design/home.png"), b"\x89PNG").unwrap();
-        std::fs::write(dir.join("flow.SVG"), "<svg/>").unwrap();
-        std::fs::write(dir.join("notes.txt"), "x").unwrap();
-        std::fs::write(d.path().join("secret.png"), b"s").unwrap();
-        let big = vec![0u8; crate::artifacts::MAX_PREVIEW_BYTES as usize + 1];
-        std::fs::write(dir.join("big.png"), big).unwrap();
-        std::os::unix::fs::symlink(d.path().join("secret.png"), dir.join("link.png")).unwrap();
-        std::os::unix::fs::symlink(d.path(), dir.join("up")).unwrap();
-        let get = |p: &str| read_feature_asset(d.path(), "f", p);
-        let err = |p: &str| get(p).unwrap_err().to_string();
-
-        for p in ["design/home.png", "./design/home.png"] {
-            assert_eq!(get(p).unwrap(), json!({"mime": "image/png", "data_b64": "iVBORw==", "bytes": 4}), "{p}");
-        }
-        assert_eq!(get("flow.SVG").unwrap()["mime"], "image/svg+xml");
-        for p in ["../../../secret.png", "design/../../x.png", "/etc/x.png", "link.png", "up/secret.png"] {
-            assert_eq!(err(p), "outside the feature folder", "{p}");
-        }
-        assert_eq!(err("notes.txt"), "not an image");
-        assert_eq!(err("design/missing.png"), "not found");
-        assert_eq!(err("design"), "not an image");
-        assert_eq!(err("big.png"), "too large (5.0 MB)");
-
-        // A feature folder symlinked out of the worktree confines nothing.
-        let out = d.path().join("elsewhere");
-        std::fs::create_dir_all(&out).unwrap();
-        std::fs::write(out.join("x.png"), b"x").unwrap();
-        std::fs::write(out.join("spec.md"), "# S").unwrap();
-        let wt = d.path().join("wt");
-        std::fs::create_dir_all(wt.join(".orchestrator/features")).unwrap();
-        std::os::unix::fs::symlink(&out, wt.join(".orchestrator/features/g")).unwrap();
-        assert_eq!(read_feature_asset(&wt, "g", "x.png").unwrap_err().to_string(), "outside the feature folder");
-        assert!(feature_docs(&wt, "g").is_empty());
-        assert!(read_feature_doc(&wt, "g", "spec.md").is_err());
     }
 }

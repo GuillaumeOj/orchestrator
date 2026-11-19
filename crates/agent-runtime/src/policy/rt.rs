@@ -187,6 +187,8 @@ impl Runtime {
             ctx.cwd = PathBuf::from(c);
         }
         ctx.extra_write = rec.role.extra_write.clone();
+        // The run's feature folders kept in the app's data (§3.4), and nothing else outside.
+        ctx.extra_write.extend(self.feature_app_dirs(rec));
         // The effective sandbox's hosts (api-contract §2): role, then allowances.
         ctx.network_allow = self.network_allow(rec, project.map(|p| p.id.as_str()));
         ctx

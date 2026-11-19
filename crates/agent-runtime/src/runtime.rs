@@ -1015,6 +1015,25 @@ impl Runtime {
         out
     }
 
+    /// What a spawn of `rec` would compile (tests: the sandbox and prompt).
+    #[cfg(test)]
+    pub(crate) fn compile_for_test(&self, rec: &AgentRecord) -> Result<crate::compile::Compiled> {
+        let (ctx, _) = self.compile_ctx(rec, SessionMode::New("s".into()), true)?;
+        Ok(compile(&rec.role, &ctx))
+    }
+
+    /// The app folders of `rec`'s feature (docs or designs not saved in the
+    /// repository; change-how-specs-are-saved §3.4). Empty for a solo agent
+    /// and the Overwatch.
+    pub(crate) fn feature_app_dirs(&self, rec: &AgentRecord) -> Vec<PathBuf> {
+        if rec.is_overwatch() {
+            return vec![];
+        }
+        let Some(seat) = rec.team.as_ref() else { return vec![] };
+        let Ok(Some(f)) = self.db.feature(&seat.feature_id) else { return vec![] };
+        crate::feature_docs::app_dirs(&crate::feature_docs::FeatureDocs::of(&f))
+    }
+
     /// What `p`'s files may not touch: the same bounds when adding and at spawn.
     pub fn project_file_bounds(&self, p: &orch_store::Project, home: &Path) -> Result<project_files::Bounds> {
         let all = self.db.projects(true)?;
@@ -1128,6 +1147,12 @@ impl Runtime {
         let main = real(&rec.repo);
         let project = self.agent_project(rec);
         let project_files = self.spawn_project_files(id, project.as_deref(), &env.home, quiet);
+        // Never the Overwatch's: it reads, never writes.
+        // Created if missing (a folder the user removed): the grant needs it.
+        let feature_dirs: Vec<PathBuf> = if overwatch.is_some() { vec![] } else { self.feature_app_dirs(rec) }
+            .into_iter()
+            .filter(|d| std::fs::create_dir_all(d).is_ok())
+            .collect();
         let ctx = CompileCtx {
             agent_id: id.into(),
             name: id.into(),
@@ -1149,6 +1174,7 @@ impl Runtime {
             git_identity: self.git_identity.clone(),
             sandbox: self.allowances(rec, project.as_deref()),
             project_files,
+            feature_dirs,
             overwatch,
         };
         Ok((ctx, project))
@@ -4227,7 +4253,7 @@ pub(crate) mod tests {
             db.write(|tx| {
                 tx.execute_batch(
                     "DROP INDEX usage_samples_session; ALTER TABLE usage_samples DROP COLUMN session_id;
-                     PRAGMA user_version = 22;",
+                     ALTER TABLE features DROP COLUMN docs_location; PRAGMA user_version = 22;",
                 )?;
                 Ok(())
             })

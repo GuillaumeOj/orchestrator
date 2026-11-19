@@ -168,6 +168,19 @@ pub fn repo_path(uri: &str) -> Option<String> {
     Some(p.to_string())
 }
 
+/// A file kept in the app's data (a design not saved in the repository),
+/// by its absolute path. The caller checks the path is in the feature's
+/// app folder.
+pub fn app_file(abs: &str) -> ArtifactMeta {
+    ArtifactMeta {
+        tool: "file".into(),
+        title: abs.rsplit('/').next().map(str::to_string),
+        previewable: image_mime(abs).is_some(),
+        path: Some(abs.to_string()),
+        ..Default::default()
+    }
+}
+
 /// Parses a hand-off URI. `None` for what is neither a link nor a repo path.
 pub fn parse(uri: &str) -> Option<ArtifactMeta> {
     let uri = uri.trim();

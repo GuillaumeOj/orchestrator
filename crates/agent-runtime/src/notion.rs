@@ -451,9 +451,10 @@ impl Runtime {
         let parent_raw = project.typed_settings().notion_parent_page.clone().unwrap_or_default();
         let parent = page_id(&parent_raw)
             .ok_or_else(|| anyhow!("set the project's Notion parent page in its settings first"))?;
-        let wt =
-            f.integration_worktree.clone().ok_or_else(|| anyhow!("feature {} has no integration worktree", f.slug))?;
-        let names = crate::team::feature_docs(&wt, &f.slug);
+        let wt = crate::feature_docs::read_root(&f)
+            .ok_or_else(|| anyhow!("feature {} has no integration worktree", f.slug))?;
+        let loc = crate::feature_docs::FeatureDocs::of(&f);
+        let names = crate::feature_docs::feature_docs(&loc, &wt);
         if names.is_empty() {
             bail!("feature {} has no docs on its integration branch", f.slug);
         }
@@ -477,7 +478,7 @@ impl Runtime {
             }
             let root = p.page_id.clone().ok_or_else(|| anyhow!("no page"))?;
             for n in &names {
-                let md = crate::team::read_feature_doc(&wt, &f.slug, n)?;
+                let md = crate::feature_docs::read_feature_doc(&loc, &wt, n)?;
                 let bl = blocks(&md);
                 match p.docs.get(n) {
                     Some(id) => replace_children(api.as_ref(), id, &bl).with_context(|| n.clone())?,
@@ -822,6 +823,7 @@ mod tests {
                 archived: false,
                 issues: vec![],
                 pr_mode: Default::default(),
+                docs_location: None,
             })
             .unwrap();
         let e = rt.notion_publish("f1").unwrap_err().to_string();
@@ -1000,6 +1002,7 @@ mod tests {
                 archived: false,
                 issues: vec![],
                 pr_mode: Default::default(),
+                docs_location: None,
             })
             .unwrap();
         let settings = orch_store::ProjectSettings {

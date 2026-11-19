@@ -144,6 +144,17 @@ impl Core {
     }
 
     /// Reveal in Finder (`open -R`), for a listed project file only.
+    /// `feature_docs_reveal`: opens a feature's docs or designs folder kept
+    /// in the app's data in Finder (the app opens it, never an agent).
+    pub fn feature_docs_reveal(&self, feature_id: &str, which: &str) -> Result<()> {
+        let dir = self.runtime()?.feature_docs_app_dir(feature_id, which)?;
+        let st = std::process::Command::new("open").arg(&dir).status()?;
+        if !st.success() {
+            bail!("{}: Finder could not show it", dir.display());
+        }
+        Ok(())
+    }
+
     pub fn reveal_path(&self, path: &str) -> Result<()> {
         let p = self.listed_project_file(path)?;
         let st = std::process::Command::new("open").arg("-R").arg(&p).status()?;

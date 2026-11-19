@@ -2,6 +2,7 @@
 
 pub mod artifact;
 pub mod compile;
+pub mod docs_location;
 pub mod export;
 pub mod mcp;
 pub mod model;
@@ -11,6 +12,7 @@ pub mod run;
 pub mod validate;
 
 pub use compile::{FeatureCtx, NodeConfig, compile_node, prs_line, tools_for};
+pub use docs_location::{DocsLocation, FeatureDocsSetting, Loc, LocKind};
 pub use export::{ImportError, TeamFile};
 pub use model::{
     AgentNode, Edge, EdgeKind, PermissionProfile, ReviewMode, RoleDef, RoleOverrides, Scope, StarterOrigin, Team,
