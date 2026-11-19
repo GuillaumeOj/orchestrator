@@ -2325,7 +2325,7 @@ fn a_board_write_without_the_scope_says_project_and_retry_all_clears_it_and_the_
     // Granted elsewhere: retry all.
     scope_granted(&f);
     let r = f.rt.writeback_retry_all(&f.project.id).unwrap();
-    assert_eq!(r, json!({"retried": 3, "ok": 3, "failed": 0, "last_failure": null}));
+    assert_eq!(r, json!({"retried": 3, "ok": 3, "skipped": 0, "failed": 0, "last_failure": null}));
     for n in [1, 2, 4] {
         assert_eq!(wb_status(&f, &format!("gh:acme/shop#{n}"))["status"], "ok");
     }
@@ -2395,23 +2395,37 @@ fn a_grant_answers_the_code_and_its_end_retries_the_failed_writes() {
     // The user authorizes: done, and every failed write of the project is retried.
     scope_granted(&f);
     *fr.exit.lock().unwrap() = Some(true);
+    // `granted` the moment gh exits 0 (the retries follow), then `done`.
+    let ev = rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+    assert_eq!(ev, json!({"state": "granted", "scope": "project"}));
     let ev = rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
     assert_eq!(ev["state"], "done");
-    assert_eq!(ev["retried"][&f.project.id], json!({"ok": 3, "failed": 0}));
+    assert_eq!(ev["retried"][&f.project.id], json!({"ok": 3, "skipped": 0, "failed": 0}));
     assert_eq!(wb_status(&f, "gh:acme/shop#2")["status"], "ok");
     assert!(failing_decisions(&f).is_empty());
     f.rt.db.flush().unwrap();
-    assert_eq!(f.rt.db.events(0, None, Some("gh.grant"), 5).unwrap().len(), 1);
+    assert_eq!(f.rt.db.events(0, None, Some("gh.grant"), 5).unwrap().len(), 2);
     // Cancelled: killed, `failed` posted, a new grant can start.
     let fr = fake_refresh(&f, A_CODE);
     f.rt.gh_grant_scope("project").unwrap();
     assert_eq!(f.rt.gh_grant_cancel(), json!({"ok": true, "cancelled": true}));
+    // The slot is free at once: the next grant runs its own gh, with its own code.
+    let again = fake_refresh(&f, &["! First copy your one-time code: NEW1-0000", "https://github.com/login/device"]);
+    let b = f.rt.gh_grant_scope("project").unwrap();
+    assert_eq!(b["code"], "NEW1-0000");
+    assert_eq!(f.net.refreshed.lock().unwrap().len(), 5);
     let ev = rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
     assert_eq!(
         (ev["state"].as_str(), ev["message"].as_str(), &ev["retried"]),
         (Some("failed"), Some("cancelled"), &Value::Null)
     );
     assert!(fr.killed.load(std::sync::atomic::Ordering::SeqCst));
+    // (the cancelled grant's end does not free the new grant's slot)
+    assert_eq!(f.rt.gh_grant_scope("project").unwrap(), b);
+    assert_eq!(f.rt.gh_grant_cancel()["cancelled"], true);
+    let ev = rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+    assert_eq!(ev["message"], "cancelled");
+    assert!(again.killed.load(std::sync::atomic::Ordering::SeqCst));
     assert_eq!(f.rt.gh_grant_cancel()["cancelled"], false);
     // gh fails at the end with nothing more said (its later stderr line would be the message).
     let fr = fake_refresh(&f, A_CODE);
@@ -2420,6 +2434,41 @@ fn a_grant_answers_the_code_and_its_end_retries_the_failed_writes() {
     let ev = rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
     assert_eq!(ev["state"], "failed");
     assert_eq!(ev["message"], "gh auth refresh failed");
+}
+
+#[test]
+fn a_retry_that_skips_a_node_clears_its_failure_and_counts_it_skipped() {
+    let f = work_fixture();
+    scope_failures(&f);
+    assert_eq!(failing_decisions(&f).len(), 1);
+    // Write-back off: nothing can be written, so nothing is failing either.
+    let mut t = f.rt.db.tracker(&f.project.id).unwrap();
+    t.write_back.enabled = false;
+    f.rt.db.set_tracker(&f.project.id, &t).unwrap();
+    let r = f.rt.writeback_retry_all(&f.project.id).unwrap();
+    assert_eq!(
+        (r["retried"].as_u64(), r["ok"].as_u64(), r["skipped"].as_u64(), r["failed"].as_u64()),
+        (Some(0), Some(0), Some(3), Some(0))
+    );
+    assert!(f.rt.wb_failed(&f.project.id).is_empty());
+    assert!(failing_decisions(&f).is_empty());
+    assert_eq!(f.rt.writeback_retry_all(&f.project.id).unwrap()["skipped"], 0);
+}
+
+#[test]
+fn a_single_retry_that_skips_clears_the_failure_and_the_decision() {
+    let f = work_fixture();
+    scope_failures(&f);
+    let mut t = f.rt.db.tracker(&f.project.id).unwrap();
+    t.write_back.enabled = false;
+    f.rt.db.set_tracker(&f.project.id, &t).unwrap();
+    for n in [1, 2] {
+        f.rt.writeback_retry(&format!("gh:acme/shop#{n}")).unwrap();
+        assert_eq!(f.rt.wb_failed(&f.project.id).len(), 3 - n as usize);
+    }
+    assert_eq!(failing_decisions(&f).len(), 1);
+    f.rt.writeback_retry("gh:acme/shop#4").unwrap();
+    assert!(failing_decisions(&f).is_empty());
 }
 
 const A_CODE: &[&str] = &["! First copy your one-time code: WXYZ-9876", "https://github.com/login/device"];

@@ -114,23 +114,31 @@ impl Runtime {
         }
     }
 
-    /// Runs `op` when write-back applies; records the outcome.
-    pub(crate) fn wb_run(&self, project: &str, node: &str, op: &WbOp) {
-        let Ok(Some(p)) = self.db.project(project) else { return };
-        let Ok(t) = self.db.tracker(project) else { return };
+    /// Runs `op` when write-back applies and records the outcome; false when it does not apply
+    /// (write-back off, the node gone, not an item of the project's tracker): nothing ran.
+    pub(crate) fn wb_run(&self, project: &str, node: &str, op: &WbOp) -> bool {
+        let Ok(Some(p)) = self.db.project(project) else { return false };
+        let Ok(t) = self.db.tracker(project) else { return false };
         if !t.write_back.enabled || t.tracker.kind() == "local" {
-            return;
+            return false;
         }
         let Some(row) = self.db.work_node_rows(node).ok().and_then(|r| r.into_iter().find(|r| r.project_id == project))
         else {
-            return;
+            return false;
         };
         // Only items of the project's tracker.
         if !self.wb_owns(&p, &t, &row) {
-            return;
+            return false;
         }
         let r = self.wb_apply(&p, &t, &row, op);
         self.wb_record(&p, &row, op, r);
+        true
+    }
+
+    /// Drops the failed status of a node whose write no longer applies (a retry skipped it).
+    fn wb_clear(&self, project: &str, node: &str) {
+        let _ = self.db.set_setting(&status_key(project, node), &Value::Null);
+        self.db.note([crate::intake::TOPIC]);
     }
 
     /// Whether `row` is an item of the tracker this project is set to.
@@ -354,7 +362,12 @@ impl Runtime {
         }
         let op: WbOp =
             serde_json::from_value(st["op"].clone()).map_err(|e| anyhow!("the failed write is not readable: {e}"))?;
-        self.wb_run(&row.project_id, node, &op);
+        if !self.wb_run(&row.project_id, node, &op) {
+            self.wb_clear(&row.project_id, node);
+            if self.wb_failed(&row.project_id).is_empty() {
+                self.wb_resolve(&row.project_id);
+            }
+        }
         Ok(self.db.setting(&status_key(&row.project_id, node))?.unwrap_or_default())
     }
 
@@ -366,10 +379,15 @@ impl Runtime {
             return Err(crate::issues::coded("not_found", format!("no project {project:?}"), None));
         }
         let failed = self.wb_failed(project);
+        let mut skipped = 0;
         for (node, st) in &failed {
             // (a status whose op does not read is left failed: it counts below)
-            if let Ok(op) = serde_json::from_value::<WbOp>(st["op"].clone()) {
-                self.wb_run(project, node, &op);
+            if let Ok(op) = serde_json::from_value::<WbOp>(st["op"].clone())
+                && !self.wb_run(project, node, &op)
+            {
+                // Write-back off, the node gone or not the tracker's: there is nothing to retry, so nothing failed.
+                self.wb_clear(project, node);
+                skipped += 1;
             }
         }
         let left = self.wb_failed(project);
@@ -378,7 +396,10 @@ impl Runtime {
         }
         // (a write that failed meanwhile, on another node, is not one of these)
         let ok = failed.iter().filter(|(n, _)| !left.iter().any(|(l, _)| l == n)).count();
-        Ok(json!({"retried": failed.len(), "ok": ok, "failed": left.len(), "last_failure": last_failure(&left)}))
+        let (ok, retried) = (ok - skipped, failed.len() - skipped);
+        Ok(
+            json!({"retried": retried, "ok": ok, "skipped": skipped, "failed": left.len(), "last_failure": last_failure(&left)}),
+        )
     }
 
     /// The failed write-backs of a project, in node order (`(node, status)`).
@@ -404,6 +425,8 @@ impl Runtime {
             .settings_prefixed(&prefix)
             .unwrap_or_default()
             .into_iter()
+            // (a cleared status is null)
+            .filter(|(_, v)| v.is_object())
             .filter_map(|(k, v)| Some((k.strip_prefix(&prefix)?.to_string(), v)))
             .collect()
     }
