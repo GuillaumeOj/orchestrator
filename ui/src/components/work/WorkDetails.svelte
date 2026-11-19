@@ -222,7 +222,7 @@
               <div class="hist" class:warn={h.what === 'writeback_failed'}>
                 <span class="muted when">{dayHm(h.at_ms)}</span>
                 <span>{historyText(h, node)}</span>
-                {#if h.what === 'writeback_failed'}<button type="button" class="link" onclick={() => act('writeback')}>Retry</button>{/if}
+                {#if h.what === 'writeback_failed'}<button type="button" class="link" onclick={() => act('writeback')}>Retry</button>{#if node.writeback?.status === 'failed' && node.writeback.code === 'gh_scope' && node.project}<button type="button" class="link" data-fix-writeback onclick={() => act('fix-writeback', node.project)}>Fix</button>{/if}{/if}
               </div>
             {/each}
             {#if history.length > 8 && !historyAll}<button type="button" class="link" onclick={() => (historyAll = true)}>Show all</button>{/if}

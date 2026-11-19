@@ -138,7 +138,7 @@ describe('sourceModel (notes §9.1)', () => {
       sourceModel({
         source: { ...SOURCE, writeback: { status: 'failed', message: 'could not move #13 to In progress' } },
       }).writeBack,
-    ).toEqual({ state: 'failed', text: 'Write-back failed: could not move #13 to In progress' });
+    ).toEqual({ state: 'failed', text: 'Write-back failed: could not move #13 to In progress', fixable: false });
     expect(sourceModel({ source: { ...SOURCE, closed_upstream: true } }).closed).toBe('closed in GitHub');
     expect(sourceModel({ source: { ...SOURCE, deleted: true } })).toMatchObject({
       deleted: '#13 was deleted in GitHub. The run continues.',
@@ -188,6 +188,17 @@ describe('Feature pane: source header', () => {
     );
     await fireEvent.click(getByText('Retry'));
     expect(calls.some(([c, a]) => c === 'writeback_retry' && a.node === 'gh:acme/shop#13')).toBe(true);
+  });
+  it('write-back failed with gh_scope: Fix opens Project settings › Tracker at the Write back block', async () => {
+    const open = vi.spyOn(A, 'openProjectSettings').mockImplementation(() => {});
+    const wbf = { status: 'failed', message: 'gh needs the project scope', code: 'gh_scope', scope: 'project' };
+    const { container } = await pane(view({}, { source: { ...SOURCE, writeback: wbf } }));
+    await fireEvent.click(container.querySelector('[data-fix-writeback]'));
+    expect(open).toHaveBeenCalledWith('shop-api', 'tracker', null, 'write_back');
+    cleanup();
+    const other = await pane(view({}, { source: { ...SOURCE, writeback: { ...wbf, code: 'failed' } } }));
+    expect(other.container.querySelector('[data-fix-writeback]')).toBeNull();
+    open.mockRestore();
   });
   it('closed upstream tail; deleted upstream hides Show in Work', async () => {
     const a = await pane(view({}, { source: { ...SOURCE, closed_upstream: true } }));

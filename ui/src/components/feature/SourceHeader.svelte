@@ -1,7 +1,7 @@
 <script>
   // Feature pane › source header (notes §9.1; S14 deleted upstream, S15 write-back failed): the tracker item the
   // run started from, two lines, no card border. From `run.source`.
-  import { openUrl, toast } from '../../lib/app.svelte.js';
+  import { openProjectSettings, openUrl, toast } from '../../lib/app.svelte.js';
   import { errText, invoke } from '../../lib/ipc.js';
   import { sourceModel } from '../../lib/source.js';
   import { tooltip } from '../../lib/tooltip.js';
@@ -55,6 +55,7 @@
       {#if m.writeBack?.state === 'failed'}
         <span class="warn" data-writeback="failed">· {m.writeBack.text} ·</span>
         <button type="button" class="link" disabled={retrying} onclick={retry}>Retry</button>
+        {#if m.writeBack.fixable}<button type="button" class="link" data-fix-writeback onclick={() => openProjectSettings(project, 'tracker', null, 'write_back')}>Fix</button>{/if}
       {:else if m.writeBack}<span data-writeback={m.writeBack.state}>· {m.writeBack.text}</span>{/if}
       <!-- "· closed in GitHub" is the tail, after the write-back text. -->
       {#if m.closed}<span class="warn" use:tooltip={'The run continues. Stop it from the feature if needed.'}>· {m.closed}</span>{/if}

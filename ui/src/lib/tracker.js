@@ -241,6 +241,32 @@ export function sampleWhere(node, kind) {
   return [where, node.ready ? 'ready' : ''].filter(Boolean).join(' · ');
 }
 
+/** The scopes the Grant access button can add (api-contract §3). */
+export const GRANTABLE = ['project', 'read:project'];
+
+/**
+ * The Write back access row (spec §4.5) from a `tracker_gh_access` answer (null while checking):
+ * { state: checking|ok|missing|unknown|gh|offline|error, text, scope?, canGrant?, fix? }.
+ */
+export function accessView(a) {
+  if (!a) return { state: 'checking', text: 'Checking GitHub access…' };
+  if (a.gh === 'error') return { state: 'error', text: a.message || "Couldn't check GitHub access." };
+  if (a.gh === 'missing' || a.gh === 'logged_out') {
+    const code = a.gh === 'missing' ? 'gh_missing' : 'gh_auth';
+    return { state: 'gh', text: errorInfo({ code }).text, fix: 'integrations', code };
+  }
+  if (a.gh === 'offline') return { state: 'offline', text: "Can't reach GitHub to check access." };
+  const missing = a.missing ?? [];
+  if (missing.length) {
+    const scope = missing.includes('project') ? 'project' : missing[0];
+    const what = scope === 'project' ? 'to move items on the board' : 'to read the board';
+    return { state: 'missing', scope, canGrant: GRANTABLE.includes(scope), text: `GitHub needs the ${scope} scope ${what}.` };
+  }
+  if (a.granted == null && (a.needed ?? []).length) return { state: 'unknown', text: "Orchestrator can't check this gh login's scopes." };
+  const needed = a.needed ?? [];
+  return { state: 'ok', text: `GitHub access OK${needed.length ? ` (${needed.join(', ')})` : ''}.` };
+}
+
 /** A source error in words, with the Tracker fixes of notes §10.7 on top of the shared table. */
 export function trackerError(error, kind, name = null, now = Date.now()) {
   const code = error?.code;

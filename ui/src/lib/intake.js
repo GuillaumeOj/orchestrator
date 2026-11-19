@@ -174,7 +174,11 @@ export function ageText(ms, now = Date.now()) {
 /** Where a `fix` of `integrations` lands: the Settings › Integrations row of the source. */
 export const integrationsRow = (code) => (code?.startsWith('linear') ? 'linear' : 'github');
 
-export const GH_SCOPE_COMMAND = 'gh auth refresh -s read:project';
+/** The scope a `gh_scope` error names (GitHub's own; `read:project` when the error has none). */
+export const scopeOf = (error) => error?.scope || 'read:project';
+
+/** The command that adds `scope` to the gh login. */
+export const ghScopeCommand = (scope = 'read:project') => `gh auth refresh -h github.com -s ${scope}`;
 
 /**
  * A source error in words (§4.2, F1–F3): { text, fix, tip, retry_at_ms }. `fix` is what the
@@ -189,14 +193,14 @@ export function errorInfo(error, source = {}, now = Date.now()) {
     String(s ?? '')
       .split('\n')[0]
       .slice(0, 120);
-  const t = (text, fix) => ({ code, text, fix, tip, retry_at_ms: error?.retry_at_ms ?? null });
+  const t = (text, fix) => ({ code, text, fix, tip, retry_at_ms: error?.retry_at_ms ?? null, scope: code === 'gh_scope' ? scopeOf(error) : undefined });
   switch (code) {
     case 'gh_missing':
       return t('GitHub CLI not found', 'integrations');
     case 'gh_auth':
       return t('GitHub: not logged in', 'integrations');
     case 'gh_scope':
-      return t('GitHub needs the read:project scope', 'gh_scope');
+      return t(`GitHub needs the ${scopeOf(error)} scope`, 'gh_scope');
     case 'not_found':
       return t(`${repo} not found, or you have no access`, 'settings');
     case 'linear_key':

@@ -8,6 +8,7 @@ import { pick, picked } from './pick.js';
 
 const calls = [];
 const replies = {};
+const listeners = {};
 vi.mock('../src/lib/ipc.js', () => ({
   inTauri: false,
   invoke: (cmd, args) => {
@@ -15,8 +16,19 @@ vi.mock('../src/lib/ipc.js', () => ({
     const r = replies[cmd];
     return r instanceof Error ? Promise.reject(r) : Promise.resolve(typeof r === 'function' ? r(args) : r);
   },
-  listen: () => Promise.resolve(() => {}),
+  listen: (ev, fn) => {
+    listeners[ev] = fn;
+    return Promise.resolve(() => {});
+  },
   errText: (e) => (typeof e === 'string' ? e : (e?.message ?? String(e))),
+}));
+
+const openUrl = vi.fn();
+const copyText = vi.fn((_t, _w) => Promise.resolve());
+vi.mock('../src/lib/app.svelte.js', async () => ({
+  .../** @type {any} */ (await vi.importActual('../src/lib/app.svelte.js')),
+  openUrl: (/** @type {any} */ u) => openUrl(u),
+  copyText: (/** @type {any} */ t, /** @type {any} */ w) => copyText(t, w),
 }));
 
 const { default: ProjectSettingsWindow } = await import('../src/components/ProjectSettingsWindow.svelte');
@@ -100,6 +112,10 @@ beforeEach(() => {
   replies.tracker_options = GH_OPTS;
   replies.tracker_settings_set = (a) => ({ settings: a.settings, migration_notice: null });
   replies.tracker_notice_dismiss = undefined;
+  replies.tracker_gh_access = { gh: 'ok', account: 'me', needed: ['read:project', 'project'], granted: ['repo', 'project'], missing: [], failed_writes: 0, last_failure: null };
+  for (const k of Object.keys(listeners)) delete listeners[k];
+  openUrl.mockClear();
+  copyText.mockClear();
 });
 
 describe('Tracker helpers', () => {
@@ -474,7 +490,7 @@ describe('Tracker › errors', () => {
     replies.tracker_options = { error: { code: 'gh_scope', message: 'scope' } };
     const { container } = open(github());
     await waitFor(() => expect(container.querySelector('[data-gh-scope]')).toBeTruthy());
-    expect(txt(container.querySelector('[data-gh-scope]'))).toContain('gh auth refresh -s read:project');
+    expect(txt(container.querySelector('[data-gh-scope]'))).toContain('gh auth refresh -h github.com -s read:project');
   });
 
   it('not set up: points to Integrations', async () => {
@@ -694,5 +710,131 @@ describe('Tracker › review follow-ups', () => {
     await waitFor(() =>
       expect(r.container.querySelector('[data-unmapped]')?.textContent).toContain('State "Weird" isn\'t mapped.'),
     );
+  });
+});
+
+describe('Write back access row (fix-write-back-github §4.5)', () => {
+  const board = () =>
+    github({ tracker: { kind: 'github', repo: 'acme/shop', project_board: { owner: 'acme', number: 4 } } });
+  const row = (c) => c.querySelector('[data-wb-access]');
+  const MISSING = {
+    gh: 'ok',
+    account: 'me',
+    needed: ['read:project', 'project'],
+    granted: ['repo', 'read:project'],
+    missing: ['project'],
+    failed_writes: 3,
+    last_failure: { node: 'gh:acme/shop#12', message: 'gh needs the project scope', code: 'gh_scope', scope: 'project' },
+  };
+
+  it('ok: muted line with the needed scopes, no action', async () => {
+    const r = open(board());
+    await waitFor(() => expect(row(r.container)?.getAttribute('data-wb-access')).toBe('ok'));
+    expect(txt(row(r.container))).toContain('GitHub access OK (read:project, project).');
+    expect(row(r.container).querySelector('button')).toBeNull();
+    expect(last('tracker_gh_access')).toEqual({ project: 'shop-api' });
+  });
+
+  it('missing scope → Grant access → code → Open GitHub → done shows the retried result', async () => {
+    replies.tracker_gh_access = MISSING;
+    replies.gh_grant_scope = { state: 'waiting', code: 'ABCD-1234', url: 'https://github.com/login/device', scope: 'project' };
+    const r = open(board());
+    await waitFor(() => expect(txt(row(r.container))).toContain('GitHub needs the project scope to move items on the board.'));
+    expect(txt(row(r.container))).toContain('3 write-backs failed: gh needs the project scope.');
+    await fireEvent.click(r.getByRole('button', { name: 'Grant access' }));
+    await waitFor(() => expect(row(r.container).getAttribute('data-wb-access')).toBe('granting'));
+    expect(last('gh_grant_scope')).toEqual({ scope: 'project' });
+    expect(txt(row(r.container))).toContain('Enter ABCD-1234 on GitHub.');
+    await fireEvent.click(r.getByRole('button', { name: 'Open GitHub' }));
+    expect(openUrl).toHaveBeenCalledWith('https://github.com/login/device');
+    expect(copyText).toHaveBeenCalledWith('ABCD-1234', 'the code');
+    replies.tracker_gh_access = { ...MISSING, granted: ['repo', 'project'], missing: [], failed_writes: 0, last_failure: null };
+    listeners.gh_grant({ payload: { state: 'done', scope: 'project', message: null, retried: { 'shop-api': { ok: 3, failed: 0 } } } });
+    await waitFor(() => expect(txt(row(r.container))).toContain('Access granted. Retried 3: 3 done.'));
+    await waitFor(() => expect(row(r.container).getAttribute('data-wb-access')).toBe('ok'));
+    expect(row(r.container).querySelector('[data-failed-writes]')).toBeNull();
+  });
+
+  it('Copy command copies the command for the missing scope', async () => {
+    replies.tracker_gh_access = MISSING;
+    const r = open(board());
+    await waitFor(() => expect(r.getByRole('button', { name: 'Copy command' })).toBeTruthy());
+    await fireEvent.click(r.getByRole('button', { name: 'Copy command' }));
+    expect(copyText).toHaveBeenCalledWith('gh auth refresh -h github.com -s project', 'the command');
+  });
+
+  it('grant failed: its message and Copy command; Cancel calls gh_grant_cancel', async () => {
+    replies.tracker_gh_access = MISSING;
+    replies.gh_grant_scope = { state: 'waiting', code: 'ABCD-1234', url: 'https://github.com/login/device', scope: 'project' };
+    replies.gh_grant_cancel = { ok: true, cancelled: true };
+    const r = open(board());
+    await waitFor(() => r.getByRole('button', { name: 'Grant access' }));
+    await fireEvent.click(r.getByRole('button', { name: 'Grant access' }));
+    await waitFor(() => r.getByRole('button', { name: 'Cancel' }));
+    await fireEvent.click(r.getByRole('button', { name: 'Cancel' }));
+    expect(called('gh_grant_cancel')).toHaveLength(1);
+    await fireEvent.click(r.getByRole('button', { name: 'Grant access' }));
+    await waitFor(() => r.getByRole('button', { name: 'Open GitHub' }));
+    listeners.gh_grant({ payload: { state: 'failed', scope: 'project', message: 'timed out', retried: null } });
+    await waitFor(() => expect(txt(r.container.querySelector('[data-grant-note]'))).toContain('timed out'));
+    expect(r.container.querySelector('[data-grant-note] button')?.textContent).toBe('Copy command');
+  });
+
+  it('interactive_only: no code, message and Copy command only', async () => {
+    replies.tracker_gh_access = MISSING;
+    replies.gh_grant_scope = new Error(JSON.stringify({ code: 'interactive_only', message: 'gh needs a terminal' }));
+    const r = open(board());
+    await waitFor(() => r.getByRole('button', { name: 'Grant access' }));
+    await fireEvent.click(r.getByRole('button', { name: 'Grant access' }));
+    await waitFor(() => expect(txt(r.container.querySelector('[data-grant-note]'))).toContain('gh needs a terminal'));
+    expect(r.container.querySelector('[data-grant-code]')).toBeNull();
+  });
+
+  it('read:project and project only are grantable', async () => {
+    replies.tracker_gh_access = { ...MISSING, missing: ['workflow'] };
+    const r = open(board());
+    await waitFor(() => expect(txt(row(r.container))).toContain('GitHub needs the workflow scope'));
+    expect(r.queryByRole('button', { name: 'Grant access' })).toBeNull();
+    expect(r.getByRole('button', { name: 'Copy command' })).toBeTruthy();
+  });
+
+  it('unknown scopes: says so; Copy command only when a failure is gh_scope; Retry failed writes retries all', async () => {
+    replies.tracker_gh_access = { ...MISSING, granted: null, missing: [] };
+    replies.writeback_retry_all = { retried: 3, ok: 2, failed: 1, last_failure: null };
+    const r = open(board());
+    await waitFor(() => expect(txt(row(r.container))).toContain("Orchestrator can't check this gh login's scopes."));
+    expect(r.getByRole('button', { name: 'Copy command' })).toBeTruthy();
+    await fireEvent.click(r.getByRole('button', { name: 'Retry failed writes' }));
+    await waitFor(() => expect(last('writeback_retry_all')).toEqual({ project: 'shop-api' }));
+    await waitFor(() => expect(txt(row(r.container))).toContain('Retried 3: 2 done, 1 still failing.'));
+  });
+
+  it('gh missing / logged out / offline', async () => {
+    replies.tracker_gh_access = { ...MISSING, gh: 'logged_out', missing: [], failed_writes: 0 };
+    const a = open(board());
+    await waitFor(() => expect(txt(row(a.container))).toContain('GitHub: not logged in'));
+    expect(a.getByRole('button', { name: 'Open Integrations' })).toBeTruthy();
+    cleanup();
+    replies.tracker_gh_access = { ...MISSING, gh: 'offline', missing: [], failed_writes: 0 };
+    const b = open(board());
+    await waitFor(() => expect(txt(row(b.container))).toContain("Can't reach GitHub"));
+  });
+
+  it('not shown for Linear or with write-back off', async () => {
+    const a = open(linear());
+    await waitFor(() => a.getByText(/Update Linear as work runs/));
+    expect(row(a.container)).toBeNull();
+    cleanup();
+    const b = open(github({ write_back: { ...wb, enabled: false } }));
+    await waitFor(() => b.getByText(/Update GitHub as work runs/));
+    expect(row(b.container)).toBeNull();
+    expect(called('tracker_gh_access')).toHaveLength(0);
+  });
+
+  it('the board picker error names the scope of the error', async () => {
+    replies.tracker_options = { error: { code: 'gh_scope', message: 'x', scope: 'project' } };
+    const r = open(github());
+    await waitFor(() => expect(r.container.querySelector('[data-gh-scope]')).toBeTruthy());
+    expect(txt(r.container.querySelector('[data-gh-scope]'))).toContain('gh auth refresh -h github.com -s project');
   });
 });

@@ -477,6 +477,24 @@ describe('details panel rules (U1 visual QA)', () => {
   const details = (props) =>
     render(WorkDetails, { act: () => {}, detail: { body: '', history: [] }, ...props }).container;
 
+  it('write-back failed (gh_scope): history line has Retry and a Fix that opens the Write back block', async () => {
+    const act = vi.fn();
+    const n = wn('gh:acme/shop#13', { writeback: { status: 'failed', code: 'gh_scope', scope: 'project', message: 'm' } });
+    const c = details({
+      node: n,
+      act,
+      detail: { body: '', history: [{ what: 'writeback_failed', at_ms: 0 }] },
+    });
+    await fireEvent.click(c.querySelector('[data-fix-writeback]'));
+    expect(act).toHaveBeenCalledWith('fix-writeback', 'shop-api');
+    cleanup();
+    const plain = details({
+      node: wn('gh:acme/shop#13', { writeback: { status: 'failed', code: 'failed' } }),
+      detail: { body: '', history: [{ what: 'writeback_failed', at_ms: 0 }] },
+    });
+    expect(plain.querySelector('[data-fix-writeback]')).toBeNull();
+  });
+
   it('deleted upstream (S14): Show feature only, no menu', () => {
     const n = wn('gh:acme/shop#13', {
       app: { state: 'running', feature: 'checkout-address', phase: 'executing' },
