@@ -173,6 +173,7 @@
     } finally {
       picking = false;
     }
+    if (app.chatDraft !== field.value) app.chatDraft = field.value; // an editing command that fired no input event
     await tick();
     field?.setSelectionRange(caret, caret);
   }
