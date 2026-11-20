@@ -292,7 +292,6 @@ impl Runtime {
 
 #[cfg(test)]
 mod tests {
-    use crate::state::StopIntent;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
 
