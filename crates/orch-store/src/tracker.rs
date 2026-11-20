@@ -1003,7 +1003,8 @@ mod tests {
              ALTER TABLE features DROP COLUMN issues; ALTER TABLE features DROP COLUMN pr_mode;
              ALTER TABLE tasks DROP COLUMN issue; ALTER TABLE tasks DROP COLUMN reported_sha;
              ALTER TABLE team_runs DROP COLUMN prs;
-             DROP INDEX usage_samples_session; ALTER TABLE usage_samples DROP COLUMN session_id;",
+             DROP INDEX usage_samples_session; ALTER TABLE usage_samples DROP COLUMN session_id;
+             ALTER TABLE features DROP COLUMN docs_location;",
         )
         .unwrap();
         c.execute(

@@ -2,14 +2,14 @@
 //! run details for the Feature pane, and the user's own task and message
 //! actions (FR-406, FR-409, FR-502).
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use orch_protocol::now_ms;
 use orch_store::Task;
 use orch_team::{RoleDef, TaskStatus, Team, mcp, rules};
 use serde_json::{Value, json};
 
+use crate::feature_docs::{FeatureDocs, feature_docs, read_feature_asset, read_feature_doc};
 use crate::runtime::Runtime;
-use crate::team::{feature_docs, read_feature_asset, read_feature_doc};
 
 /// A team's validation issues for the canvas: the node each is about, and
 /// its text (FR-305).
@@ -147,11 +147,11 @@ impl Runtime {
             })
             .collect();
         let tasks = self.db.tasks(None, None, Some(run_id))?;
-        let wt = cx.feature.integration_worktree.clone();
-        let docs = wt.as_deref().map(|w| feature_docs(w, &cx.feature.slug)).unwrap_or_default();
+        let loc = FeatureDocs::of(&cx.feature);
+        let docs = crate::feature_docs::read_root(&cx.feature).map(|w| feature_docs(&loc, &w)).unwrap_or_default();
         Ok(json!({
             "run": Self::run_value(&cx.run, &cx.feature, &self.run_pr_gates(run_id)), "feature": cx.feature, "team": cx.team, "project": {"id": cx.project.id, "name": cx.project.name, "backend": cx.project.backend().kind()},
-            "rules": rules::rules_text(&cx.team), "agents": agents, "tasks": tasks, "docs": docs,
+            "rules": rules::rules_text(&cx.team), "agents": agents, "tasks": tasks, "docs": docs, "docs_location": loc,
             "artifacts": self.artifacts_json(&cx.feature)?,
             "timeline": self.timeline_json(run_id)?,
         }))
@@ -220,22 +220,41 @@ impl Runtime {
 
     /// One feature doc from the integration worktree (rendered by the UI).
     pub fn feature_doc(&self, feature_id: &str, name: &str) -> Result<String> {
-        let (wt, slug) = self.integration_worktree(feature_id)?;
-        read_feature_doc(&wt, &slug, name)
+        let (wt, loc) = self.integration_worktree(feature_id)?;
+        read_feature_doc(&loc, &wt, name)
     }
 
     /// An image a feature doc points at, from the integration worktree
     /// (`{mime, data_b64, bytes}`).
     pub fn feature_asset(&self, feature_id: &str, path: &str) -> Result<Value> {
-        let (wt, slug) = self.integration_worktree(feature_id)?;
-        read_feature_asset(&wt, &slug, path)
+        let (wt, loc) = self.integration_worktree(feature_id)?;
+        read_feature_asset(&loc, &wt, path)
     }
 
-    /// A feature's integration worktree and slug.
-    fn integration_worktree(&self, feature_id: &str) -> Result<(std::path::PathBuf, String)> {
+    /// `feature_docs_reveal`: the app folder of a feature's docs or designs
+    /// (`which`), created if missing. Refused for a folder in the repository.
+    pub fn feature_docs_app_dir(&self, feature_id: &str, which: &str) -> Result<std::path::PathBuf> {
         let f = self.db.feature(feature_id)?.ok_or_else(|| anyhow!("no feature {feature_id}"))?;
-        let wt = f.integration_worktree.ok_or_else(|| anyhow!("feature {} has no integration worktree", f.slug))?;
-        Ok((wt, f.slug))
+        let loc = FeatureDocs::of(&f);
+        let l = match which {
+            "docs" => &loc.docs,
+            "designs" => &loc.designs,
+            other => bail!("which is docs or designs, not {other:?}"),
+        };
+        if !l.is_app() {
+            bail!("the {which} of {} are saved in the repository ({})", f.slug, l.display());
+        }
+        let dir = std::path::PathBuf::from(&l.dir);
+        std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
+        Ok(dir)
+    }
+
+    /// A feature's integration worktree and docs folders.
+    fn integration_worktree(&self, feature_id: &str) -> Result<(std::path::PathBuf, orch_team::DocsLocation)> {
+        let f = self.db.feature(feature_id)?.ok_or_else(|| anyhow!("no feature {feature_id}"))?;
+        let wt = crate::feature_docs::read_root(&f)
+            .ok_or_else(|| anyhow!("feature {} has no integration worktree", f.slug))?;
+        Ok((wt, FeatureDocs::of(&f)))
     }
 
     pub fn run_act(&self, run_id: &str, action: &str) -> Result<Value> {

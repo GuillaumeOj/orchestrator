@@ -9,6 +9,7 @@
   import { untrack } from 'svelte';
   import { toast } from '../lib/app.svelte.js';
   import { artifactTitle, artifactTool, designGroups, linkOnly, notMerged, previewable, previewError, TOOL } from '../lib/ecosystem.js';
+  import { locationOf, slashed } from '../lib/featuredocs.js';
   import { clock, size } from '../lib/format.js';
   import { errText, invoke } from '../lib/ipc.js';
   import { move } from '../lib/select.js';
@@ -26,6 +27,9 @@
   const tiles = $derived(groups.flatMap((g) => g.items));
   const cur = $derived(tiles.find((a) => a.id === selId) ?? tiles[0] ?? null);
   const featureId = $derived(v.feature.id);
+  // Where the designer exports to: the feature's designs folder (in the repo: commit it; not saved: no commit).
+  const designsLoc = $derived(locationOf(v.feature, v.docs_location).designs);
+  const exportWhere = $derived(designsLoc.kind === 'repo' ? `under ${slashed(designsLoc.dir)}, commit it` : `into ${slashed(designsLoc.dir)} (not committed)`);
   /** A node's agent id in this run ("ui" → "onboarding-ui-1"), else the node. */
   const who = (node) => v.agents?.find((a) => a.node === node)?.id ?? node;
 
@@ -97,7 +101,7 @@
   async function askExport(a) {
     if (!a || !linkOnly(a) || !v.run) return;
     const tool = TOOL[artifactTool(a)].label;
-    const body = `Please export "${artifactTitle(a)}" as an image under .orchestrator/features/${v.feature.slug}/design/, commit it and hand it off again: ${a.to_node ? who(a.to_node) : 'your teammates'} can't open ${tool} links.`;
+    const body = `Please export "${artifactTitle(a)}" as an image ${exportWhere} and hand it off again: ${a.to_node ? who(a.to_node) : 'your teammates'} can't open ${tool} links.`;
     try {
       await invoke('message_send', { run: v.run.id, to: a.from_node, body });
       toast(`Asked ${who(a.from_node)} to export ${artifactTitle(a)}`);
@@ -213,7 +217,7 @@
     {@const imgs = tiles.filter(previewable)}
     <div class="overlay" role="dialog" aria-modal="true" aria-label="Preview" style:top="{box.top}px" style:left="{box.left}px" style:width="{box.width}px" style:height="{box.height}px">
       <div class="cap">
-        <span><span aria-hidden="true">{'\u{F021F}'}</span> <b>{artifactTitle(a)}</b> {[big.w ? `${big.w} × ${big.h}` : null, p?.bytes != null ? size(p.bytes) : null, p?.source ? (p.source === 'branch' ? `${who(a.from_node)}'s branch` : 'integration branch') : null].filter(Boolean).map((x) => `· ${x}`).join(' ')}{#if p?.mime === 'image/svg+xml'} · SVG shown as an image{/if}</span>
+        <span><span aria-hidden="true">{'\u{F021F}'}</span> <b>{artifactTitle(a)}</b> {[big.w ? `${big.w} × ${big.h}` : null, p?.bytes != null ? size(p.bytes) : null, p?.source ? (p.source === 'branch' ? `${who(a.from_node)}'s branch` : p.source === 'app' ? 'kept on this Mac' : 'integration branch') : null].filter(Boolean).map((x) => `· ${x}`).join(' ')}{#if p?.mime === 'image/svg+xml'} · SVG shown as an image{/if}</span>
         <span class="grow"></span>
         <span class="muted">{imgs.findIndex((x) => x.id === big.id) + 1} / {imgs.length} · {big.fit ? 'Fit' : '100 %'}</span>
         <button type="button" class="icon-btn" aria-label="Close" use:tooltip={{ label: 'Close', key: 'esc' }} onclick={() => (big = null)}>{'\u{F0156}'}</button>

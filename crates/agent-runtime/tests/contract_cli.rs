@@ -68,6 +68,7 @@ fn app_args(mode: PermissionMode, session: SessionMode) -> Vec<String> {
         env,
         git_identity: ("N".into(), "e@x".into()),
         project_files: vec![],
+        feature_dirs: vec![],
         sandbox: Allowances::default(),
         overwatch: None,
     };

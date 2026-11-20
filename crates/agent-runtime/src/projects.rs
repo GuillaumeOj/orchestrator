@@ -410,6 +410,9 @@ impl Runtime {
         if choices.history == project::History::Delete {
             // The project's rows went with it (kept worktrees stay on disk, unmanaged).
             self.store.write(|s| s.worktrees.retain(|_, w| w.repo != p.path))?;
+            // Docs and designs kept in the app's data are not in git: they go with it.
+            // A folder that can't be removed safely (a symlink) is left, not an error.
+            let _ = crate::feature_docs::remove_app_features(&self.cfg.paths.root, id);
         }
         self.db.audit("user", None, "project_removed", p.path.to_str(), "ok", json!(report))?;
         self.briefs_stale_for(id);

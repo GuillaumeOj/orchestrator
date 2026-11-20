@@ -635,6 +635,13 @@ pub async fn project_file_remove(core: CoreState<'_>, project: String, path: Str
     blocking(core, move |c| c.project_file_remove(&project, &path)).await
 }
 
+/// Reveal in Finder: a feature's docs or designs folder kept in the app's
+/// data (`which`: `docs` | `designs`); refused for a repo folder.
+#[tauri::command]
+pub async fn feature_docs_reveal(core: CoreState<'_>, feature_id: String, which: String) -> Res<()> {
+    blocking(core, move |c| c.feature_docs_reveal(&feature_id, &which)).await
+}
+
 /// Reveal in Finder, for a path listed in some project's files.
 #[tauri::command]
 pub async fn reveal_path(core: CoreState<'_>, path: String) -> Res<()> {

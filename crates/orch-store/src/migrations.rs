@@ -733,6 +733,12 @@ WHERE usage_samples.id = p.id
   AND usage_samples.cost_delta = usage_samples.cost_estimate
   AND p.prev <= usage_samples.cost_estimate;
 "#,
+    // 24 (change-how-specs-are-saved §3.2): where a feature's docs and designs
+    // are saved, resolved at its creation (JSON `{docs: {kind, dir}, designs}`);
+    // NULL = the legacy `.orchestrator/features/<slug>` with `design/` inside.
+    r#"
+ALTER TABLE features ADD COLUMN docs_location TEXT;
+"#,
 ];
 
 pub(crate) fn migrate(c: &mut Connection) -> Result<()> {

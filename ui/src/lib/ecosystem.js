@@ -329,6 +329,9 @@ export function previewError(err, a, from = a?.from_node ?? 'the designer') {
     const m = e.match(/([\d.]+)\s*MB/);
     return `Too large to preview (${m ? `${m[1]} MB · ` : ''}max 5 MB)`;
   }
+  // A file kept in the app's data (absolute path) is on this Mac, not on a branch.
+  if (/not found/i.test(e) && String(a?.meta?.path ?? '').startsWith('/'))
+    return `Not found in the feature's folder on this Mac. ${from} may have moved or removed it.`;
   if (/not found/i.test(e))
     return `Not found on ${from}'s branch or the integration branch. ${from} may not have committed it yet.`;
   if (/not previewable/i.test(e)) return `${artifactTitle(a)}: no preview`;

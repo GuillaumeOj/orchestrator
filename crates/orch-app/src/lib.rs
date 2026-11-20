@@ -230,6 +230,7 @@ pub fn run() {
             commands::project_file_update,
             commands::project_file_remove,
             commands::reveal_path,
+            commands::feature_docs_reveal,
             commands::pick_paths,
             commands::planner_view,
             commands::reports_list,

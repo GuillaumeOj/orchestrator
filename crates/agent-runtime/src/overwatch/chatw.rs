@@ -197,11 +197,7 @@ impl Runtime {
                 let f = self.db.feature(id).ok().flatten()?;
                 let project = self.db.project(&f.project_id).ok().flatten();
                 let run = self.db.runs(Some(&f.id), false).ok().and_then(|r| r.into_iter().next());
-                let docs = f
-                    .integration_worktree
-                    .as_ref()
-                    .map(|w| w.join(".orchestrator/features").join(&f.slug))
-                    .filter(|d| d.is_dir());
+                let docs = crate::feature_docs::docs_dir_of(&f).filter(|d| d.is_dir());
                 let agents: Vec<String> = run
                     .as_ref()
                     .map(|r| self.run_agents(&r.id).into_iter().map(|a| a.id).take(MENTION_AGENTS_MAX).collect())

@@ -53,26 +53,46 @@ pub fn meta_of(a: &Artifact) -> Option<ArtifactMeta> {
     a.meta.clone().or_else(|| parse(&a.uri))
 }
 
-/// The design hand-off message (spec §3.2): the repo paths of the images
-/// `from` exported in this run, and how the recipient gets them.
-pub fn design_handoff_body(uri: &str, note: &str, from: &str, lead: &str, exported: &[String]) -> String {
+/// The design hand-off message (spec §3.2): the images `from` exported in
+/// this run, and how the recipient gets them. A repo path is on `from`'s
+/// branch until the integration merge; an absolute path (`app_file` for the
+/// hand-off itself) is in the feature's app folder, readable directly.
+pub fn design_handoff_body(
+    uri: &str,
+    note: &str,
+    from: &str,
+    lead: &str,
+    exported: &[String],
+    app_file: bool,
+) -> String {
     let mut s = format!("design {uri}{}", if note.is_empty() { String::new() } else { format!(": {note}") });
-    let link_only = parse(uri).is_none_or(|m| m.tool != "file");
-    if link_only {
+    if app_file {
+        s.push_str("\nThis file is in the feature's app folder: Read it directly, there is nothing to sync.");
+    } else if parse(uri).is_none_or(|m| m.tool != "file") {
         s.push_str(&format!(
             "\nThis is a link only: agents can't open it. Ask {from} to export the frame as an image under the \
              feature's design/ folder and hand it off again."
         ));
     }
-    if !exported.is_empty() {
+    let (app, repo): (Vec<&String>, Vec<&String>) = exported.iter().partition(|p| p.starts_with('/'));
+    for (list, tail) in [
+        (app, "\nThey are in the feature's app folder: Read them directly.".to_string()),
+        (
+            repo,
+            format!(
+                "\nThey are on {from}'s branch until {lead} merges it into the integration branch; then call \
+                 mcp__orch__sync_integration and Read them in your worktree."
+            ),
+        ),
+    ] {
+        if list.is_empty() {
+            continue;
+        }
         s.push_str(&format!("\nExported images from {from} in this feature:"));
-        for p in exported {
+        for p in list {
             s.push_str(&format!("\n- {p}"));
         }
-        s.push_str(&format!(
-            "\nThey are on {from}'s branch until {lead} merges it into the integration branch; then call \
-             mcp__orch__sync_integration and Read them in your worktree."
-        ));
+        s.push_str(&tail);
     }
     s
 }
@@ -126,6 +146,20 @@ impl Runtime {
         Ok(self.db.project(&f.project_id)?.ok_or_else(|| anyhow!("no project {}", f.project_id))?.path)
     }
 
+    /// An artifact path kept in the app's data (absolute): the plain file,
+    /// checked again to be in the feature's app folders. `None` for a repo path.
+    fn app_file_of(&self, f: &Feature, path: &str) -> Result<Option<PathBuf>> {
+        if !path.starts_with('/') {
+            return Ok(None);
+        }
+        let p = PathBuf::from(path);
+        let loc = crate::feature_docs::FeatureDocs::of(f);
+        if !crate::feature_docs::is_app_file(&loc, &p) {
+            bail!("not found");
+        }
+        Ok(Some(p))
+    }
+
     /// The feature's artifacts with their meta (`on_integration` for files).
     pub fn artifacts_json(&self, f: &Feature) -> Result<Vec<Value>> {
         let repo = self.project_repo(f).ok();
@@ -136,7 +170,8 @@ impl Runtime {
             .into_iter()
             .map(|mut a| {
                 a.meta = meta_of(&a).map(|mut m| {
-                    if let (Some(p), Some(repo)) = (&m.path, &repo) {
+                    // A file kept in the app's data is never on a branch.
+                    if let (Some(p), Some(repo)) = (m.path.as_ref().filter(|p| !p.starts_with('/')), &repo) {
                         m.on_integration =
                             Some(orch_git::git::git_ok(repo, &["cat-file", "-e", &format!("{branch}:{p}")]));
                     }
@@ -168,6 +203,10 @@ impl Runtime {
         let m = meta_of(&a).filter(|m| m.previewable).ok_or_else(|| anyhow!("not previewable"))?;
         let path = m.path.as_deref().ok_or_else(|| anyhow!("not previewable"))?;
         let mime = image_mime(path).ok_or_else(|| anyhow!("not previewable"))?;
+        if let Some(p) = self.app_file_of(&f, path)? {
+            let bytes = crate::feature_docs::read_capped(&p)?;
+            return Ok(json!({"mime": mime, "data_b64": base64(&bytes), "bytes": bytes.len(), "source": "app"}));
+        }
         let repo = self.project_repo(&f)?;
         for (rev, source) in self.image_sources(&repo, &f, &a) {
             let spec = format!("{rev}:{path}");
@@ -197,6 +236,9 @@ impl Runtime {
             }
             return Ok(OpenTarget::Url(url.to_string()));
         };
+        if let Some(p) = self.app_file_of(&f, &path)? {
+            return Ok(wrap(p));
+        }
         // A FigCraft file is never opened in place: FigCraft saving into the integration
         // worktree would dirty it. It always opens a copy extracted from git.
         if let Some(wt) = f.integration_worktree.as_ref().filter(|_| !figcraft) {
@@ -303,6 +345,7 @@ mod tests {
             archived: false,
             issues: vec![],
             pr_mode: Default::default(),
+            docs_location: None,
         };
         rt.db.upsert_feature(&f).unwrap();
         let dir = ".orchestrator/features/shop/design";
@@ -415,11 +458,22 @@ mod tests {
             "ui",
             "lead",
             &[".orchestrator/features/f/design/a.png".into(), ".orchestrator/features/f/design/b.svg".into()],
+            false,
         );
         assert!(b.starts_with("design .orchestrator/features/f/design/a.png: checkout"));
         assert!(b.contains("\n- .orchestrator/features/f/design/b.svg"));
         assert!(b.contains("mcp__orch__sync_integration") && !b.contains("link only"));
-        let l = design_handoff_body("https://design.penpot.app/#/workspace?file-id=x", "", "ui", "lead", &[]);
+        let l = design_handoff_body("https://design.penpot.app/#/workspace?file-id=x", "", "ui", "lead", &[], false);
         assert!(l.contains("link only") && l.contains("Ask ui to export"));
+        let a = design_handoff_body(
+            "/app/f/docs/design/a.png",
+            "",
+            "ui",
+            "lead",
+            &["/app/f/docs/design/a.png".into()],
+            true,
+        );
+        assert!(a.contains("app folder") && a.contains("Read it directly"), "{a}");
+        assert!(!a.contains("sync_integration") && !a.contains("link only"), "{a}");
     }
 }

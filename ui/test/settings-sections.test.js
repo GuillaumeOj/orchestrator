@@ -86,11 +86,12 @@ describe('Settings window: 10 sections', () => {
   });
 });
 
-describe('Project settings window: 6 sections', () => {
+describe('Project settings window: 7 sections', () => {
   it('the nav lists them, General first, with no Kbd', () => {
     expect(PSECTIONS.map((s) => s.label)).toEqual([
       'General',
       'Files',
+      'Feature docs',
       'Tracker',
       'Allocation',
       'Notion',
@@ -98,7 +99,7 @@ describe('Project settings window: 6 sections', () => {
     ]);
     app.window = { kind: 'project-settings', projectId: 'shop-api', section: 'tracker' };
     const { container } = render(ProjectSettingsWindow);
-    expect(container.querySelectorAll('[role="tab"]')).toHaveLength(6);
+    expect(container.querySelectorAll('[role="tab"]')).toHaveLength(7);
     expect(container.querySelector('[role="tablist"] .kbd')).toBeNull();
   });
 

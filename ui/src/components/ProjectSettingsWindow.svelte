@@ -3,6 +3,7 @@
   export const SECTIONS = [
     { id: 'general', label: 'General' },
     { id: 'files', label: 'Files' },
+    { id: 'feature-docs', label: 'Feature docs' },
     { id: 'tracker', label: 'Tracker' },
     { id: 'allocation', label: 'Allocation' },
     { id: 'notion', label: 'Notion' },
@@ -21,6 +22,7 @@
   import { app, guardWindow, onWindowClose, openSettings, projects, toast, windowSection } from '../lib/app.svelte.js';
   import { errText, invoke } from '../lib/ipc.js';
   import AllocationSettings from './AllocationSettings.svelte';
+  import FeatureDocsSettings from './FeatureDocsSettings.svelte';
   import FilesSettings from './FilesSettings.svelte';
   import FloatingWindow from './FloatingWindow.svelte';
   import McpSettings from './McpSettings.svelte';
@@ -41,6 +43,7 @@
   let busy = $state(false);
   let alloc = $state(null); // AllocationSettings (forwards the keys)
   let files = $state(null); // FilesSettings (same)
+  let featureDocs = $state(null); // FeatureDocsSettings (⌘⏎ saves, Discard guard)
   let tracker = $state(null); // TrackerSettings (⌘⏎ saves)
   let general = $state(null); // ProjectGeneral (name and default branch: its own footer)
   let mcp = $state(null); // McpSettings (the server form is the one with unsaved edits)
@@ -52,6 +55,7 @@
     if (section.id === 'notion') return notionDirty;
     if (section.id === 'general') return !!general?.hasChanges();
     if (section.id === 'tracker') return !!tracker?.hasChanges();
+    if (section.id === 'feature-docs') return !!featureDocs?.hasChanges();
     if (section.id === 'allocation') return !!alloc?.hasChanges();
     if (section.id === 'mcp') return !!mcp?.hasChanges();
     return false;
@@ -61,6 +65,7 @@
   function sectionRevert() {
     if (section.id === 'general') general?.revert();
     else if (section.id === 'tracker') tracker?.revert();
+    else if (section.id === 'feature-docs') featureDocs?.revert();
     else if (notionDirty) revertNotion();
   }
   onMount(() => guardWindow(sectionDirty, sectionRevert));
@@ -101,6 +106,7 @@
   function onKey(e) {
     if (section.id === 'allocation') return alloc?.onKey(e);
     if (section.id === 'files') return files?.onKey(e);
+    if (section.id === 'feature-docs') return featureDocs?.onKey(e);
     if (section.id === 'tracker') return tracker?.onKey(e);
     if (e.metaKey && e.key === 'Enter') {
       e.preventDefault();
@@ -122,6 +128,8 @@
       <AllocationSettings bind:this={alloc} project={pid} {name} />
     {:else if section.id === 'files'}
       <FilesSettings bind:this={files} project={pid} {name} />
+    {:else if section.id === 'feature-docs'}
+      <FeatureDocsSettings bind:this={featureDocs} project={pid} {name} />
     {:else if section.id === 'tracker'}
       <TrackerSettings bind:this={tracker} project={pid} {name} block={spec?.block ?? null} />
     {:else if error}

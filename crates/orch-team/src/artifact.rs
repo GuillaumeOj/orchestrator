@@ -168,6 +168,40 @@ pub fn repo_path(uri: &str) -> Option<String> {
     Some(p.to_string())
 }
 
+/// A file kept in the app's data (a design not saved in the repository),
+/// by its absolute path. The caller checks the path is in the feature's
+/// app folder.
+pub fn app_file(abs: &str) -> ArtifactMeta {
+    let (path, frag) = split_figcraft_node(abs);
+    file_meta(path.to_string(), frag)
+}
+
+/// The meta of a file by its (repo or absolute) path: a `.figcraft` one keeps
+/// its tool and the `#node=` fragment, anything else is a plain file.
+fn file_meta(path: String, frag: Option<&str>) -> ArtifactMeta {
+    let title = path.rsplit('/').next().map(str::to_string);
+    if path.to_ascii_lowercase().ends_with(".figcraft") {
+        let node = frag.map(|f| percent_decode(f.strip_prefix("node=").unwrap_or(f))).filter(|n| !n.is_empty());
+        return ArtifactMeta { tool: "figcraft".into(), title, node_id: node, path: Some(path), ..Default::default() };
+    }
+    ArtifactMeta {
+        tool: "file".into(),
+        title,
+        previewable: image_mime(&path).is_some(),
+        path: Some(path),
+        ..Default::default()
+    }
+}
+
+/// `(path, fragment)` of an absolute app-folder hand-off: the `#node=` fragment
+/// is split off only for a `.figcraft` file (any other `#` is part of the name).
+pub fn split_figcraft_node(abs: &str) -> (&str, Option<&str>) {
+    match abs.split_once('#') {
+        Some((p, f)) if p.to_ascii_lowercase().ends_with(".figcraft") => (p, Some(f)),
+        _ => (abs, None),
+    }
+}
+
 /// Parses a hand-off URI. `None` for what is neither a link nor a repo path.
 pub fn parse(uri: &str) -> Option<ArtifactMeta> {
     let uri = uri.trim();
@@ -187,23 +221,9 @@ pub fn parse(uri: &str) -> Option<ArtifactMeta> {
     if raw.to_ascii_lowercase().ends_with(".figcraft")
         && let Some(path) = repo_path(raw)
     {
-        let node = frag.map(|f| percent_decode(f.strip_prefix("node=").unwrap_or(f))).filter(|n| !n.is_empty());
-        return Some(ArtifactMeta {
-            tool: "figcraft".into(),
-            title: path.rsplit('/').next().map(str::to_string),
-            node_id: node,
-            path: Some(path),
-            ..Default::default()
-        });
+        return Some(file_meta(path, frag));
     }
-    let path = repo_path(uri)?;
-    Some(ArtifactMeta {
-        tool: "file".into(),
-        title: path.rsplit('/').next().map(str::to_string),
-        previewable: image_mime(&path).is_some(),
-        path: Some(path),
-        ..Default::default()
-    })
+    Some(file_meta(repo_path(uri)?, None))
 }
 
 #[cfg(test)]
@@ -241,6 +261,18 @@ mod tests {
         assert_eq!((m.file_key.as_deref(), m.node_id), (Some("K9"), None));
         // Not a file link: a plain URL.
         assert_eq!(parse("https://www.figma.com/community").unwrap().tool, "url");
+    }
+
+    #[test]
+    fn app_files_keep_their_tool() {
+        let m = app_file("/app/f/docs/design/a.png");
+        assert_eq!((m.tool.as_str(), m.previewable), ("file", true));
+        let m = app_file("/app/f/design/app.FigCraft#node=1%3A2");
+        assert_eq!(
+            (m.tool.as_str(), m.path.as_deref(), m.node_id.as_deref()),
+            ("figcraft", Some("/app/f/design/app.FigCraft"), Some("1:2"))
+        );
+        assert_eq!(split_figcraft_node("/a/b#c.png"), ("/a/b#c.png", None));
     }
 
     #[test]

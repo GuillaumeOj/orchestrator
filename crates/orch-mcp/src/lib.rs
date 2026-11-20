@@ -114,7 +114,7 @@ pub fn tools() -> Value {
         ),
         tool(
             "handoff",
-            "Hand an artifact (a file in your worktree, a design link, a build) to another node. It is attached to the feature and the recipient is told. Designs: export each frame as an image under the feature's design/ folder (.orchestrator/features/<slug>/design/<name>.png or .svg), commit it, and hand off that repo path with kind \"design\" (the frame link goes in the note): agents can't open a link-only design.",
+            "Hand an artifact (a file in your worktree, a design link, a build) to another node. It is attached to the feature and the recipient is told. Designs: export each frame as an image (<name>.png or .svg) in the feature's designs folder named in your Team section (by default `design/` in the feature docs folder) and hand it off with kind \"design\" (the frame link goes in the note): agents can't open a link-only design. A designs folder in the repository: commit the image and hand off its repo path. A designs folder not saved in the repository: don't commit it, hand off its absolute path.",
             json!({"artifact": s("A repo-relative path in your worktree (committed) or a URL."), "to": s("Node id."), "kind": s("doc, design or build."), "note": s("What it is for; for a design, the Penpot/Figma frame link.")}),
             &["artifact", "to"],
         ),

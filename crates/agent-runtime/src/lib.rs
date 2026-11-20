@@ -9,6 +9,7 @@ pub mod decision;
 pub mod delivery;
 pub mod digest;
 pub mod env;
+pub mod feature_docs;
 pub mod feature_prs;
 pub mod flow;
 pub mod gh_access;

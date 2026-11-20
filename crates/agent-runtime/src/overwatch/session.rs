@@ -207,9 +207,14 @@ impl Runtime {
 
     /// What the Overwatch may read (spec §3.3, lead note 2): every
     /// registered project's checkout and its worktrees, its day folder and
-    /// its `messages/`.
+    /// its `messages/`, and the app's feature folders (`<root>/projects/<id>/features`).
     pub(crate) fn overwatch_reads(&self, day_dir: &std::path::Path) -> Vec<PathBuf> {
-        let mut reads: Vec<PathBuf> = self.db.projects(false).unwrap_or_default().into_iter().map(|p| p.path).collect();
+        let projects = self.db.projects(false).unwrap_or_default();
+        let mut reads: Vec<PathBuf> = projects.iter().map(|p| p.path.clone()).collect();
+        // The feature folders kept in the app's data: the parent of each project's
+        // features, since a feature launched after this session was built has its
+        // own (read only; the project's other files, `policy.toml`, stay out).
+        reads.extend(projects.iter().map(|p| self.cfg.paths.root.join("projects").join(&p.id).join("features")));
         let worktrees: Vec<PathBuf> = self.store.read(|s| s.worktrees.keys().cloned().collect());
         reads.extend(worktrees);
         reads.push(day_dir.to_path_buf());

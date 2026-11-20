@@ -115,6 +115,9 @@ pub struct FeatureCtx {
     /// One PR per issue rather than one for the feature.
     #[serde(default)]
     pub per_issue: bool,
+    /// Where its docs and designs are saved (empty: the legacy folders).
+    #[serde(default)]
+    pub docs: crate::DocsLocation,
 }
 
 /// The lead's "Pull requests" line (allow-multiple-prs spec §3.7), also the
@@ -138,8 +141,22 @@ impl FeatureCtx {
     pub fn integration_branch(&self) -> String {
         format!("orch/{}/integration", self.slug)
     }
+    /// The resolved folders (the legacy ones when none was given).
+    pub fn location(&self) -> crate::DocsLocation {
+        self.docs.or_legacy(&self.slug)
+    }
+    /// The docs folder as agents are told it, with a trailing `/` (a repo
+    /// path relative to the worktree, or an absolute app folder).
     pub fn docs_dir(&self) -> String {
-        format!(".orchestrator/features/{}/", self.slug)
+        self.location().docs.display()
+    }
+    /// The folder design exports go to, with a trailing `/`.
+    pub fn designs_dir(&self) -> String {
+        self.location().designs.display()
+    }
+    /// The docs are kept in the app's data, never committed.
+    pub fn docs_in_app(&self) -> bool {
+        self.location().docs.is_app()
     }
 }
 
@@ -234,13 +251,31 @@ fn role_name<'a>(roles: &'a [RoleDef], id: &'a str) -> &'a str {
 }
 
 fn team_context(team: &Team, me: &str, roles: &[RoleDef], f: &FeatureCtx) -> String {
+    let loc = f.location();
+    let docs = if loc.docs.is_app() {
+        format!("{} (not saved in the repository: never commit it)", f.docs_dir())
+    } else {
+        format!("{} on that branch", f.docs_dir())
+    };
+    // Overrides the starters' "`design/` in the docs folder" (their prompts stay as stored).
+    let designs = match (&loc.designs, loc.designs_with_docs()) {
+        (d, _) if d.is_app() => format!(
+            "\nDesigns folder: {} (not saved in the repository): design exports go there (it replaces the starters' `design/` \
+             in your worktree); never commit them, hand off their absolute path, and read them there (no sync needed).",
+            f.designs_dir()
+        ),
+        (_, true) => String::new(),
+        _ => format!(
+            "\nDesigns folder: {} on that branch: design exports go there instead of `design/` in the docs folder.",
+            f.designs_dir()
+        ),
+    };
     let mut s = format!(
-        "## Team\nFeature: {} ({}). Integration branch: {}. Feature docs: {} on that branch.\nYou are node `{me}`. \
+        "## Team\nFeature: {} ({}). Integration branch: {}. Feature docs: {docs}.{designs}\nYou are node `{me}`. \
          Nodes:",
         f.title,
         f.slug,
         f.integration_branch(),
-        f.docs_dir()
     );
     for n in &team.nodes {
         let lead = if n.is_lead { ", lead" } else { "" };
@@ -256,12 +291,10 @@ fn team_context(team: &Team, me: &str, roles: &[RoleDef], f: &FeatureCtx) -> Str
 
 fn lead_protocol(team: &Team, f: &FeatureCtx) -> String {
     let specialists: Vec<&str> = team.nodes.iter().filter(|n| !n.is_lead).map(|n| n.id.as_str()).collect();
-    let docs = f.docs_dir();
     format!(
         "## Protocol (follow it in order)\n\
          1. Understand the brief you are given and the code.\n\
-         2. Write `{docs}spec.md` (and `ux-brief.md`, `api-contract.md` when the team has design or both backend and \
-         frontend work) in your worktree, and commit them with mcp__orch__commit.\n\
+         2. {}\n\
          3. Call mcp__orch__request_spec_approval with a short summary, then end your turn. The orchestrator tells \
          you when the user approves, or what to change. You cannot create tasks before the approval.\n\
          4. Decompose the work into tasks with mcp__orch__create_task, each assigned to one node ({}) with its \
@@ -286,11 +319,26 @@ fn lead_protocol(team: &Team, f: &FeatureCtx) -> String {
          only real decisions (product, scope, security, money) with mcp__orch__ask_user. Never ask the user a \
          question in plain text at the end of a turn: nobody reads it there. You never push and never merge with \
          git yourself.",
+        write_docs_step(f),
         if specialists.is_empty() { "yourself".to_string() } else { specialists.join(", ") },
         review_step(team.review),
         f.integration_branch(),
         prs_line(&f.issues, f.per_issue)
     )
+}
+
+/// Protocol step 2: where the lead writes the docs, and whether it commits them.
+fn write_docs_step(f: &FeatureCtx) -> String {
+    let docs = f.docs_dir();
+    let which = "(and `ux-brief.md`, `api-contract.md` when the team has design or both backend and frontend work)";
+    if f.docs_in_app() {
+        format!(
+            "Write `{docs}spec.md` {which} in that folder (outside your worktree, not saved in the repository). Do not \
+             commit them: the orchestrator reads them there."
+        )
+    } else {
+        format!("Write `{docs}spec.md` {which} in your worktree, and commit them with mcp__orch__commit.")
+    }
 }
 
 fn review_step(mode: ReviewMode) -> &'static str {

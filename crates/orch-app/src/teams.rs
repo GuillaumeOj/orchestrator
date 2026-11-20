@@ -86,6 +86,7 @@ pub fn features(rt: &agent_runtime::runtime::Runtime) -> Result<Vec<Value>> {
             json!({
                 "id": f.id, "project_id": f.project_id, "slug": f.slug, "title": f.title,
                 "branch": f.integration_branch(), "archived": f.archived, "issues": f.issues, "pr_mode": f.pr_mode,
+                "docs_location": agent_runtime::feature_docs::FeatureDocs::of(&f),
                 "run": run.as_ref().map(|r| json!({"id": r.id, "status": r.status, "team_id": r.team_id, "pr_url": r.pr_url,
                                                    "prs_view": agent_runtime::issues::prs_view(r, &f, gates.get(&r.id).map_or(&[], Vec::as_slice))})),
                 "tasks": {"done": done, "total": total},
@@ -309,6 +310,13 @@ impl Core {
         rt.db.project(project_id)?.ok_or_else(|| anyhow!("no project {project_id}"))?;
         let mut raw = f.settings;
         raw.remove("external_files");
+        // Checked first: an invalid folder fails the whole save, its message
+        // naming the field (`feature_docs.docs.path: Must contain {slug}`).
+        // Absent from the form: the stored value stays.
+        let feature_docs = match raw.remove("feature_docs") {
+            None | Some(Value::Null) => None,
+            Some(v) => Some(orch_team::FeatureDocsSetting::from_form(&v).map_err(|e| anyhow!(e))?),
+        };
         let mut general: ProjectSettings = serde_json::from_value(Value::Object(raw))?;
         let old = rt.db.tracker(project_id)?;
         let new = old.clone().with_backend(&f.backend);
@@ -320,6 +328,7 @@ impl Core {
         rt.db.update_project_settings(project_id, move |e| {
             // FR-112: the stored list stays as the transaction read it.
             general.external_files = std::mem::take(&mut e.settings.external_files);
+            general.feature_docs = feature_docs.unwrap_or_else(|| std::mem::take(&mut e.settings.feature_docs));
             e.settings = general;
             (e.backend, e.track_orchestrator_dir) = (backend, track);
             Ok(())

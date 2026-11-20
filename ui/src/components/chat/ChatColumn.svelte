@@ -600,7 +600,8 @@
     if (ref.kind === 'chat') return !!viewEntries[ref.id];
     if (ref.kind === 'agent') return !!app.now.agents[ref.id] || !!app.data?.agents?.some((a) => a.id === ref.id);
     if (ref.kind === 'run') return !!app.now.runs[ref.id];
-    return true;
+    // An absolute path opens only inside a known feature's docs or designs folder.
+    return !ref.abs || !!featureDoc(ref.path, features(), true);
   }
 
   /** A source link: a doc opens in the feature pane, `chat:` jumps to its entry, `agent:` / `run:` open them (api-contract §5). */
@@ -614,11 +615,16 @@
     }
     // The cited project first (a card's), else the focused one; two projects can share a feature slug.
     const project = ref.project ?? contextProject()?.id ?? null;
-    const fd = featureDoc(ref.path);
+    const fd = featureDoc(ref.path, features(), !!ref.abs);
     const same = fd ? features().filter((x) => x.slug === fd.slug) : [];
     const f = same.find((x) => x.project_id === project) ?? same[0];
+    if (ref.abs && !fd) return;
+    // A design file shows in the feature's Designs section.
+    if (f && fd.design) return openFeature(f.id);
     // The feature pane lists the docs of the feature folder itself, not its sub-folders.
     if (f && !fd.name.includes('/')) return openFeature(f.id, fd.name, ref.section);
+    // An app-folder file is never opened in nvim.
+    if (ref.abs) return;
     // Another doc of the repo: in nvim, in the cited project.
     openEditor(ref.path, null, { projectId: project });
   }

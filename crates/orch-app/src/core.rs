@@ -1258,20 +1258,25 @@ impl Core {
         let wt = PathBuf::from(s("worktree"));
         match s("action").as_str() {
             "spec_approval" => {
-                let slug = s("feature");
-                let docs: Vec<Value> = agent_runtime::team::feature_docs(&wt, &slug)
-                    .into_iter()
-                    .map(|name| {
-                        let text = agent_runtime::team::read_feature_doc(&wt, &slug, &name)
-                            .unwrap_or_else(|e| format!("({e:#})"));
-                        json!({"name": name, "text": text})
-                    })
-                    .collect();
+                use agent_runtime::feature_docs::{FeatureDocs, feature_docs, read_feature_doc};
                 // For the docs' images (`feature_asset`); a gate from before it
                 // names only its run, which names the feature.
                 let feature_id = Some(s("feature_id"))
                     .filter(|f| !f.is_empty())
                     .or_else(|| rt.db.run(&s("run")).ok().flatten().map(|r| r.feature_id));
+                // The feature's folders (legacy ones for a gate of a deleted feature).
+                let loc = feature_id
+                    .as_deref()
+                    .and_then(|id| rt.db.feature(id).ok().flatten())
+                    .map(|f| FeatureDocs::of(&f))
+                    .unwrap_or_else(|| orch_team::DocsLocation::legacy(&s("feature")));
+                let docs: Vec<Value> = feature_docs(&loc, &wt)
+                    .into_iter()
+                    .map(|name| {
+                        let text = read_feature_doc(&loc, &wt, &name).unwrap_or_else(|e| format!("({e:#})"));
+                        json!({"name": name, "text": text})
+                    })
+                    .collect();
                 Ok(json!({"action": "spec_approval", "summary": s("summary"), "docs": docs, "feature_id": feature_id}))
             }
             "push_pr" => {
@@ -1717,6 +1722,35 @@ pub(crate) mod tests {
             )
             .unwrap();
         assert_eq!(ps["settings"]["default_team"], "bugfix-squad");
+        // Feature docs (change-how-specs-are-saved §3.1): defaults filled in,
+        // an invalid folder fails the whole save with the field, a valid one saves.
+        let docs_default = json!({"docs": {"kind": "repo", "path": ".orchestrator/features/{slug}"}, "designs": {"kind": "with_docs"}});
+        assert_eq!(core.project_settings("repo").unwrap()["settings"]["feature_docs"], docs_default);
+        let save = |fd: Value| {
+            core.project_settings_set(
+                "repo",
+                serde_json::from_value(json!({"settings": {"default_team": "solo-dev", "feature_docs": fd}, "backend": {"type": "local"}, "track_orchestrator_dir": true})).unwrap(),
+            )
+        };
+        for (path, msg) in [
+            ("/abs/{slug}", "feature_docs.docs.path: Must be a path inside the repository"),
+            ("../x/{slug}", "feature_docs.docs.path: Must be a path inside the repository"),
+            (".git/{slug}", "feature_docs.docs.path: Must be a path inside the repository"),
+            ("docs/specs", "feature_docs.docs.path: Must contain {slug}"),
+        ] {
+            let e =
+                save(json!({"docs": {"kind": "repo", "path": path}, "designs": {"kind": "with_docs"}})).unwrap_err();
+            assert_eq!(e.to_string(), msg);
+        }
+        let ps = core.project_settings("repo").unwrap();
+        assert_eq!(
+            (ps["settings"]["default_team"].as_str(), &ps["settings"]["feature_docs"]),
+            (Some("bugfix-squad"), &docs_default),
+            "nothing saved"
+        );
+        let custom = json!({"docs": {"kind": "repo", "path": "docs/specs/{slug}"}, "designs": {"kind": "app"}});
+        save(json!({"docs": {"kind": "repo", "path": "docs/specs/{slug}/"}, "designs": {"kind": "app"}})).unwrap();
+        assert_eq!(core.project_settings("repo").unwrap()["settings"]["feature_docs"], custom, "trailing / dropped");
         // A runtime gate is a level-1 gate in the Inbox and decides through the runtime.
         let rt = core.runtime().unwrap().clone();
         rt.store

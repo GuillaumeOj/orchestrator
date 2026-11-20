@@ -175,16 +175,7 @@ impl Runtime {
         let docs = seat
             .as_ref()
             .and_then(|t| self.db.feature(&t.feature_id).ok().flatten())
-            .and_then(|f| {
-                let w = f.integration_worktree?;
-                let dir = w.join(".orchestrator/features").join(&f.slug);
-                Some(
-                    crate::team::feature_docs(&w, &f.slug)
-                        .into_iter()
-                        .map(|n| dir.join(n).display().to_string())
-                        .collect::<Vec<_>>(),
-                )
-            })
+            .map(|f| crate::feature_docs::doc_paths_of(&f))
             .unwrap_or_default();
         let open: Vec<Value> = self
             .open_decisions()

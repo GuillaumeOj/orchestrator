@@ -23,6 +23,7 @@
   import { app, boardNotice, confirm, openAgent, openCanvas, openEditor, openUrl, refresh, toast } from '../lib/app.svelte.js';
   import { deliveryMark } from '../lib/delivery.js';
   import { isDesign } from '../lib/ecosystem.js';
+  import { designsWithDocs, locationOf, slashed } from '../lib/featuredocs.js';
   import { ago, dayHm, plural } from '../lib/format.js';
   import { errText, invoke } from '../lib/ipc.js';
   import { isTypingTarget } from '../lib/keyboard.js';
@@ -220,7 +221,19 @@
   }
 
   // The shown doc's repo-relative path (R10), null when it is not in the repo.
-  const docPath = $derived(v ? docRepoPath(v.feature, doc.name) : null);
+  const docPath = $derived(v ? docRepoPath(v.feature, doc.name, v.docs_location) : null);
+  // Where the docs and designs live (run_json `docs_location`; a legacy feature has the repo default).
+  const loc = $derived(v ? locationOf(v.feature, v.docs_location) : null);
+  const designsLine = $derived(loc && !designsWithDocs(loc));
+
+  /** Reveal in Finder for a folder that is not saved in the repository (the app opens it). */
+  async function revealDocs(which) {
+    try {
+      await invoke('feature_docs_reveal', { featureId: v.feature.id, which });
+    } catch (e) {
+      toast(errText(e), { kind: 'error' });
+    }
+  }
 
   // The header's `⋯` (R9): Board, Canvas, Publish / Refresh in Notion, Open in Notion; keys that work in the pane.
   const menu = $derived.by(() => {
@@ -367,6 +380,7 @@
             <div class="tabs" role="tablist">
               {#each v.docs as d (d)}<button class="tab" class:on={doc.name === d} role="tab" aria-selected={doc.name === d} onclick={() => ((anchor = null), showDoc(d))}>{d}</button>{/each}
             </div>
+            {@render locations()}
             {#if docPath}
               <div class="docpath" data-docpath>
                 <span class="mono muted ell" use:tooltip={docPath}>{docPath}</span>
@@ -375,6 +389,7 @@
             {/if}
             <div class="rendered"><Markdown text={doc.text} feature={spec.featureId} ondoc={openSibling} {anchor} {anchorAsked} /></div>
           {:else}
+            {@render locations()}
             <p class="muted">No docs yet: the lead writes them in the spec step.</p>
           {/if}
         </section>
@@ -439,6 +454,26 @@
   {#if v}<HintRow hints={tasksFocused ? taskHints : paneHints} />{/if}
 </div>
 
+{#snippet locations()}
+  {#if loc}
+    <div class="loc" data-docs-location>
+      {@render where(loc.docs, 'docs', '')}
+      {#if designsLine}{@render where(loc.designs, 'designs', 'Designs · ')}{/if}
+    </div>
+  {/if}
+{/snippet}
+
+{#snippet where(l, which, label)}
+  <div class="locline" data-loc={which}>
+    {#if l.kind === 'repo'}
+      <span class="muted">{label}In the repository ·</span> <span class="mono">{slashed(l.dir)}</span>
+    {:else}
+      <span class="muted">{label}Not saved in the repository</span>
+      <button type="button" class="btn" onclick={() => revealDocs(which)}>Reveal in Finder</button>
+    {/if}
+  </div>
+{/snippet}
+
 <style>
   .dmark {
     flex: none;
@@ -450,6 +485,18 @@
     color: var(--color-status-error);
   }
 
+  .loc {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-xs);
+    font: var(--text-caption);
+  }
+  .locline {
+    display: flex;
+    align-items: center;
+    gap: var(--space-xs);
+    min-width: 0;
+  }
   .docpath {
     display: flex;
     align-items: center;

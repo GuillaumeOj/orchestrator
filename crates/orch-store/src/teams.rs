@@ -39,6 +39,10 @@ pub struct Feature {
     /// One PR for the feature, or one per issue (only the user sets it).
     #[serde(default)]
     pub pr_mode: PrMode,
+    /// Where its docs and designs are saved, resolved from the project's
+    /// setting when it was created; `None` = the legacy folders.
+    #[serde(default)]
+    pub docs_location: Option<orch_team::DocsLocation>,
 }
 
 impl Feature {
@@ -496,8 +500,24 @@ pub struct ProjectSettings {
     /// of the project, in the order added. Kept by the dedicated commands only.
     #[serde(default, deserialize_with = "lenient_files", skip_serializing_if = "Vec::is_empty")]
     pub external_files: Vec<ProjectFile>,
+    /// Where new features save their docs and designs (always serialized,
+    /// so readers get both rows).
+    #[serde(default, deserialize_with = "lenient_feature_docs")]
+    pub feature_docs: orch_team::FeatureDocsSetting,
     #[serde(flatten)]
     pub other: serde_json::Map<String, Value>,
+}
+
+/// A malformed stored value reads as the defaults (logged), never a parse
+/// failure of the whole settings.
+fn lenient_feature_docs<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> std::result::Result<orch_team::FeatureDocsSetting, D::Error> {
+    let v = Value::deserialize(d)?;
+    Ok(orch_team::FeatureDocsSetting::from_form(&v).unwrap_or_else(|e| {
+        eprintln!("project settings: feature_docs ignored: {e}");
+        Default::default()
+    }))
 }
 
 /// A malformed entry is dropped (logged), never a parse failure of the
@@ -819,7 +839,7 @@ fn shadowed<T: serde::de::DeserializeOwned>(rows: Vec<(String, String, String)>)
         .collect()
 }
 
-const FEATURE_COLS: &str = "id, project_id, slug, title, brief, base, integration_worktree, allocation, created_at_ms, archived, issues, pr_mode";
+const FEATURE_COLS: &str = "id, project_id, slug, title, brief, base, integration_worktree, allocation, created_at_ms, archived, issues, pr_mode, docs_location";
 
 fn row_feature(r: &rusqlite::Row) -> rusqlite::Result<Feature> {
     Ok(Feature {
@@ -842,6 +862,8 @@ fn row_feature(r: &rusqlite::Row) -> rusqlite::Result<Feature> {
             .map(|i| if i.key.is_empty() { IssueLink { key: issue_key(&i.reference), ..i } } else { i })
             .collect(),
         pr_mode: PrMode::parse(&r.get::<_, String>(11)?).unwrap_or_default(),
+        // Unreadable JSON reads as the legacy folders rather than hiding the feature.
+        docs_location: r.get::<_, Option<String>>(12)?.and_then(|s| serde_json::from_str(&s).ok()),
     })
 }
 
@@ -1085,10 +1107,11 @@ impl Store {
         self.write_touching(topics, move |tx| {
             tx.execute(
                 &format!(
-                    "INSERT INTO features({FEATURE_COLS}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)
+                    "INSERT INTO features({FEATURE_COLS}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)
                      ON CONFLICT(id) DO UPDATE SET title=excluded.title, brief=excluded.brief, base=excluded.base,
                        integration_worktree=excluded.integration_worktree, allocation=excluded.allocation,
-                       archived=excluded.archived, issues=excluded.issues, pr_mode=excluded.pr_mode"
+                       archived=excluded.archived, issues=excluded.issues, pr_mode=excluded.pr_mode,
+                       docs_location=excluded.docs_location"
                 ),
                 params![
                     f.id,
@@ -1102,7 +1125,8 @@ impl Store {
                     f.created_at_ms as i64,
                     f.archived,
                     js(&f.issues),
-                    f.pr_mode.as_str()
+                    f.pr_mode.as_str(),
+                    f.docs_location.as_ref().map(js)
                 ],
             )?;
             Ok(())
@@ -1904,6 +1928,7 @@ mod tests {
             archived: false,
             issues: vec![],
             pr_mode: Default::default(),
+            docs_location: None,
         };
         s.upsert_feature(&f).unwrap();
         assert_eq!(s.feature_by_slug("p1", "checkout-v2").unwrap().unwrap().id, "f1");
@@ -2182,6 +2207,7 @@ mod tests {
             archived: false,
             issues: vec![],
             pr_mode: Default::default(),
+            docs_location: None,
         })
         .unwrap();
         s.delete_project("p1").unwrap();
