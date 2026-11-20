@@ -173,23 +173,22 @@ pub fn repo_path(uri: &str) -> Option<String> {
 /// app folder.
 pub fn app_file(abs: &str) -> ArtifactMeta {
     let (path, frag) = split_figcraft_node(abs);
+    file_meta(path.to_string(), frag)
+}
+
+/// The meta of a file by its (repo or absolute) path: a `.figcraft` one keeps
+/// its tool and the `#node=` fragment, anything else is a plain file.
+fn file_meta(path: String, frag: Option<&str>) -> ArtifactMeta {
     let title = path.rsplit('/').next().map(str::to_string);
-    // A FigCraft file keeps its tool (and `#node=`), as a repo one does.
     if path.to_ascii_lowercase().ends_with(".figcraft") {
         let node = frag.map(|f| percent_decode(f.strip_prefix("node=").unwrap_or(f))).filter(|n| !n.is_empty());
-        return ArtifactMeta {
-            tool: "figcraft".into(),
-            title,
-            node_id: node,
-            path: Some(path.to_string()),
-            ..Default::default()
-        };
+        return ArtifactMeta { tool: "figcraft".into(), title, node_id: node, path: Some(path), ..Default::default() };
     }
     ArtifactMeta {
         tool: "file".into(),
         title,
-        previewable: image_mime(path).is_some(),
-        path: Some(path.to_string()),
+        previewable: image_mime(&path).is_some(),
+        path: Some(path),
         ..Default::default()
     }
 }
@@ -222,23 +221,9 @@ pub fn parse(uri: &str) -> Option<ArtifactMeta> {
     if raw.to_ascii_lowercase().ends_with(".figcraft")
         && let Some(path) = repo_path(raw)
     {
-        let node = frag.map(|f| percent_decode(f.strip_prefix("node=").unwrap_or(f))).filter(|n| !n.is_empty());
-        return Some(ArtifactMeta {
-            tool: "figcraft".into(),
-            title: path.rsplit('/').next().map(str::to_string),
-            node_id: node,
-            path: Some(path),
-            ..Default::default()
-        });
+        return Some(file_meta(path, frag));
     }
-    let path = repo_path(uri)?;
-    Some(ArtifactMeta {
-        tool: "file".into(),
-        title: path.rsplit('/').next().map(str::to_string),
-        previewable: image_mime(&path).is_some(),
-        path: Some(path),
-        ..Default::default()
-    })
+    Some(file_meta(repo_path(uri)?, None))
 }
 
 #[cfg(test)]
