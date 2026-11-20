@@ -7,6 +7,9 @@ use serde_json::Value;
 
 /// The legacy docs folder template, the default.
 pub const DEFAULT_DOCS_PATH: &str = ".orchestrator/features/{slug}";
+/// Folder names that hold code run outside the agents' sandbox (git hooks and
+/// config, Claude Code settings): never part of a docs or designs folder.
+pub const FORBIDDEN_COMPONENTS: &[&str] = &[".git", ".claude"];
 /// Longest folder template accepted.
 pub const MAX_PATH_LEN: usize = 200;
 
@@ -82,6 +85,23 @@ impl DocsLocation {
     }
 }
 
+impl DocsLocation {
+    /// The repo folders as resolved for a feature: no forbidden component, which
+    /// a `{slug}` substitution can build (`.g{slug}` with the slug `it`).
+    pub fn check_resolved(&self) -> Result<(), String> {
+        for l in [&self.docs, &self.designs].into_iter().filter(|l| !l.is_app()) {
+            if l.dir.split('/').any(|c| FORBIDDEN_COMPONENTS.iter().any(|f| c.eq_ignore_ascii_case(f))) {
+                return Err(format!(
+                    "the folder {} has a {} component: it holds code that runs outside the sandbox",
+                    l.dir,
+                    FORBIDDEN_COMPONENTS.join(" or ")
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
 /// The Docs row of the setting.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -129,7 +149,9 @@ pub fn check_path(raw: &str) -> Result<String, String> {
     if p.starts_with('/') || p.starts_with('~') || p.contains(['\\', '\n', '\r', '\0']) {
         return Err(INSIDE.into());
     }
-    if p.split('/').any(|c| c.is_empty() || c == ".." || c == "." || c.eq_ignore_ascii_case(".git")) {
+    if p.split('/').any(|c| {
+        c.is_empty() || c == ".." || c == "." || FORBIDDEN_COMPONENTS.iter().any(|f| c.eq_ignore_ascii_case(f))
+    }) {
         return Err(INSIDE.into());
     }
     if p.replace("{slug}", "").contains(['{', '}']) {
@@ -198,6 +220,23 @@ impl FeatureDocsSetting {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn forbidden_folders_are_refused_in_the_template_and_once_resolved() {
+        for p in [".claude/{slug}", "docs/.Claude/{slug}", ".GIT/{slug}"] {
+            assert!(check_path(p).is_err(), "{p}");
+        }
+        let s = FeatureDocsSetting {
+            docs: DocsChoice::Repo { path: ".g{slug}/docs".into() },
+            designs: DesignsChoice::WithDocs,
+        };
+        assert!(s.resolve("co", "/a").check_resolved().is_ok());
+        let e = s.resolve("it", "/a").check_resolved().unwrap_err();
+        assert!(e.contains(".git"), "{e}");
+        let s = FeatureDocsSetting { docs: DocsChoice::App, designs: DesignsChoice::Repo { path: ".{slug}/d".into() } };
+        assert!(s.resolve("claude", "/a").check_resolved().is_err());
+        assert!(FeatureDocsSetting::default().resolve("x", "/a").check_resolved().is_ok());
+    }
 
     #[test]
     fn default_resolves_to_the_legacy_folders() {

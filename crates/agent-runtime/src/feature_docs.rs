@@ -90,7 +90,7 @@ pub fn doc_lines(loc: &DocsLocation, worktree: &Path, docs: &[String]) -> Value 
     let files: Vec<Value> = docs
         .iter()
         .map(|d| {
-            let lines = dir.as_ref().ok().and_then(|dir| std::fs::read_to_string(dir.join(d)).ok());
+            let lines = dir.as_ref().ok().and_then(|dir| read_doc_text(&dir.join(d)).ok());
             let lines = lines.map_or(0, |t| t.lines().count());
             json!({"path": doc_path(loc, d), "lines": lines})
         })
@@ -105,6 +105,8 @@ pub fn feature_docs(loc: &DocsLocation, worktree: &Path) -> Vec<String> {
         .into_iter()
         .flatten()
         .flatten()
+        // `DirEntry::file_type` does not follow a link: a symlinked doc is not listed.
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
         .filter(|e| e.path().extension().is_some_and(|x| x == "md"))
         .map(|e| e.file_name().to_string_lossy().into_owned())
         .collect();
@@ -119,8 +121,24 @@ pub fn read_feature_doc(loc: &DocsLocation, worktree: &Path, name: &str) -> Resu
         bail!("invalid doc name {name:?}");
     }
     let p = real_dir(&loc.docs, worktree).with_context(|| format!("docs in {}", loc.docs.dir))?.join(name);
-    let text = std::fs::read_to_string(&p).with_context(|| format!("read {}", p.display()))?;
+    let text = read_doc_text(&p).with_context(|| format!("read {}", p.display()))?;
     Ok(cut(&text, 200_000))
+}
+
+/// The text of a doc: a regular file only, opened so that it can't follow a
+/// symlink or block on a FIFO (the folder is the agents' to change), at most
+/// 4 MB.
+fn read_doc_text(p: &Path) -> Result<String> {
+    use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
+    const MAX_DOC_BYTES: u64 = 4_000_000;
+    let file = std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(p)?;
+    if !file.metadata()?.is_file() {
+        bail!("not a regular file");
+    }
+    let mut bytes = vec![];
+    file.take(MAX_DOC_BYTES).read_to_end(&mut bytes)?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 /// `base/rel` with `.` and `..` folded without touching the disk; `None`
@@ -242,20 +260,35 @@ pub fn create_app_dirs(loc: &DocsLocation) -> Result<()> {
 /// (deleting the feature). Only that folder, never through a symlink: a
 /// folder that is a symlink, or resolves outside `<root>/projects`, is left.
 pub fn remove_app_base(root: &Path, project_id: &str, slug: &str) -> Result<bool> {
-    if !orch_git::valid_id(project_id) || !orch_git::valid_id(slug) {
+    if !orch_git::valid_id(slug) {
         bail!("invalid feature folder");
     }
-    let base = app_base(root, project_id, slug);
+    remove_app_folder(root, project_id, Some(slug))
+}
+
+/// The same for all of a project's features, `<root>/projects/<project>/features`
+/// (deleting the project with its history).
+pub fn remove_app_features(root: &Path, project_id: &str) -> Result<bool> {
+    remove_app_folder(root, project_id, None)
+}
+
+fn remove_app_folder(root: &Path, project_id: &str, slug: Option<&str>) -> Result<bool> {
+    if !orch_git::valid_id(project_id) {
+        bail!("invalid feature folder");
+    }
+    let features = |r: &Path| r.join("projects").join(project_id).join("features");
+    let base = slug.map_or_else(|| features(root), |s| app_base(root, project_id, s));
     let Ok(meta) = std::fs::symlink_metadata(&base) else { return Ok(false) };
     if meta.file_type().is_symlink() || !meta.is_dir() {
         bail!("{} is not a folder: left as it is", base.display());
     }
+    let croot = root.canonicalize()?;
     let projects = root.join("projects").canonicalize().context("app projects folder")?;
-    if projects != root.canonicalize()?.join("projects") {
+    if projects != croot.join("projects") {
         bail!("{} resolves outside the app's data: left as it is", base.display());
     }
     let real = base.canonicalize()?;
-    if real != projects.join(project_id).join("features").join(slug) {
+    if real != slug.map_or_else(|| features(&croot), |s| app_base(&croot, project_id, s)) {
         bail!("{} resolves outside the app's data: left as it is", base.display());
     }
     // `remove_dir_all` does not follow symlinks inside the folder.
@@ -378,7 +411,25 @@ mod tests {
         assert!(!is_app_file(&loc, &base.join("docs/design")), "a folder is no file");
         std::os::unix::fs::symlink(base.join("docs/design/h.png"), base.join("docs/link.png")).unwrap();
         assert!(!is_app_file(&loc, &base.join("docs/link.png")), "a symlink, even inside, is refused");
+
+        // A symlinked or FIFO doc is neither listed nor read.
+        std::fs::write(root.join("secret.md"), "secret").unwrap();
+        std::os::unix::fs::symlink(root.join("secret.md"), base.join("docs/leak.md")).unwrap();
+        let fifo = std::ffi::CString::new(base.join("docs/pipe.md").to_string_lossy().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+        assert_eq!(feature_docs(&loc, wt.path()), ["spec.md"]);
+        assert!(read_feature_doc(&loc, wt.path(), "leak.md").is_err());
+        assert!(read_feature_doc(&loc, wt.path(), "pipe.md").is_err());
+        assert_eq!(doc_lines(&loc, wt.path(), &["leak.md".into(), "pipe.md".into()])[0]["lines"], 0);
+        assert!(read_feature_doc(&loc, wt.path(), "spec.md").is_ok());
         assert!(!is_app_file(&DocsLocation::legacy("co"), &base.join("docs/design/h.png")));
+
+        // All of a project's feature folders go with the project.
+        assert!(remove_app_features(&root, "p1").unwrap());
+        assert!(!root.join("projects/p1/features").exists() && root.join("projects/p1").exists());
+        assert!(!remove_app_features(&root, "p1").unwrap(), "nothing left");
+        assert!(remove_app_features(&root, "../x").is_err());
+        create_app_dirs(&loc).unwrap();
 
         // A symlink planted in place of the base is never followed.
         let keep = root.join("keep");

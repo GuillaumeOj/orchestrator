@@ -259,12 +259,12 @@ fn team_context(team: &Team, me: &str, roles: &[RoleDef], f: &FeatureCtx) -> Str
     };
     // Overrides the starters' "`design/` in the docs folder" (their prompts stay as stored).
     let designs = match (&loc.designs, loc.designs_with_docs()) {
-        (_, true) => String::new(),
         (d, _) if d.is_app() => format!(
-            "\nDesigns folder: {} (not saved in the repository): design exports go there instead of `design/` in \
-             the docs folder; never commit them, hand off their absolute path, and read them there (no sync needed).",
+            "\nDesigns folder: {} (not saved in the repository): design exports go there (it replaces the starters' `design/` \
+             in your worktree); never commit them, hand off their absolute path, and read them there (no sync needed).",
             f.designs_dir()
         ),
+        (_, true) => String::new(),
         _ => format!(
             "\nDesigns folder: {} on that branch: design exports go there instead of `design/` in the docs folder.",
             f.designs_dir()

@@ -456,7 +456,7 @@ impl Runtime {
         let loc = crate::feature_docs::FeatureDocs::of(&f);
         let names = crate::feature_docs::feature_docs(&loc, &wt);
         if names.is_empty() {
-            bail!("feature {} has no docs on its integration branch", f.slug);
+            bail!("feature {} has no docs in its docs folder ({})", f.slug, loc.docs.display());
         }
         let api = self.notion_api();
         let mut p = self.published(feature_id);

@@ -192,3 +192,30 @@ fn a_launch_that_cannot_create_the_app_folders_stores_no_feature() {
     assert!(err.to_string().contains("create"), "{err}");
     assert!(rt.db.feature(&format!("{pid}-fx")).unwrap().is_none(), "no feature row without a run");
 }
+
+#[test]
+fn a_slug_cannot_build_a_forbidden_folder() {
+    let (_d, rt, _rd, _repo, pid) = setup();
+    set_docs(&rt, &pid, json!({"docs": {"kind": "repo", "path": ".g{slug}/docs"}, "designs": {"kind": "with_docs"}}));
+    let err = rt
+        .launch(&LaunchSpec {
+            project_id: pid.clone(),
+            team_id: "bugfix-squad".into(),
+            slug: "it".into(),
+            title: "t".into(),
+            brief: "b".into(),
+            ..Default::default()
+        })
+        .unwrap_err();
+    assert!(err.to_string().contains(".git"), "{err}");
+    assert!(rt.db.feature(&format!("{pid}-it")).unwrap().is_none());
+}
+
+#[test]
+fn designs_with_app_docs_are_told_to_the_designer() {
+    let (_d, rt, _rd, _repo, pid) = setup();
+    set_docs(&rt, &pid, json!({"docs": {"kind": "app"}, "designs": {"kind": "with_docs"}}));
+    launch(&rt, &pid);
+    let (prompt, _) = compiled(&rt, "fx-lead-1");
+    assert!(prompt.contains("Designs folder:") && prompt.contains("never commit them"), "{prompt}");
+}

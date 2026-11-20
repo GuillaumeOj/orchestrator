@@ -442,7 +442,9 @@ impl Runtime {
         crate::issues::check_mode(feature.pr_mode, feature.issues.len())?;
         // §3.4: the app folders exist before any agent is told about them, and
         // before anything is stored or created, so a failure leaves nothing behind.
-        crate::feature_docs::create_app_dirs(&crate::feature_docs::FeatureDocs::of(&feature))?;
+        let loc = crate::feature_docs::FeatureDocs::of(&feature);
+        loc.check_resolved().map_err(|m| anyhow!(m))?;
+        crate::feature_docs::create_app_dirs(&loc)?;
         // The snapshot this run uses (FR-308). A snapshot of this version
         // taken earlier with other roles (a role edited since, or created
         // after a draft was saved) gets a new version instead of being kept.
@@ -1679,7 +1681,10 @@ impl Runtime {
                 // kept in the app's data (canonical, so no `..` or link out).
                 let loc = crate::feature_docs::FeatureDocs::of(&cx.feature);
                 let abs = Some(artifact.trim()).filter(|a| a.starts_with('/'));
-                let app_file = abs.is_some_and(|a| crate::feature_docs::is_app_file(&loc, Path::new(a)));
+                // A FigCraft file may carry a `#node=` fragment, which is not part of the path.
+                let app_file = abs.is_some_and(|a| {
+                    crate::feature_docs::is_app_file(&loc, Path::new(orch_team::artifact::split_figcraft_node(a).0))
+                });
                 if kind == "design" && abs.is_some() && !app_file {
                     let dirs = loc.app_dirs();
                     if dirs.is_empty() {
