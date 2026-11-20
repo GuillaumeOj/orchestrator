@@ -216,9 +216,13 @@ pub(crate) fn read_capped(real: &Path) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-/// Is `p` (absolute) inside one of the feature's app folders? For a design
-/// hand-off of a file that is not in the repository.
-pub fn in_app_dirs(loc: &DocsLocation, p: &Path) -> bool {
+/// Is `p` (absolute) a regular file inside one of the feature's app folders?
+/// For a design hand-off of a file that is not in the repository: a folder or
+/// a symlink (even one that stays inside) is refused.
+pub fn is_app_file(loc: &DocsLocation, p: &Path) -> bool {
+    if !std::fs::symlink_metadata(p).is_ok_and(|m| m.is_file()) {
+        return false;
+    }
     let Ok(real) = p.canonicalize() else { return false };
     app_dirs(loc)
         .iter()
@@ -369,9 +373,12 @@ mod tests {
         );
         let abs = base.join("docs/spec.md");
         assert_eq!(doc_lines(&loc, wt.path(), &["spec.md".into()])[0]["path"], json!(abs.to_string_lossy()));
-        assert!(in_app_dirs(&loc, &base.join("docs/design/h.png")));
-        assert!(!in_app_dirs(&loc, &root));
-        assert!(!in_app_dirs(&DocsLocation::legacy("co"), &base.join("docs/design/h.png")));
+        assert!(is_app_file(&loc, &base.join("docs/design/h.png")));
+        assert!(!is_app_file(&loc, &root));
+        assert!(!is_app_file(&loc, &base.join("docs/design")), "a folder is no file");
+        std::os::unix::fs::symlink(base.join("docs/design/h.png"), base.join("docs/link.png")).unwrap();
+        assert!(!is_app_file(&loc, &base.join("docs/link.png")), "a symlink, even inside, is refused");
+        assert!(!is_app_file(&DocsLocation::legacy("co"), &base.join("docs/design/h.png")));
 
         // A symlink planted in place of the base is never followed.
         let keep = root.join("keep");

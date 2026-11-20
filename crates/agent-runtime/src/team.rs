@@ -462,9 +462,10 @@ impl Runtime {
         if !spec.brief.trim().is_empty() {
             feature.brief = spec.brief.trim().to_string();
         }
-        self.db.upsert_feature(&feature)?;
-        // §3.4: the app folders exist before any agent is told about them.
+        // §3.4: the app folders exist before any agent is told about them, and
+        // before the feature is stored, so a failure leaves no row without a run.
         crate::feature_docs::create_app_dirs(&crate::feature_docs::FeatureDocs::of(&feature))?;
+        self.db.upsert_feature(&feature)?;
         let run = TeamRun {
             id: format!("run-{}", &uuid::Uuid::new_v4().simple().to_string()[..10]),
             team_id: team.id.clone(),
@@ -1678,7 +1679,7 @@ impl Runtime {
                 // kept in the app's data (canonical, so no `..` or link out).
                 let loc = crate::feature_docs::FeatureDocs::of(&cx.feature);
                 let abs = Some(artifact.trim()).filter(|a| a.starts_with('/'));
-                let app_file = abs.is_some_and(|a| crate::feature_docs::in_app_dirs(&loc, Path::new(a)));
+                let app_file = abs.is_some_and(|a| crate::feature_docs::is_app_file(&loc, Path::new(a)));
                 if kind == "design" && abs.is_some() && !app_file {
                     let dirs = loc.app_dirs();
                     if dirs.is_empty() {
@@ -1718,7 +1719,7 @@ impl Runtime {
                         .collect();
                     exported.dedup();
                     let lead = cx.team.lead().map(|n| n.id.as_str()).unwrap_or("the lead");
-                    crate::artifacts::design_handoff_body(artifact, note, me, lead, &exported)
+                    crate::artifacts::design_handoff_body(artifact, note, me, lead, &exported, app_file)
                 } else {
                     format!("{kind} {artifact}{}", if note.is_empty() { String::new() } else { format!(": {note}") })
                 };

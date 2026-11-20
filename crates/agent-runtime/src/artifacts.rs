@@ -53,26 +53,46 @@ pub fn meta_of(a: &Artifact) -> Option<ArtifactMeta> {
     a.meta.clone().or_else(|| parse(&a.uri))
 }
 
-/// The design hand-off message (spec §3.2): the repo paths of the images
-/// `from` exported in this run, and how the recipient gets them.
-pub fn design_handoff_body(uri: &str, note: &str, from: &str, lead: &str, exported: &[String]) -> String {
+/// The design hand-off message (spec §3.2): the images `from` exported in
+/// this run, and how the recipient gets them. A repo path is on `from`'s
+/// branch until the integration merge; an absolute path (`app_file` for the
+/// hand-off itself) is in the feature's app folder, readable directly.
+pub fn design_handoff_body(
+    uri: &str,
+    note: &str,
+    from: &str,
+    lead: &str,
+    exported: &[String],
+    app_file: bool,
+) -> String {
     let mut s = format!("design {uri}{}", if note.is_empty() { String::new() } else { format!(": {note}") });
-    let link_only = parse(uri).is_none_or(|m| m.tool != "file");
-    if link_only {
+    if app_file {
+        s.push_str("\nThis file is in the feature's app folder: Read it directly, there is nothing to sync.");
+    } else if parse(uri).is_none_or(|m| m.tool != "file") {
         s.push_str(&format!(
             "\nThis is a link only: agents can't open it. Ask {from} to export the frame as an image under the \
              feature's design/ folder and hand it off again."
         ));
     }
-    if !exported.is_empty() {
+    let (app, repo): (Vec<&String>, Vec<&String>) = exported.iter().partition(|p| p.starts_with('/'));
+    for (list, tail) in [
+        (app, "\nThey are in the feature's app folder: Read them directly.".to_string()),
+        (
+            repo,
+            format!(
+                "\nThey are on {from}'s branch until {lead} merges it into the integration branch; then call \
+                 mcp__orch__sync_integration and Read them in your worktree."
+            ),
+        ),
+    ] {
+        if list.is_empty() {
+            continue;
+        }
         s.push_str(&format!("\nExported images from {from} in this feature:"));
-        for p in exported {
+        for p in list {
             s.push_str(&format!("\n- {p}"));
         }
-        s.push_str(&format!(
-            "\nThey are on {from}'s branch until {lead} merges it into the integration branch; then call \
-             mcp__orch__sync_integration and Read them in your worktree."
-        ));
+        s.push_str(&tail);
     }
     s
 }
@@ -134,9 +154,7 @@ impl Runtime {
         }
         let p = PathBuf::from(path);
         let loc = crate::feature_docs::FeatureDocs::of(f);
-        if !crate::feature_docs::in_app_dirs(&loc, &p)
-            || !std::fs::symlink_metadata(&p).is_ok_and(|m| m.file_type().is_file())
-        {
+        if !crate::feature_docs::is_app_file(&loc, &p) {
             bail!("not found");
         }
         Ok(Some(p))
@@ -440,11 +458,22 @@ mod tests {
             "ui",
             "lead",
             &[".orchestrator/features/f/design/a.png".into(), ".orchestrator/features/f/design/b.svg".into()],
+            false,
         );
         assert!(b.starts_with("design .orchestrator/features/f/design/a.png: checkout"));
         assert!(b.contains("\n- .orchestrator/features/f/design/b.svg"));
         assert!(b.contains("mcp__orch__sync_integration") && !b.contains("link only"));
-        let l = design_handoff_body("https://design.penpot.app/#/workspace?file-id=x", "", "ui", "lead", &[]);
+        let l = design_handoff_body("https://design.penpot.app/#/workspace?file-id=x", "", "ui", "lead", &[], false);
         assert!(l.contains("link only") && l.contains("Ask ui to export"));
+        let a = design_handoff_body(
+            "/app/f/docs/design/a.png",
+            "",
+            "ui",
+            "lead",
+            &["/app/f/docs/design/a.png".into()],
+            true,
+        );
+        assert!(a.contains("app folder") && a.contains("Read it directly"), "{a}");
+        assert!(!a.contains("sync_integration") && !a.contains("link only"), "{a}");
     }
 }

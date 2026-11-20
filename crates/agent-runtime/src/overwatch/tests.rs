@@ -502,6 +502,8 @@ fn a_long_batch_goes_to_messages_which_it_may_read() {
     let reads = rt.overwatch_reads(&day);
     assert!(reads.iter().any(|r| path.starts_with(r)), "{reads:?}");
     assert!(reads.contains(&day));
+    let app_docs = crate::feature_docs::app_base(&rt.cfg.paths.root, "p", "later").join("docs");
+    assert!(reads.iter().any(|r| app_docs.starts_with(r)), "feature folders created later are readable");
     assert!(
         !reads.iter().any(|r| r == &rt.cfg.paths.root || r == &rt.cfg.paths.agents_dir()),
         "not the rest of the app"

@@ -171,3 +171,24 @@ fn designs_alone_not_saved() {
     assert!(prompt.contains("Write `docs/fx/spec.md`") && prompt.contains("commit them with mcp__orch__commit"));
     assert!(settings["sandbox"]["filesystem"]["allowWrite"].as_array().unwrap().contains(&json!(design)));
 }
+
+#[test]
+fn a_launch_that_cannot_create_the_app_folders_stores_no_feature() {
+    let (_d, rt, _rd, _repo, pid) = setup();
+    set_docs(&rt, &pid, json!({"docs": {"kind": "app"}, "designs": {"kind": "with_docs"}}));
+    // A file where the `projects` folder should be: the folders cannot be made.
+    std::fs::create_dir_all(&rt.cfg.paths.root).unwrap();
+    std::fs::write(rt.cfg.paths.root.join("projects"), "x").unwrap();
+    let err = rt
+        .launch(&LaunchSpec {
+            project_id: pid.clone(),
+            team_id: "bugfix-squad".into(),
+            slug: "fx".into(),
+            title: "Fix X".into(),
+            brief: "b".into(),
+            ..Default::default()
+        })
+        .unwrap_err();
+    assert!(err.to_string().contains("create"), "{err}");
+    assert!(rt.db.feature(&format!("{pid}-fx")).unwrap().is_none(), "no feature row without a run");
+}

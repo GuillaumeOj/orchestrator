@@ -86,6 +86,7 @@ pub fn features(rt: &agent_runtime::runtime::Runtime) -> Result<Vec<Value>> {
             json!({
                 "id": f.id, "project_id": f.project_id, "slug": f.slug, "title": f.title,
                 "branch": f.integration_branch(), "archived": f.archived, "issues": f.issues, "pr_mode": f.pr_mode,
+                "docs_location": agent_runtime::feature_docs::FeatureDocs::of(&f),
                 "run": run.as_ref().map(|r| json!({"id": r.id, "status": r.status, "team_id": r.team_id, "pr_url": r.pr_url,
                                                    "prs_view": agent_runtime::issues::prs_view(r, &f, gates.get(&r.id).map_or(&[], Vec::as_slice))})),
                 "tasks": {"done": done, "total": total},
