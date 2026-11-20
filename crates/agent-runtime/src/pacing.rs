@@ -111,9 +111,11 @@ impl Runtime {
                 None => (rec.role.model.clone(), "restore"),
             }
         };
+        // The flag belongs to this boundary: it must not outlive it when no
+        // process is live.
+        let switch_failed = self.house().switch_failed.remove(&rec.id);
         let Some(l) = live else { return false };
         // The process would not stop for the switch: the task runs on it.
-        let switch_failed = self.house().switch_failed.remove(&rec.id);
         if l.model == want || switch_failed {
             l.task.store(task.unwrap_or(0), Ordering::Relaxed);
             return false;
@@ -290,6 +292,7 @@ impl Runtime {
 
 #[cfg(test)]
 mod tests {
+    use crate::state::StopIntent;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -408,11 +411,30 @@ mod tests {
         seat_on(&rt, "a1", 1, Some("opus"));
         insert_test_live(&rt, "a1", Some("sonnet"), 0, d.path());
         idle(&rt, "a1");
+        // A stop already under way: no background thread is spawned, so the
+        // failure below is the only writer (deterministic).
+        rt.store.write(|s| s.agents.get_mut("a1").unwrap().tracker.stop_intent = StopIntent::Suspend).unwrap();
         assert!(rt.task_boundary(&rec(&rt, "a1")), "the switch is under way: the task waits");
-        // Its stop failed.
+        // Its stop failed (what `suspend_in_background`'s thread does).
+        rt.store.write(|s| s.agents.get_mut("a1").unwrap().tracker.stop_intent = StopIntent::None).unwrap();
         rt.house().switch_failed.insert("a1".into());
         assert!(!rt.task_boundary(&rec(&rt, "a1")), "it runs on the current process");
         assert!(rt.house().switch_failed.is_empty(), "asked once");
+        let l = rt.live("a1").expect("still live");
+        assert_eq!(l.task.load(Ordering::Relaxed), 1);
+    }
+
+    /// A failure flag left for an agent with no live process does not outlive
+    /// the boundary that saw it.
+    #[test]
+    fn a_stale_switch_failed_flag_is_cleared_without_a_live_process() {
+        let d = tempfile::Builder::new().prefix("orchrt").tempdir_in(orch_protocol::test_tmp()).unwrap();
+        let rt = Runtime::new(test_cfg(d.path(), false)).unwrap();
+        agent(&rt, d.path(), "a1", "sonnet", None);
+        seat_on(&rt, "a1", 1, Some("opus"));
+        rt.house().switch_failed.insert("a1".into());
+        assert!(!rt.task_boundary(&rec(&rt, "a1")));
+        assert!(rt.house().switch_failed.is_empty());
     }
 
     /// Spec §2.2: a task with a model runs on it (the agent is suspended
