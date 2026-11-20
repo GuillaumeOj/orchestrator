@@ -175,7 +175,7 @@ const DOC = /^(?:\.\/)?[\w@.-]+(?:\/[\w@.-]+)*\.md(?:#.*)?$/i;
 
 /** An absolute doc path: only when written in backticks / angle brackets, percent-encoded, or holding a space
  *  (a markdown `<…>` destination arrives unwrapped). `featureDoc` then decides whether it may open at all. */
-const ABS_DOC = /^\/[^\0-\x1f#]*\.md$/i;
+const ABS_DOC = /^\/[^\p{Cc}#]*\.md$/iu;
 
 /**
  * What a link in the Overwatch's text or a source means (api-contract §5):
