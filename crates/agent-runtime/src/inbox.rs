@@ -1343,7 +1343,7 @@ impl Runtime {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime::tests::{hook, test_runtime};
+    use crate::runtime::tests::{hook, insert_test_live, test_runtime};
     use std::sync::Arc;
 
     fn perm(cmd: &str) -> orch_protocol::HookMsg {
@@ -1568,7 +1568,7 @@ mod tests {
     #[test]
     fn a_parked_agent_is_not_resumed_for_other_work() {
         let (_d, rt) = test_runtime(true);
-        rt.store.write(|s| s.agents.get_mut("a1").unwrap().tracker.state = AgentState::Suspended).unwrap();
+        // Parked while it ran, then suspended.
         rt.on_hook(&perm("ls"), None);
         rt.store.write(|s| s.agents.get_mut("a1").unwrap().tracker.state = AgentState::Suspended).unwrap();
         rt.deliver("a1", "a team message").unwrap();
@@ -1763,6 +1763,8 @@ mod tests {
         let bodies: Vec<String> = rt.store.read(|s| s.turns.iter().map(|t| t.body.clone()).collect());
         assert!(bodies.contains(&"ORCH: approved: retry the call Bash pnpm add zod".to_string()), "{bodies:?}");
         assert!(bodies.contains(&"ORCH: approved: proceed".to_string()), "{bodies:?}");
+        // The resumed process asks again (a gone one's hooks are dropped).
+        insert_test_live(&rt, "a1", None, 0, _d.path());
         assert_eq!(behavior(&rt.on_hook(&perm_input("pnpm add zod"), None)).as_deref(), Some("allow"));
     }
 
