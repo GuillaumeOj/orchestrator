@@ -163,7 +163,9 @@ describe('Overwatch links to docs kept outside the repository', () => {
   });
 
   it('does not link an absolute path outside any feature folder', () => {
-    const r = refKind('`/Users/me/Library/Application Support/Orchestrator/other/spec.md`');
+    const r = /** @type {{ abs: boolean, path: string }} */ (
+      refKind('`/Users/me/Library/Application Support/Orchestrator/other/spec.md`')
+    );
     expect(r.abs).toBe(true);
     expect(featureDoc(r.path, features, true)).toBeNull();
     expect(featureDoc('/x/.orchestrator/features/a/spec.md', features, true)).toBeNull();
