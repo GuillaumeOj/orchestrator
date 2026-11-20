@@ -502,8 +502,28 @@ fn a_long_batch_goes_to_messages_which_it_may_read() {
     let reads = rt.overwatch_reads(&day);
     assert!(reads.iter().any(|r| path.starts_with(r)), "{reads:?}");
     assert!(reads.contains(&day));
+    rt.db
+        .upsert_project(&orch_store::Project {
+            id: "p".into(),
+            name: "p".into(),
+            path: rt.cfg.paths.root.join("repo"),
+            default_branch: "main".into(),
+            remotes: vec![],
+            worktree_root: rt.cfg.paths.root.join("w"),
+            task_backend: Default::default(),
+            track_orchestrator_dir: true,
+            settings: json!({}),
+            created_at_ms: 1,
+            last_active_at_ms: 1,
+            last_fetch_at_ms: None,
+            last_fetch_error: None,
+            archived: false,
+        })
+        .unwrap();
+    let reads = rt.overwatch_reads(&day);
     let app_docs = crate::feature_docs::app_base(&rt.cfg.paths.root, "p", "later").join("docs");
     assert!(reads.iter().any(|r| app_docs.starts_with(r)), "feature folders created later are readable");
+    assert!(!reads.iter().any(|r| r.ends_with("projects/p/policy.toml") || r.ends_with("projects/p")), "{reads:?}");
     assert!(
         !reads.iter().any(|r| r == &rt.cfg.paths.root || r == &rt.cfg.paths.agents_dir()),
         "not the rest of the app"

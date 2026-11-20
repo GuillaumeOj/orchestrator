@@ -440,6 +440,9 @@ impl Runtime {
             feature
         };
         crate::issues::check_mode(feature.pr_mode, feature.issues.len())?;
+        // §3.4: the app folders exist before any agent is told about them, and
+        // before anything is stored or created, so a failure leaves nothing behind.
+        crate::feature_docs::create_app_dirs(&crate::feature_docs::FeatureDocs::of(&feature))?;
         // The snapshot this run uses (FR-308). A snapshot of this version
         // taken earlier with other roles (a role edited since, or created
         // after a draft was saved) gets a new version instead of being kept.
@@ -462,9 +465,6 @@ impl Runtime {
         if !spec.brief.trim().is_empty() {
             feature.brief = spec.brief.trim().to_string();
         }
-        // §3.4: the app folders exist before any agent is told about them, and
-        // before the feature is stored, so a failure leaves no row without a run.
-        crate::feature_docs::create_app_dirs(&crate::feature_docs::FeatureDocs::of(&feature))?;
         self.db.upsert_feature(&feature)?;
         let run = TeamRun {
             id: format!("run-{}", &uuid::Uuid::new_v4().simple().to_string()[..10]),
