@@ -39,7 +39,110 @@ fn mention_ids(context: Option<&Value>) -> Result<Vec<String>> {
     Ok(ids)
 }
 
+/// Pasted texts a message may carry, their size, and the number range of a placeholder.
+const PASTES_MAX: usize = 10;
+const PASTE_CHARS_MAX: usize = 200_000;
+
+/// `context.pastes`: `[{n, text}]`, validated (api-contract §1.1). A bad shape is `bad_request`.
+fn paste_inputs(context: Option<&Value>) -> Result<Vec<(u64, String)>> {
+    let Some(p) = context.and_then(|c| c.get("pastes")).filter(|p| !p.is_null()) else { return Ok(vec![]) };
+    let items = p.as_array().ok_or_else(|| anyhow::anyhow!("bad_request: context.pastes is an array"))?;
+    if items.len() > PASTES_MAX {
+        bail!("bad_request: at most {PASTES_MAX} pastes");
+    }
+    let mut out: Vec<(u64, String)> = Vec::new();
+    for it in items {
+        let (Some(n), Some(text)) = (it.get("n"), it.get("text").and_then(Value::as_str)) else {
+            bail!("bad_request: a paste is {{n, text}}");
+        };
+        let n = n
+            .as_u64()
+            .filter(|n| (1..=99).contains(n))
+            .ok_or_else(|| anyhow::anyhow!("bad_request: paste n is 1..=99"))?;
+        if out.iter().any(|(m, _)| *m == n) {
+            bail!("bad_request: paste n {n} is twice");
+        }
+        if text.is_empty() {
+            bail!("bad_request: paste #{n} is empty");
+        }
+        if text.chars().count() > PASTE_CHARS_MAX {
+            bail!("bad_request: paste #{n} is at most {PASTE_CHARS_MAX} characters");
+        }
+        out.push((n, text.to_string()));
+    }
+    Ok(out)
+}
+
+/// The pasted texts of a stored entry's meta, as the event carries them.
+pub(crate) fn pastes_of_meta(meta: Option<&Value>) -> Option<Vec<Value>> {
+    let v = meta?.get("pastes")?.as_array()?;
+    (!v.is_empty()).then(|| v.clone())
+}
+
+/// Removes the files of a `meta.pastes` list (best effort).
+fn remove_paste_files(pastes: &[Value]) {
+    for f in pastes.iter().filter_map(|p| p["path"].as_str()) {
+        let _ = std::fs::remove_file(f);
+    }
+}
+
 impl Runtime {
+    /// `<root>/overwatch/pastes`: where the pasted texts live (all days).
+    pub(crate) fn overwatch_pastes_dir(&self) -> std::path::PathBuf {
+        self.cfg.paths.root.join("overwatch").join("pastes")
+    }
+
+    /// Writes the kept pastes under `pastes/<day>/<key>-<n>.md`; on a failure removes what it wrote.
+    /// Returns the `meta.pastes` list.
+    fn write_pastes(&self, day: &str, text: &str, pastes: Vec<(u64, String)>) -> Result<Vec<Value>> {
+        let kept: Vec<_> = pastes
+            .into_iter()
+            .filter(|(n, _)| {
+                let ok = text.contains(&format!("[Pasted text #{n} "));
+                if !ok {
+                    eprintln!("warn: chat_send: paste #{n} has no placeholder in the text, dropped");
+                }
+                ok
+            })
+            .collect();
+        if kept.is_empty() {
+            return Ok(vec![]);
+        }
+        let dir = self.overwatch_pastes_dir().join(day);
+        std::fs::create_dir_all(&dir)?;
+        let key: String = uuid::Uuid::new_v4().simple().to_string().chars().take(8).collect();
+        let mut meta: Vec<Value> = vec![];
+        for (n, body) in &kept {
+            let path = dir.join(format!("{key}-{n}.md"));
+            let item = json!({"n": n, "chars": body.chars().count(), "lines": body.lines().count(),
+                              "path": path.to_string_lossy()});
+            meta.push(item);
+            if let Err(e) = std::fs::write(&path, body) {
+                remove_paste_files(&meta);
+                return Err(anyhow::Error::new(e).context("the pasted text was not written"));
+            }
+        }
+        Ok(meta)
+    }
+
+    /// `chat_paste`: the text of paste `n` of a user entry (api-contract §1.2).
+    pub fn chat_paste(&self, entry: &str, n: u64) -> Result<Value> {
+        let nf = || anyhow::anyhow!("not_found: no pasted text #{n} in {entry}");
+        let num: u64 =
+            entry.trim_start_matches("c-").parse().map_err(|_| anyhow::anyhow!("not_found: no entry {entry}"))?;
+        let e = self.db.chat_get(num)?.ok_or_else(|| anyhow::anyhow!("not_found: no entry {entry}"))?;
+        let item = pastes_of_meta(e.meta.as_ref()).and_then(|v| v.into_iter().find(|p| p["n"] == n)).ok_or_else(nf)?;
+        let path = std::path::PathBuf::from(item["path"].as_str().ok_or_else(nf)?);
+        // Only under the pastes dir, symlinks and `..` resolved.
+        let root = self.overwatch_pastes_dir().canonicalize().map_err(|_| nf())?;
+        let path = path.canonicalize().map_err(|_| nf())?;
+        if !path.starts_with(&root) {
+            return Err(nf());
+        }
+        let text = std::fs::read_to_string(&path).map_err(|_| nf())?;
+        Ok(json!({"n": n, "text": text, "chars": text.chars().count(), "lines": text.lines().count()}))
+    }
+
     /// Writes an entry and pushes it with the next `now` event.
     pub(crate) fn chat_put(&self, e: ChatEntry) -> Result<ChatEntry> {
         let w = self.db.chat_insert(&e)?;
@@ -129,6 +232,7 @@ impl Runtime {
             None => None,
         };
         let mention_ids = mention_ids(context)?;
+        let paste_inputs = paste_inputs(context)?;
         let text = text.trim();
         if text.is_empty() {
             bail!("bad_request: an empty message");
@@ -138,6 +242,7 @@ impl Runtime {
         }
         let (now, day) = self.overwatch_today();
         let mentions = self.mention_snapshots(&mention_ids);
+        let pastes = self.write_pastes(&day, text, paste_inputs)?;
         let pending = matches!(self.overwatch_status().status, Status::Off | Status::Down | Status::Paused);
         let e = ChatEntry {
             day,
@@ -154,22 +259,39 @@ impl Runtime {
                 if !mentions.is_empty() {
                     m["mentions"] = json!(mentions);
                 }
+                if !pastes.is_empty() {
+                    m["pastes"] = json!(pastes);
+                }
                 m
             }),
             ..Default::default()
         };
-        let e = self.chat_put(e)?;
+        let e = match self.chat_put(e) {
+            Ok(e) => e,
+            Err(err) => {
+                remove_paste_files(&pastes);
+                return Err(err);
+            }
+        };
+        let paste_chars: u64 = pastes.iter().filter_map(|p| p["chars"].as_u64()).sum();
         let _ = self.db.audit(
             "user",
             None,
             "chat_send",
             Some(&e.id()),
             "ok",
-            json!({"chars": text.chars().count(), "mentions": mentions.len()}),
+            json!({"chars": text.chars().count(), "mentions": mentions.len(),
+                   "pastes": pastes.len(), "paste_chars": paste_chars}),
         );
         let ids: Vec<String> = mentions.iter().filter_map(|m| m["id"].as_str().map(str::to_string)).collect();
         let payload = self.mention_payloads(&ids);
-        self.overwatch_user_message_with(&e.id(), text, plan, (!payload.is_empty()).then_some(payload));
+        self.overwatch_user_message_with(
+            &e.id(),
+            text,
+            plan,
+            (!payload.is_empty()).then_some(payload),
+            (!pastes.is_empty()).then_some(pastes),
+        );
         Ok(e)
     }
 
@@ -252,6 +374,9 @@ impl Runtime {
             bail!("bad_request: only a message that was not delivered can be discarded");
         }
         self.db.chat_delete(n)?;
+        if let Some(p) = pastes_of_meta(e.meta.as_ref()) {
+            remove_paste_files(&p);
+        }
         self.overwatch_forget_pending(&e.id());
         let _ = self.db.audit("user", None, "chat_discard", Some(&e.id()), "ok", json!({}));
         self.touch("chat");

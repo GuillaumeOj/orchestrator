@@ -218,6 +218,9 @@ pub struct Event {
     /// resolved when the event is built (add-mention-in-overwatch api-contract §2).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mentions: Option<Vec<Value>>,
+    /// The pasted texts of the message (`meta.pastes`: `{n, chars, lines, path}`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pastes: Option<Vec<Value>>,
 }
 
 impl Event {
@@ -237,6 +240,7 @@ impl Event {
             candidate: None,
             plan: None,
             mentions: None,
+            pastes: None,
         }
     }
 
@@ -264,6 +268,10 @@ impl Event {
         if let Some(m) = &self.mentions {
             l.push_str(" · mentions ");
             l.push_str(&Value::Array(m.clone()).to_string());
+        }
+        if let Some(p) = &self.pastes {
+            l.push_str(" · pastes ");
+            l.push_str(&Value::Array(p.clone()).to_string());
         }
         l
     }

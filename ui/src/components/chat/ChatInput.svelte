@@ -5,14 +5,17 @@
   // the status: the message waits and says so. The draft lives in `app.chatDraft`.
   // `@` opens the list of features to mention (add-mention-in-overwatch design-notes): a
   // combobox on this textarea, the keys below, the picks kept in `app.chatMentions`.
+  // A long plain-text paste becomes a placeholder `[Pasted text #1 · 5 000 chars]` (allow-long-text
+  // spec §3.2); the text waits in `app.chatPastes` and goes with the send (lib/pastes.js).
   import { tick } from 'svelte';
   import { app, features, openSettings, projectName } from '../../lib/app.svelte.js';
   import { clearPlan, intakeUi } from '../../lib/intake.svelte.js';
   import { candidates, countText, insertToken, mentionsToSend, tokenAtCaret } from '../../lib/mentions.js';
   import { COUNT_FROM, inputHint, MAX_CHARS } from '../../lib/overwatch.js';
+  import { atInPlaceholder, countChars, countLines, diffEdit, isLong, keep, nextN, normalize, pasteError, pastesToSend, placeholder, spaced, wholeAt } from '../../lib/pastes.js';
   import MentionPopup from './MentionPopup.svelte';
 
-  /** @type {{ ow: any, onsend?: (text: string, mentions: any[]) => void, onleave?: () => void, onannounce?: (msg: string) => void }} */
+  /** @type {{ ow: any, onsend?: (text: string, mentions: any[], pastes: { n: number, text: string, chars: number, lines: number }[]) => void, onleave?: () => void, onannounce?: (msg: string) => void }} */
   let { ow, onsend = () => {}, onleave = () => {}, onannounce = () => {} } = $props();
   let field = $state();
   const LIST_ID = 'ow-mention-list';
@@ -36,7 +39,8 @@
   // The hint for the status; its link, when it has one, opens the Overwatch settings.
   const hint = $derived(inputHint(ow));
 
-  const spaced = (x) => x.toLocaleString('en-US').replaceAll(',', ' ');
+  // A refused paste says why until the next keystroke, paste or send (design-notes §1).
+  let pasteErr = $state('');
 
   export function focus() {
     field?.focus();
@@ -69,16 +73,72 @@
     const text = draft.trim();
     if (!text || over) return;
     const mentions = mentionsToSend(text, app.chatMentions, features(), projs);
+    const sent = pastesToSend(text, app.chatPastes);
     app.chatDraft = '';
     app.chatMentions = [];
+    app.chatPastes = [];
+    pasteErr = '';
     tok = null;
     closedFor = null;
-    onsend(text, mentions);
+    onsend(text, mentions, sent);
+  }
+
+  /** Replace `from..to` of the field by `s` through the textarea's own editing, so ⌘Z undoes it
+   *  (no webview editing command: the same edit by hand, announced as typing). */
+  function edit(from, to, s) {
+    field.focus();
+    field.setSelectionRange(from, to);
+    const done = typeof document.execCommand === 'function' && (s ? document.execCommand('insertText', false, s) : document.execCommand('delete'));
+    if (done) return;
+    field.setRangeText(s, from, to, 'end');
+    field.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: s ? 'insertText' : 'deleteContentBackward' }));
+  }
+
+  /** The field becomes `text` with the caret at `caret`, by the smallest edit (the native undo stack stays). */
+  function replaceDraft(text, caret) {
+    const { from, to, s } = diffEdit(field.value, text);
+    if (from !== to || s) edit(from, to, s);
+    field.setSelectionRange(caret, caret);
+  }
+
+  /** A long plain-text paste: a placeholder at the caret (or over the selection), the text kept aside. */
+  function onpaste(e) {
+    pasteErr = '';
+    const text = normalize(e.clipboardData?.getData('text/plain') ?? '');
+    if (!isLong(text)) return; // short or not text: pasted as today
+    e.preventDefault();
+    const chars = countChars(text);
+    // The selection this paste replaces does not count: its placeholders go away with it.
+    const rest = field.value.slice(0, field.selectionStart) + field.value.slice(field.selectionEnd);
+    const err = pasteError(rest, chars, app.chatPastes);
+    if (err) {
+      pasteErr = err;
+      return;
+    }
+    const n = nextN(app.chatPastes);
+    app.chatPastes = keep(rest, app.chatPastes, { n, text, chars, lines: countLines(text) });
+    edit(field.selectionStart, field.selectionEnd, placeholder(n, chars));
+    onannounce(`Pasted ${spaced(chars)} characters as pasted text ${n}`);
+  }
+
+  /** ⌫ / ⌦ (and ⌃H, ⌃D, ⌥⌫, ⌥⌦: whatever key) just after / before a placeholder: the whole placeholder goes, ⌘Z brings it back.
+   *  On `beforeinput`, where every such key arrives as a `delete*` inputType; our own edit below selects the token, so it is not caught again. */
+  function removeWhole(e) {
+    const back = e.inputType === 'deleteContentBackward' || e.inputType === 'deleteWordBackward';
+    if (!back && e.inputType !== 'deleteContentForward' && e.inputType !== 'deleteWordForward') return;
+    if (e.isComposing || field.selectionStart !== field.selectionEnd) return;
+    const t = wholeAt(field.value, field.selectionStart, back ? 'back' : 'forward', app.chatPastes);
+    if (!t) return;
+    e.preventDefault();
+    edit(t.start, t.end, '');
+    onannounce(`Removed pasted text ${t.n}`);
   }
 
   /** The token at the caret decides the popup. Typing may open it; a caret move only updates or closes it. */
   function sync(typing) {
-    const t = field && app.data ? tokenAtCaret(field.value, field.selectionStart) : null;
+    if (picking) return; // the pick's own edit fires an input event: it must not reopen the popup
+    let t = field && app.data ? tokenAtCaret(field.value, field.selectionStart) : null;
+    if (t && atInPlaceholder(field.value, t.start, field.selectionStart, app.chatPastes)) t = null; // no `@` completes inside a placeholder
     if (!t) {
       tok = null;
       closedFor = null;
@@ -102,12 +162,19 @@
     tok = null;
   }
 
+  let picking = false;
   async function pick(row) {
     const { text, caret } = insertToken(field.value, tok.start, field.selectionStart, row.token);
-    app.chatDraft = text;
     app.chatMentions = [...app.chatMentions.filter((m) => m.token !== row.token), { token: row.token, kind: 'feature', id: row.id }];
     tok = null;
     closedFor = null;
+    picking = true;
+    try {
+      replaceDraft(text, caret); // through the field's own editing: ⌘Z still restores a removed paste
+    } finally {
+      picking = false;
+    }
+    if (app.chatDraft !== field.value) app.chatDraft = field.value; // an editing command that fired no input event
     await tick();
     field?.setSelectionRange(caret, caret);
   }
@@ -133,6 +200,7 @@
   }
 
   function onkeydown(e) {
+    if (pasteErr && !['Shift', 'Meta', 'Control', 'Alt'].includes(e.key)) pasteErr = '';
     if (open && !e.isComposing && e.keyCode !== 229 && mentionKey(e)) return;
     if (e.key === 'Enter' && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey && !e.isComposing && e.keyCode !== 229) {
       e.preventDefault();
@@ -158,6 +226,8 @@
     bind:this={field}
     bind:value={app.chatDraft}
     {onkeydown}
+    {onpaste}
+    onbeforeinput={removeWhole}
     oninput={(e) => sync(typed(/** @type {any} */ (e).inputType))}
     onkeyup={() => sync(false)}
     onclick={() => sync(false)}
@@ -178,7 +248,8 @@
       {#if n >= COUNT_FROM}<span class:over data-count>{spaced(n)} / {spaced(MAX_CHARS)}</span>{/if}
     </span>
   </div>
-  {#if over}<p class="warn" role="alert">Too long for a message. Put it in a file and ask the Overwatch to read it.</p>{/if}
+  {#if pasteErr}<p class="warn" role="alert">{pasteErr}</p>
+  {:else if over}<p class="warn" role="alert">Too long for a message. A paste of over 800 characters or 10 lines is sent as a file; shorter text stays in the message.</p>{/if}
 </div>
 
 <style>

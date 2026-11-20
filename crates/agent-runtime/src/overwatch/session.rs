@@ -219,6 +219,7 @@ impl Runtime {
         reads.extend(worktrees);
         reads.push(day_dir.to_path_buf());
         reads.push(self.cfg.paths.agent_dir(ID).join("messages"));
+        reads.push(self.overwatch_pastes_dir());
         reads.sort();
         reads.dedup();
         reads
@@ -378,7 +379,7 @@ impl Runtime {
     /// The user's message (`chat_send`, P4.3's entry `chat`): a blocking
     /// event, kept while the Overwatch is `off` / `down`.
     pub fn overwatch_user_message(&self, chat: &str, text: &str) -> Option<String> {
-        self.overwatch_user_message_with(chat, text, None, None)
+        self.overwatch_user_message_with(chat, text, None, None, None)
     }
 
     /// A user message, with its planning context (`chat_send` `context.plan`).
@@ -388,6 +389,7 @@ impl Runtime {
         text: &str,
         plan: Option<Value>,
         mentions: Option<Vec<Value>>,
+        pastes: Option<Vec<Value>>,
     ) -> Option<String> {
         // The turn carries the summary only: a message is whole in it (up to what `chat_send` takes).
         let mut ev = Event::new(Kind::UserMessage, crate::team::cut(text, super::chatw::SEND_MAX));
@@ -395,6 +397,7 @@ impl Runtime {
         ev.chat = Some(chat.to_string());
         ev.plan = plan;
         ev.mentions = mentions;
+        ev.pastes = pastes;
         self.overwatch_enqueue(ev)
     }
 
@@ -743,6 +746,7 @@ impl Runtime {
             (ev.text, ev.chat, ev.at_ms) = (Some(text), Some(e.id()), e.at_ms);
             ev.plan = e.meta.as_ref().and_then(|m| m.get("plan")).filter(|p| p.is_object()).cloned();
             ev.mentions = mentions;
+            ev.pastes = super::chatw::pastes_of_meta(e.meta.as_ref());
             st.pending_user.push(ev);
         }
     }

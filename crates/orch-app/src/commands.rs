@@ -250,6 +250,12 @@ pub async fn chat_send(
     .await
 }
 
+/// The text of a pasted text of a user message: `{n, text, chars, lines}`.
+#[tauri::command]
+pub async fn chat_paste(core: CoreState<'_>, entry: String, n: u64) -> Res<Value> {
+    blocking(core, move |c| c.runtime()?.chat_paste(&entry, n)).await
+}
+
 /// P4.4: removes a message the Overwatch has not taken (it was down or off).
 #[tauri::command]
 pub async fn chat_discard(core: CoreState<'_>, entry: String) -> Res<Value> {

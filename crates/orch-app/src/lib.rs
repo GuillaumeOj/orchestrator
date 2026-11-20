@@ -169,6 +169,7 @@ pub fn run() {
             commands::chat_search,
             commands::chat_send,
             commands::chat_discard,
+            commands::chat_paste,
             commands::chat_undo,
             commands::overwatch_settings,
             commands::set_overwatch_settings,
