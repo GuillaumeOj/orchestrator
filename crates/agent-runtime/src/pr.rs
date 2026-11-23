@@ -572,7 +572,7 @@ impl Runtime {
     }
 
     /// A linked PR merged (→ done, from any state) or closed outside the app
-    /// (§5.5: a `pr_open` run goes back to integrating, any other keeps its
+    /// (§5.5: a `pr_open` or `pr_gate` run goes back to integrating, any other keeps its
     /// state; `request_pr` is refused until it is reopened). The lead's turn.
     fn linked_pr_ended(&self, run: &TeamRun, feature: &Feature, n: u64, url: &str, merged: bool) -> String {
         let what = if merged { "merged" } else { "closed" };
@@ -580,7 +580,8 @@ impl Runtime {
         let moved = if merged {
             // Linked: done from whatever step the team is at, a pause included.
             self.move_run(&run.id, RunState::Done, &why, false).map(|_| ())
-        } else if effective(run) == RunState::PrOpen {
+        } else if matches!(effective(run), RunState::PrOpen | RunState::PrGate) {
+            // `pr_gate` too: its push gate is withdrawn below, and `rebase_base` is refused in that state.
             self.advance_run(&run.id, RunState::Integrating, &why).map(|_| ())
         } else {
             Ok(())
