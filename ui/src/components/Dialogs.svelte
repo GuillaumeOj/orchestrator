@@ -224,21 +224,25 @@
     if (isPr) prs.launchErr = null;
     const slug = launchSlug;
     const teamName = launchTeam?.team.name ?? launch.team_id;
+    // The dialog may be closed (esc) while the launch runs: read what the answer needs now.
+    const ov = o;
+    const onPr = isPr;
+    const prRow = row;
     try {
       const run = await invoke('team_launch', {
         form: { project_id: launch.project_id, team_id: launch.team_id, slug, title: launch.title, brief: launch.brief, base: isPr ? null : launch.base || null, off_hours: launch.off_hours || undefined, intake: o.intake ?? undefined, issues: issueTexts(issueChips), pr_mode: mode, pr: isPr ? prs.pr : undefined },
       });
-      if (isPr) o.onLaunched?.(run.feature);
+      if (onPr) ov.onLaunched?.(run.feature);
       close();
       await refresh();
       openFeature(run.feature_id);
       toast(`Launched ${teamName} on ${slug} · the lead starts when the Governor admits it`);
     } catch (e) {
-      if (isPr) {
+      if (onPr) {
         const c = codedOf(e);
-        prs.launchErr = launchError(c, row, short);
-        if (['pr_closed', 'pr_merged', 'fork', 'active_feature'].includes(c.code)) o.onStale?.();
+        if (['pr_closed', 'pr_merged', 'fork', 'active_feature'].includes(c.code)) ov.onStale?.();
         busy = false;
+        if (app.overlay === ov) prs.launchErr = launchError(c, prRow, short);
         return;
       }
       const c = parseCoded(errText(e));

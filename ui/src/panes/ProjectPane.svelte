@@ -322,6 +322,7 @@
       <div class="ch"><b>Pull requests</b><span class="muted">gh</span><span class="grow"></span><button type="button" class="btn" onclick={loadPrs} disabled={!!busy} use:tooltip={{ label: 'Load PRs', key: 'p' }}>{busy === 'prs' ? 'Loading…' : 'Load PRs'}</button></div>
       {#if prs?.error}<p class="muted">{prs.error}</p>
       {:else if prs}
+        <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
         <ul class="prs" aria-label="Pull requests" onkeydown={prNav}>
           {#each prs as pr (pr.number)}
             <PrListRow {pr} disabled={busy === 'prs'} onlaunch={launchOnPr} onfeature={(f) => f && openFeature(f.id)} />

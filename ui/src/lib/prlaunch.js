@@ -85,7 +85,8 @@ export function prefillError(e, number) {
     case 'offline':
       return { text: "Couldn't reach GitHub. Check your connection and try again.", again: true };
     default:
-      return { text: `Couldn't read PR #${number}: ${msg}`, again: true };
+      // The core's own text already says "could not read PR #n: …".
+      return { text: `Couldn't read PR #${number}: ${msg.replace(/^could not read PR #\d+:\s*/i, '')}`, again: true };
   }
 }
 
