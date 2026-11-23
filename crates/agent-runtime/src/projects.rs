@@ -190,8 +190,9 @@ impl Runtime {
             bail!("agent {a} uses this worktree: archive or kill it first");
         }
         let confirm = if confirm_discard { Confirm::DiscardUnmerged } else { Confirm::Safe };
-        let Some(mut out) = self.remove_one(&p, &wt, |base, branch| {
-            cleanup::remove_worktree_of(&p.path, &wt, base, branch, delete_branch, confirm)
+        let prs = project::pr_branches(&self.db, &p.id);
+        let Some(out) = self.remove_one(&p, &wt, |base, branch| {
+            cleanup::remove_worktree_of(&p.path, &wt, base, branch, &prs, delete_branch, confirm)
         })?
         else {
             if wt.exists() {
@@ -200,7 +201,6 @@ impl Runtime {
             // Already gone (a second click, another pane): nothing to do.
             return Ok(RemoveOutcome::default());
         };
-        self.drop_merged_pr_branch(&p, &mut out);
         self.db.audit(
             "user",
             None,
@@ -230,6 +230,7 @@ impl Runtime {
                 _ => false,
             })
             .collect();
+        let prs = project::pr_branches(&self.db, &p.id);
         let mut report = PruneReport::default();
         for w in gone {
             let wt = resolve(&w.path);
@@ -237,9 +238,8 @@ impl Runtime {
                 report.skipped.push(Skipped { path: w.path, reason: format!("agent {a} uses this worktree") });
                 continue;
             }
-            match self.remove_one(&p, &wt, |base, branch| cleanup::prune_worktree(&p.path, &wt, base, branch)) {
-                Ok(Some(mut o)) => {
-                    self.drop_merged_pr_branch(&p, &mut o);
+            match self.remove_one(&p, &wt, |base, branch| cleanup::prune_worktree(&p.path, &wt, base, branch, &prs)) {
+                Ok(Some(o)) => {
                     if o.branch_deleted
                         && let Some(b) = &w.branch
                     {

@@ -1197,6 +1197,19 @@ impl Store {
         })
     }
 
+    /// A project's features on a PR (`pr_link` set), archived ones too:
+    /// their branches stay protected after a delete that kept the worktree.
+    pub fn linked_features(&self, project_id: &str) -> Result<Vec<Feature>> {
+        let p = project_id.to_string();
+        self.read(move |c| {
+            let mut st = c.prepare(&format!(
+                "SELECT {FEATURE_COLS} FROM features WHERE project_id=?1 AND pr_link IS NOT NULL
+                 ORDER BY created_at_ms DESC, id"
+            ))?;
+            Ok(st.query_map([p], row_feature)?.collect::<rusqlite::Result<_>>()?)
+        })
+    }
+
     // ------------------------------------------------------------ team runs
 
     /// `prs` is written on insert only: on an existing run it changes through
@@ -1988,7 +2001,12 @@ mod tests {
         let back = s.feature("f9").unwrap().unwrap();
         assert_eq!(back, linked);
         assert_eq!((back.integration_branch().as_str(), back.is_linked()), ("renovate/foo", true));
+        assert_eq!(s.linked_features("p1").unwrap().len(), 1, "only the linked one");
+        s.upsert_feature(&Feature { archived: true, ..linked.clone() }).unwrap();
+        assert_eq!(s.linked_features("p1").unwrap()[0].id, "f9", "archived ones too");
+        assert_eq!(s.features(Some("p1")).unwrap().len(), 1);
         s.upsert_feature(&Feature { pr_link: None, branch: None, ..linked }).unwrap();
+        assert!(s.linked_features("p1").unwrap().is_empty());
         assert_eq!(s.feature("f9").unwrap().unwrap().pr_link, None, "updated on conflict");
         let mut run = TeamRun {
             id: "r1".into(),

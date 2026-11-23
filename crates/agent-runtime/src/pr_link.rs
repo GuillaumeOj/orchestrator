@@ -9,6 +9,7 @@ use anyhow::{Result, anyhow};
 use orch_git::gh::{self, PrHead};
 use orch_git::{cleanup, worktree};
 use orch_store::{Feature, PrLink, Project};
+use orch_tasks::intake::gh_error;
 use orch_team::docs_location::{DesignsChoice, DocsChoice};
 use serde_json::{Value, json};
 
@@ -17,27 +18,30 @@ use crate::runtime::Runtime;
 /// A command error whose text is the JSON `{code, message, details?, feature?}`
 /// (api-contract §3, F10–F11).
 pub(crate) fn refused(code: &str, message: impl Into<String>, extra: Value) -> anyhow::Error {
-    let mut v = json!({"code": code, "message": message.into()});
-    if let (Some(o), Value::Object(e)) = (v.as_object_mut(), extra) {
-        o.extend(e);
+    let e = crate::issues::coded(code, message, None);
+    let Value::Object(extra) = extra else { return e };
+    let mut v: Value = serde_json::from_str(&e.to_string()).unwrap_or_default();
+    if let Some(o) = v.as_object_mut() {
+        o.extend(extra);
     }
     anyhow!(v.to_string())
 }
 
-/// The code of a failed `gh` call (api-contract §2–3): `gh_missing` (not
-/// installed), `gh_auth` (not logged in), else `fallback`.
+/// The code of a failed `gh` call (api-contract §2–3), as intake reads it:
+/// `offline`, `gh_missing`, `gh_auth` (a missing scope too), else `fallback`.
 pub fn gh_error_code(e: &anyhow::Error, fallback: &'static str) -> &'static str {
-    if e.chain().any(|c| c.downcast_ref::<std::io::Error>().is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound))
-    {
-        return "gh_missing";
+    match gh_error(e).code {
+        "offline" => "offline",
+        "gh_missing" => "gh_missing",
+        "gh_auth" | "gh_scope" => "gh_auth",
+        _ => fallback,
     }
-    let m = format!("{e:#}").to_ascii_lowercase();
-    if ["gh auth login", "not logged in", "authentication", "http 401", "bad credentials"].iter().any(|k| m.contains(k))
-    {
-        "gh_auth"
-    } else {
-        fallback
-    }
+}
+
+/// A PR launch in `per_issue` mode (asked, or kept by a feature coming back).
+pub(crate) fn per_issue_refused(n: u64) -> anyhow::Error {
+    let m = format!("a feature on PR #{n} pushes to that PR only: one PR per issue is not available");
+    refused("per_issue", m, json!({}))
 }
 
 /// `{id, slug, run_status}` of a feature (F8, F10); `run_status` null without a run.
@@ -53,65 +57,29 @@ pub fn feature_json(f: &Feature) -> Value {
     v
 }
 
-/// What a launch on a PR checked: the PR as GitHub has it now.
-pub(crate) struct PrLaunch {
-    pub head: PrHead,
-}
-
-impl PrLaunch {
-    /// The feature fields a PR launch sets: the head as the integration
-    /// branch, the PR base, the link, and docs and designs in the app folder
-    /// whatever the project setting (D1/G1), so none enters the PR.
-    pub fn apply(&self, f: Feature, sent: &PrLink, app_base: &str) -> Feature {
-        let h = &self.head;
-        let docs = orch_team::FeatureDocsSetting { docs: DocsChoice::App, designs: DesignsChoice::App };
-        Feature {
-            branch: Some(h.head_ref.clone()),
-            base: h.base_ref.clone(),
-            docs_location: Some(docs.resolve(&f.slug, app_base)),
-            pr_link: Some(PrLink {
-                number: h.number,
-                url: if h.url.is_empty() { sent.url.clone() } else { h.url.clone() },
-                head_ref: h.head_ref.clone(),
-                base_ref: h.base_ref.clone(),
-                head_sha_at_link: h.head_sha.clone(),
-                author: h.author.clone().or_else(|| sent.author.clone()),
-            }),
-            ..f
-        }
+/// The feature fields a PR launch sets from the PR as GitHub has it now
+/// (`h`): the head as the integration branch, the PR base, the link, and
+/// docs and designs in the app folder whatever the project setting (D1/G1),
+/// so none enters the PR.
+pub(crate) fn linked_feature(f: Feature, h: &PrHead, sent: &PrLink, app_base: &str) -> Feature {
+    let docs = orch_team::FeatureDocsSetting { docs: DocsChoice::App, designs: DesignsChoice::App };
+    Feature {
+        branch: Some(h.head_ref.clone()),
+        base: h.base_ref.clone(),
+        docs_location: Some(docs.resolve(&f.slug, app_base)),
+        pr_link: Some(PrLink {
+            number: h.number,
+            url: if h.url.is_empty() { sent.url.clone() } else { h.url.clone() },
+            head_ref: h.head_ref.clone(),
+            base_ref: h.base_ref.clone(),
+            head_sha_at_link: h.head_sha.clone(),
+            author: h.author.clone().or_else(|| sent.author.clone()),
+        }),
+        ..f
     }
 }
 
 impl Runtime {
-    /// A linked feature whose PR the watcher saw merged (its latest run).
-    pub(crate) fn linked_pr_merged(&self, f: &Feature) -> bool {
-        f.is_linked()
-            && self
-                .db
-                .runs(Some(&f.id), false)
-                .ok()
-                .and_then(|r| r.into_iter().next())
-                .is_some_and(|r| r.pr.as_ref().is_some_and(|p| p.state == "merged"))
-    }
-
-    /// D2: a PR head branch kept for commits `origin/<head>` lacks goes
-    /// anyway when its linked PR is merged (a merge usually deletes the head
-    /// on GitHub). Never on the remote.
-    pub(crate) fn drop_merged_pr_branch(&self, project: &Project, out: &mut cleanup::RemoveOutcome) {
-        let Some(b) = out.kept_branch.clone().filter(|_| out.kept_unpushed.is_some()) else { return };
-        let features = self.db.features(Some(&project.id)).unwrap_or_default();
-        if !features.iter().any(|f| f.integration_branch() == b && self.linked_pr_merged(f)) {
-            return;
-        }
-        match orch_git::git(&project.path, &["branch", "-D", &b]) {
-            Ok(_) => {
-                out.log.push(format!("deleted branch {b}: its PR is merged"));
-                (out.branch_deleted, out.kept_branch, out.kept_unpushed) = (true, None, None);
-            }
-            Err(e) => out.log.push(format!("kept branch {b}: {e}")),
-        }
-    }
-
     /// `gh pr view <n>` for a launch; tests replace `gh` through `cfg.gh`.
     pub(crate) fn gh_pr_head(&self, dir: &Path, number: u64) -> Result<PrHead> {
         match self.gh_override() {
@@ -144,17 +112,13 @@ impl Runtime {
 
     /// Step 1 of §5.3: the refusals that need no fetch, then the PR re-read
     /// (G2). Nothing is stored or created.
-    pub(crate) fn check_pr_launch(&self, project: &Project, link: &PrLink, per_issue: bool) -> Result<PrLaunch> {
+    pub(crate) fn check_pr_launch(&self, project: &Project, link: &PrLink, per_issue: bool) -> Result<PrHead> {
         let n = link.number;
         if n == 0 {
             return Err(refused("bad_request", "no PR number", json!({})));
         }
         if per_issue {
-            return Err(refused(
-                "per_issue",
-                format!("a feature on PR #{n} pushes to that PR only: one PR per issue is not available"),
-                json!({}),
-            ));
+            return Err(per_issue_refused(n));
         }
         // D3: one active feature per PR (no run at all counts as not active).
         if let Some((f, run)) = self.feature_on_pr(&project.id, n)?
@@ -186,24 +150,22 @@ impl Runtime {
         }
         // The app's own branches have their own feature (and the worktree
         // layout cuts a missing `orch/*` branch from the base, G5).
-        if b.starts_with("orch/") {
+        if orch_git::is_app_branch(b) {
             return Err(refused(
                 "bad_request",
                 format!("PR #{n} is on the app's branch {b}: open its feature"),
                 json!({}),
             ));
         }
-        if let Some(e) = self.branch_checked_out(project, b)? {
-            return Err(e);
-        }
-        Ok(PrLaunch { head })
+        self.branch_checked_out(project, b)?;
+        Ok(head)
     }
 
     /// `branch_checked_out` when `branch` is checked out in a worktree of the
     /// project, the main checkout included (F1: naming the feature holding it).
-    pub(crate) fn branch_checked_out(&self, project: &Project, branch: &str) -> Result<Option<anyhow::Error>> {
+    pub(crate) fn branch_checked_out(&self, project: &Project, branch: &str) -> Result<()> {
         let Some(w) = worktree::list(&project.path)?.into_iter().find(|w| w.branch.as_deref() == Some(branch)) else {
-            return Ok(None);
+            return Ok(());
         };
         let path = crate::paths::real(&w.path);
         let holder = self
@@ -212,7 +174,7 @@ impl Runtime {
             .into_iter()
             .find(|f| f.integration_worktree.as_deref().map(crate::paths::real).as_deref() == Some(path.as_path()));
         let shown = crate::paths::tilde(&path);
-        Ok(Some(match holder {
+        Err(match holder {
             Some(f) => {
                 let run = self.db.runs(Some(&f.id), false)?.into_iter().next();
                 refused(
@@ -226,15 +188,14 @@ impl Runtime {
                 format!("{branch} is checked out in {shown}; switch that checkout to another branch first"),
                 json!({"details": {"path": path}}),
             ),
-        }))
+        })
     }
 
     /// Step 2 and 4 of §5.3: fetches the head and base, refuses a local head
     /// with commits the PR lacks, fast-forwards one that is behind. The
     /// worktree is then cut from `origin/<head>` when there is no local
-    /// branch (G5). Returns the head commit the feature is linked at.
-    pub(crate) fn prepare_pr_branch(&self, repo: &Path, launch: &mut PrLaunch) -> Result<()> {
-        let h = &mut launch.head;
+    /// branch (G5). `h.head_sha` becomes the head the feature is linked at.
+    pub(crate) fn prepare_pr_branch(&self, repo: &Path, h: &mut PrHead) -> Result<()> {
         let n = h.number;
         let fetch = |e: anyhow::Error| refused("fetch_failed", format!("could not fetch PR #{n}: {e:#}"), json!({}));
         // Explicit refspecs: `origin/<head>` is updated even when the remote's
@@ -255,7 +216,7 @@ impl Runtime {
                 return Err(refused(
                     "local_ahead",
                     format!(
-                        "local {} has {ahead} commit(s) that PR #{n} does not have; push or delete them first",
+                        "Local {} has {ahead} commit(s) PR #{n} does not have. Rename or delete that local branch first.",
                         h.head_ref
                     ),
                     json!({"details": {"commits": ahead}}),

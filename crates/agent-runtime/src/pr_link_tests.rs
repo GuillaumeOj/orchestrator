@@ -222,7 +222,12 @@ fn a_local_head_behind_the_pr_is_fast_forwarded_and_one_ahead_refused() {
     let e = refusal(&fx, &spec(&fx, "pr-42"));
     assert_eq!(e["code"], "local_ahead");
     assert_eq!(e["details"]["commits"], 1, "{e}");
-    assert!(e["message"].as_str().unwrap().contains("local renovate/foo has 1 commit(s) that PR #42 does not have"));
+    assert!(
+        e["message"]
+            .as_str()
+            .unwrap()
+            .contains("Local renovate/foo has 1 commit(s) PR #42 does not have. Rename or delete")
+    );
     assert_eq!(rev(&fx.repo, HEAD), before, "left as it was");
     assert!(fx.rt.db.feature(&format!("{}-pr-42", fx.pid)).unwrap().is_none(), "nothing stored");
 }
@@ -317,7 +322,7 @@ fn deleting_a_linked_feature_keeps_unpushed_commits_and_never_touches_the_remote
 
 #[test]
 fn gh_failures_have_their_code() {
-    let missing = anyhow::Error::new(std::io::Error::from(std::io::ErrorKind::NotFound)).context("gh pr view");
+    let missing = anyhow::Error::new(std::io::Error::from_raw_os_error(2)).context("gh pr view");
     assert_eq!(crate::pr_link::gh_error_code(&missing, "fetch_failed"), "gh_missing");
     let auth = anyhow::anyhow!("gh pr view 42: To get started with GitHub CLI, please run:  gh auth login");
     assert_eq!(crate::pr_link::gh_error_code(&auth, "fetch_failed"), "gh_auth");
@@ -338,10 +343,5 @@ fn a_merged_pr_lets_its_branch_go_with_unpushed_commits() {
     let out = fx.rt.delete_feature(&run.feature_id, true, false).unwrap();
     assert_eq!(out["kept"], json!([]), "{out}");
     assert!(!orch_git::worktree::branch_exists(&fx.repo, HEAD));
-    assert!(
-        out["worktrees"][0]["log"]
-            .as_array()
-            .unwrap()
-            .contains(&json!("deleted branch renovate/foo: its PR is merged"))
-    );
+    assert!(out["worktrees"][0]["log"].as_array().unwrap().contains(&json!("deleted branch renovate/foo")));
 }

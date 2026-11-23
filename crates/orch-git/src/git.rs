@@ -108,6 +108,12 @@ pub fn valid_id(s: &str) -> bool {
         && !s.starts_with('-')
 }
 
+/// The app's own branches (`orch/solo/…`, `orch/<feature>/…`), never a PR's
+/// head that a linked feature works on.
+pub fn is_app_branch(b: &str) -> bool {
+    b.starts_with("orch/")
+}
+
 /// A branch name git accepts (`git check-ref-format --branch`, without
 /// spawning git) and that is safe on a command line: no leading `-`.
 pub fn valid_branch(s: &str) -> bool {

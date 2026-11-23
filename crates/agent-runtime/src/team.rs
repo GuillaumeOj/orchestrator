@@ -403,12 +403,14 @@ impl Runtime {
         let existing = self.db.feature_by_slug(&project.id, &spec.slug)?;
         // §5.3 step 1: a launch on a PR, checked (and the PR re-read) first.
         // F1: it always makes a new feature (a deleted one may come back).
-        let mut on_pr = match &spec.pr {
+        let on_pr = match &spec.pr {
             Some(_) if existing.as_ref().is_some_and(|f| !f.archived) => {
                 let m = format!("feature {} exists: pick another slug", spec.slug);
                 return Err(crate::pr_link::refused("slug_taken", m, json!({})));
             }
-            Some(l) => Some(self.check_pr_launch(&project, l, spec.pr_mode == Some(orch_store::PrMode::PerIssue))?),
+            Some(l) => {
+                Some((self.check_pr_launch(&project, l, spec.pr_mode == Some(orch_store::PrMode::PerIssue))?, l))
+            }
             None => None,
         };
         let now = now_ms();
@@ -460,19 +462,17 @@ impl Runtime {
         crate::issues::check_mode(feature.pr_mode, feature.issues.len())?;
         // §5.3 steps 2 and 4: the head fetched and the local branch lined up,
         // still before anything is stored; then the link, branch and base.
-        let feature = match (on_pr.as_mut(), spec.pr.as_ref()) {
+        let feature = match on_pr {
             // A deleted per-issue feature coming back keeps its mode.
-            (Some(_), Some(l)) if feature.pr_mode == orch_store::PrMode::PerIssue => {
-                let m =
-                    format!("a feature on PR #{} pushes to that PR only: one PR per issue is not available", l.number);
-                return Err(crate::pr_link::refused("per_issue", m, json!({})));
+            Some((_, l)) if feature.pr_mode == orch_store::PrMode::PerIssue => {
+                return Err(crate::pr_link::per_issue_refused(l.number));
             }
-            (Some(pl), Some(sent)) => {
-                self.prepare_pr_branch(&project.path, pl)?;
+            Some((mut head, sent)) => {
+                self.prepare_pr_branch(&project.path, &mut head)?;
                 let app = crate::feature_docs::app_base(&self.cfg.paths.root, &project.id, &feature.slug);
-                pl.apply(feature, sent, &app.to_string_lossy())
+                crate::pr_link::linked_feature(feature, &head, sent, &app.to_string_lossy())
             }
-            _ => feature,
+            None => feature,
         };
         // §3.4: the app folders exist before any agent is told about them, and
         // before anything is stored or created, so a failure leaves nothing behind.
@@ -1499,12 +1499,9 @@ impl Runtime {
     pub fn feature_delete_plan(&self, feature_id: &str) -> Result<Value> {
         let f = self.feature_by_id_or_slug(feature_id)?;
         let branch = f.integration_branch();
-        let unpushed = match self.db.project(&f.project_id)? {
-            Some(p)
-                if f.is_linked()
-                    && !self.linked_pr_merged(&f)
-                    && orch_git::worktree::branch_exists(&p.path, &branch) =>
-            {
+        let pr = orch_git::project::pr_branches(&self.db, &f.project_id).into_iter().find(|p| p.branch == branch);
+        let unpushed = match (self.db.project(&f.project_id)?, pr) {
+            (Some(p), Some(pr)) if f.is_linked() && !pr.merged => {
                 orch_git::cleanup::unpushed(&p.path, &branch, &f.base).unwrap_or(0)
             }
             _ => 0,

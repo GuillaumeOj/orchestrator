@@ -9,7 +9,7 @@ use orch_protocol::WorktreeKindSpec;
 pub use orch_store::{WorktreeRow, WorktreeRowState};
 
 pub use crate::git::git;
-use crate::git::{git_ok, real, valid_branch, valid_id};
+use crate::git::{git_ok, is_app_branch, real, valid_branch, valid_id};
 
 /// Where worktree rows are kept: the core's store (the runtime's in-memory
 /// mirror, or `orch_store::Store` directly). Creation writes the row before
@@ -218,7 +218,7 @@ pub fn complete(store: &dyn WorktreeLedger, row: &WorktreeRow) -> Result<Worktre
         let remote = format!("origin/{}", row.branch);
         if branch_exists(repo, &row.branch) {
             git(repo, &["worktree", "add", "-q", &p, &row.branch])?;
-        } else if !row.branch.starts_with("orch/") && remote_branch_exists(repo, &row.branch) {
+        } else if !is_app_branch(&row.branch) && remote_branch_exists(repo, &row.branch) {
             // Someone else's branch (a PR head): cut from its remote, never
             // from the base, also when the reconciler finishes the row.
             git(repo, &["worktree", "add", "-q", "--track", "-b", &row.branch, &p, &remote])?;

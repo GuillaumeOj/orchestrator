@@ -159,6 +159,25 @@ pub fn removal_plan(store: &Store, ledger: &dyn WorktreeLedger, project_id: &str
     Ok(RemovalPlan { project, worktrees, branches })
 }
 
+/// The PR head branches of the project's linked features (archived ones
+/// too), merged when the latest run saw its PR merged: the D2 rule of
+/// [`cleanup::PrBranch`] for every removal and prune.
+pub fn pr_branches(store: &Store, project_id: &str) -> Vec<cleanup::PrBranch> {
+    let merged = |id: &str| {
+        store
+            .runs(Some(id), false)
+            .ok()
+            .and_then(|r| r.into_iter().next())
+            .is_some_and(|r| r.pr.as_ref().is_some_and(|p| p.state == "merged"))
+    };
+    store
+        .linked_features(project_id)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|f| cleanup::PrBranch { branch: f.integration_branch(), merged: merged(&f.id) })
+        .collect()
+}
+
 /// Carries out J11 after the caller stopped the project's agents. The main
 /// checkout and its `.orchestrator/` are never touched.
 pub fn remove(
@@ -169,6 +188,7 @@ pub fn remove(
 ) -> Result<RemovalReport> {
     let plan = removal_plan(store, ledger, project_id)?;
     let repo = plan.project.path.clone();
+    let prs = pr_branches(store, project_id);
     let mut report = RemovalReport::default();
     for w in &plan.worktrees {
         let confirmed = choices.discard.iter().any(|d| real(d) == w.path);
@@ -191,7 +211,7 @@ pub fn remove(
         if w.verdict == WorktreeVerdict::Missing {
             report.removed.push(w.path.clone());
         } else {
-            match cleanup::remove_worktree(&repo, &w.path, &base, true, confirm) {
+            match cleanup::remove_worktree_of(&repo, &w.path, &base, None, &prs, true, confirm) {
                 Ok(o) => {
                     report.log.extend(o.log);
                     report.removed.push(w.path.clone());
