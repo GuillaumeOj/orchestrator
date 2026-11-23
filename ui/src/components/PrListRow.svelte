@@ -44,7 +44,7 @@
   </div>
   <div class="l2 muted">
     <span class="mono">{pr.head_ref} → {pr.base_ref}</span>
-    · {#if pr.author?.is_bot}<span aria-label="bot">{'\u{F06A9}'}</span> {/if}<span>{authorName(pr.author)}</span>
+    · {#if pr.author?.is_bot}<span role="img" aria-label="bot">{'\u{F06A9}'}</span> {/if}<span>{authorName(pr.author)}</span>
     {#if ci}· <span>CI {#if pr.checks?.failing}<span class="bad">{ci}</span>{:else}{ci}{/if}</span>{/if}
     {#if review}· <span>{review}</span>{/if}
     {#if state === 'fork'}· <span id="fork-{pr.number}">{reason}</span>{/if}
@@ -64,6 +64,10 @@
   }
   .prrow:focus-visible {
     outline: var(--border-width-focus) solid var(--color-accent-default);
+  }
+  .btn[aria-disabled='true'] {
+    color: var(--color-text-disabled);
+    cursor: default;
   }
   .dim {
     opacity: 0.6;

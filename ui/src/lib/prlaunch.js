@@ -25,7 +25,7 @@ export const forkReason = (pr) => FORK_REASON(pr?.fork_owner);
 export const reviewText = (pr) => reviewWord(pr.review_decision)?.text ?? '';
 /** The PR row's CI text from `checks` (counts), '' without checks. */
 export const ciText = (c) =>
-  !c ? '' : c.failing ? `${c.failing} failing` : c.pending ? `${c.pending} pending` : c.passing ? 'passing' : 'none';
+  !c ? '' : c.failing ? `${c.failing} failing` : c.pending ? `${c.pending} pending` : c.passing ? 'passing' : '';
 
 /** `Earlier team: slug · done` / `Team on this PR: slug · executing` (without a status, the slug alone). */
 export const featureLine = (pr, kind) => {

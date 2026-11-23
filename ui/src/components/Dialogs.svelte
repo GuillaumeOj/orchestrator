@@ -43,6 +43,7 @@
   // P4.5: the item or brief went stale while the dialog was open (notes §5.3); the form is disabled.
   let stale = $state(null);
   let startBtn = $state();
+  let closeBtn = $state();
   let briefEl = $state();
   let messageEl = $state();
   // New session
@@ -90,6 +91,7 @@
       clearTimeout(slowTimer);
       const err = prefillError(codedOf(e), r.number);
       prs = { phase: 'error', error: err, pr: null, notes: null, warnings: [], slow: false, launchErr: null };
+      queueMicrotask(() => (startBtn ?? closeBtn)?.focus());
       if (['pr_closed', 'pr_merged', 'active_feature'].includes(codedOf(e).code)) ov.onStale?.();
     }
   }
@@ -531,9 +533,9 @@
       {@render fromIntake()}
       {#if isPr && prs.phase === 'error'}
         {@const er = prs.error}
-        <p class="err" role="alert" data-prefill-error>{er.text}{#if er.cmd}{/if}</p>
+        <p class="err" role="alert" data-prefill-error>{er.text}</p>
         <div class="foot">
-          <button type="button" class="btn ghost" onclick={close} use:tooltip={{ label: 'Close', key: 'esc' }}>Close</button>
+          <button type="button" class={er.open || er.again ? 'btn ghost' : 'btn primary'} bind:this={closeBtn} onclick={close} use:tooltip={{ label: 'Close', key: 'esc' }}>Close</button>
           {#if er.open}<button type="button" class="btn primary" bind:this={startBtn} onclick={() => { const f = er.open; close(); openFeature(f.id); }}>Open feature</button>{/if}
           {#if er.again}<button type="button" class="btn primary" bind:this={startBtn} onclick={() => loadPr(o)}>Try again</button>{/if}
         </div>
@@ -567,7 +569,7 @@
           {#if isPr}
             <div class="works" data-works-on use:tooltip={'The pull request and its branches. Fixed: the team works on this branch.'}>
               <span class="lbl">Works on</span>
-              <span class="wline"><button type="button" class="linkbtn" onclick={() => openUrl(row.url)} aria-label="Open PR #{row.number} in GitHub">PR #{row.number} ↗</button> · <span class="mono" title={row.head_ref}>{midCut(row.head_ref)} → {row.base_ref}</span> · {#if row.author?.is_bot}<span aria-label="bot">{'\u{F06A9}'}</span> {/if}{authorName(row.author)}{row.is_draft ? ' · draft' : ''}</span>
+              <span class="wline"><button type="button" class="linkbtn" onclick={() => openUrl(row.url)} aria-label="Open PR #{row.number} in GitHub">PR #{row.number} ↗</button> · <span class="mono" title={row.head_ref}>{midCut(row.head_ref)} → {row.base_ref}</span> · {#if row.author?.is_bot}<span role="img" aria-label="bot">{'\u{F06A9}'}</span> {/if}{authorName(row.author)}{row.is_draft ? ' · draft' : ''}</span>
             </div>
           {:else}
           <label>Base <input class="field mono" bind:value={launch.base} placeholder={projects().find((p) => p.id === launch.project_id)?.default_branch ?? 'main'} spellcheck="false" /></label>
@@ -606,7 +608,7 @@
         {/if}
         <span>• Specialists start after the gate, as the Governor and the live-agent cap allow.</span>
       </div>
-      <label class="offh" use:tooltip={offHoursAllowed(offHours) ? null : { label: 'Run off-hours', detail: OFF_DISABLED }}><input type="checkbox" bind:checked={launch.off_hours} disabled={!offHoursAllowed(offHours)} /> Run off-hours{nextOffHours(offHours) ? ` (starts ${clock(nextOffHours(offHours))})` : ''}</label>
+      <label class="offh" use:tooltip={offHoursAllowed(offHours) ? null : { label: 'Run off-hours', detail: OFF_DISABLED }}><input type="checkbox" bind:checked={launch.off_hours} disabled={!offHoursAllowed(offHours) || loading} /> Run off-hours{nextOffHours(offHours) ? ` (starts ${clock(nextOffHours(offHours))})` : ''}</label>
       {#each launchTools as d (d.server.id)}
         {#if d.server.status === 'needs_auth'}
           <p class="note tools warn">{d.server.name} MCP needs authentication: {nodeList(d.nodes, true)} will fail its tools. <button type="button" class="linkbtn" onclick={() => (launch.project_id ? openProjectSettings(launch.project_id, 'mcp', d.server.id) : openSettings('mcp', d.server.id))} use:tooltip={{ label: 'Open Settings', key: '⌘,' }}>Open Settings</button> · or launch anyway.</p>
@@ -814,9 +816,7 @@
   }
   .static {
     display: block;
-    border-color: transparent;
     background: none;
-    padding-left: 0;
   }
   .skel {
     display: block;

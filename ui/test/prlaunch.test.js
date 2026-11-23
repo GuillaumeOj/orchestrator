@@ -339,3 +339,19 @@ describe('launch dialog, PR variant', () => {
     expect(app.overlay).toBeNull();
   });
 });
+
+describe('review fixes', () => {
+  it('no CI piece without counts', () => {
+    expect(P.ciText({ passing: 0, failing: 0, pending: 0 })).toBe('');
+  });
+  it('Close is primary and focused on a prefill error with no other action', async () => {
+    replies.pr_prefill = () => Promise.reject(JSON.stringify({ code: 'pr_closed', message: 'm' }));
+    openPrLaunch('shop-api', pr(42));
+    const { container: c } = render(Dialogs);
+    await waitFor(() => expect(c.querySelector('[data-prefill-error]')).toBeTruthy());
+    await settle();
+    const close = btn(c, /^Close/);
+    expect(close.classList.contains('primary')).toBe(true);
+    expect(document.activeElement).toBe(close);
+  });
+});
