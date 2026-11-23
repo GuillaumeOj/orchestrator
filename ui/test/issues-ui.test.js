@@ -587,6 +587,25 @@ describe('Mission run row, run inspector, decision card and task chip', () => {
     expect(text(c.querySelector('[data-pr-closes]'))).toBe('Closes #1, #2, #3, #4');
   });
 
+  it('a spec gate names the linked PR of its own run when two projects share a slug', () => {
+    const L = (n) => ({ number: n, head_ref: `h${n}`, author: 'ann' });
+    app.data.features = [
+      { id: 'fa', project_id: 'p-a', slug: 'checkout', run: { id: 'run-a' }, pr_link: L(1) },
+      { id: 'fb', project_id: 'p-b', slug: 'checkout', run: { id: 'run-b' }, pr_link: L(2) },
+    ];
+    const spec = (subject) => ({
+      ...gate({}),
+      gate: 'spec',
+      subject: { agent: 'lead-1', feature: 'checkout', ...subject },
+    });
+    const note = (d) => text(render(DecisionCard, { d }).container.querySelector('[data-linked-note]'));
+    expect(note(spec({ project: 'p-a', run: 'run-b' }))).toContain('PR #2 (h2)');
+    cleanup();
+    expect(note(spec({ project: 'p-b' }))).toContain('PR #2 (h2)');
+    cleanup();
+    expect(note(spec({ project: 'p-a' }))).toContain('PR #1 (h1)');
+  });
+
   it('the task chip shows the ref with the title in its tooltip; untagged tasks show nothing', () => {
     const { container: c } = render(TaskIssueChip, { task: { issue: '#1', feature_id: 'f-co' } });
     const chip = /** @type {HTMLElement} */ (c.querySelector('[data-issue-chip]'));

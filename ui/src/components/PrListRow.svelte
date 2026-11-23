@@ -11,7 +11,7 @@
   const reason = $derived(pr.launch?.reason ? (state === 'fork' ? forkReason(pr) : pr.launch.reason) : forkReason(pr));
   const ci = $derived(ciText(pr.checks));
   const review = $derived(reviewText(pr));
-  const act = $derived(state === 'launch' ? () => onlaunch(pr) : state === 'active' ? () => onfeature(pr.feature) : null);
+  const act = $derived(state === 'launch' ? () => onlaunch(pr) : state === 'active' ? () => onfeature?.(pr.feature) : null);
   const label = $derived(state === 'active' ? 'Open feature' : 'Launch team…');
 
   function onKey(e) {
@@ -49,7 +49,7 @@
     {#if review}· <span>{review}</span>{/if}
     {#if state === 'fork'}· <span id="fork-{pr.number}">{reason}</span>{:else if state === 'none' && pr.launch?.reason}· <span data-reason>{pr.launch.reason}</span>{/if}
     {#if pr.feature && state === 'active'}· <span data-feature>{featureLine(pr, 'active')}</span>
-    {:else if pr.feature}· <span data-feature>Earlier team: <button type="button" class="linkbtn" onclick={() => onfeature(pr.feature)}>{pr.feature.slug}</button>{pr.feature.run_status ? ` · ${pr.feature.run_status}` : ''}</span>{/if}
+    {:else if pr.feature}· <span data-feature>Earlier team: <button type="button" class="linkbtn" onclick={() => onfeature?.(pr.feature)}>{pr.feature.slug}</button>{pr.feature.run_status ? ` · ${pr.feature.run_status}` : ''}</span>{/if}
   </div>
 </li>
 

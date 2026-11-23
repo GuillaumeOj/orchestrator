@@ -324,7 +324,7 @@
       {:else if prs}
         <ul class="prs" aria-label="Pull requests" onkeydown={prNav}>
           {#each prs as pr (pr.number)}
-            <PrListRow {pr} disabled={busy === 'prs'} onlaunch={launchOnPr} onfeature={(f) => openFeature(f.id)} />
+            <PrListRow {pr} disabled={busy === 'prs'} onlaunch={launchOnPr} onfeature={(f) => f && openFeature(f.id)} />
           {:else}<li class="muted none">No open pull request.</li>{/each}
         </ul>
       {:else if busy === 'prs'}<p class="muted">Loading pull requests from gh…</p>

@@ -5,7 +5,7 @@
   // while the decision is listed; read-only (`line` given) when a collapsed
   // line expands: no actions but the ones that open something.
   import { untrack } from 'svelte';
-  import { app, features, now30, openUrl, projectName, undoSandboxAllow } from '../../lib/app.svelte.js';
+  import { app, featureBySlug, features, now30, openUrl, projectName, undoSandboxAllow } from '../../lib/app.svelte.js';
   import { byWords, lineMarker, verbText } from '../../lib/chat.js';
   import { clock, dayTime, waited } from '../../lib/format.js';
   import { agentOf, blockOf, deliveryPrimary, isProgramCard, keyless, parked, prGate, restarted, subjectLine } from '../../lib/inbox.js';
@@ -67,7 +67,9 @@
   const gateRun = $derived(gateFeature?.run ?? null);
   const pg = $derived(prGate(d, gateFeature, gateRun));
   // A spec gate on a linked feature says whose PR the team will change (notes §3.5, D5).
-  const specLinked = $derived(d.kind === 'gate' && d.gate === 'spec' ? linkOf(features().find((f) => f.slug === d.subject?.feature)) : null);
+  // Slugs are unique per project only: match the gate's run first, then slug + project.
+  const specFeature = (sub) => (sub?.run ? features().find((f) => f.run?.id === sub.run) : null) ?? (sub?.feature ? featureBySlug(sub.project, sub.feature) : null);
+  const specLinked = $derived(d.kind === 'gate' && d.gate === 'spec' ? linkOf(specFeature(d.subject)) : null);
   const sandbox = $derived(d.kind === 'sandbox');
   const cardTitle = $derived(sandbox ? sandboxTitle(d) : (pg?.title ?? (brief ? [d.title ?? d.payload?.title, projectName(d.project ?? d.payload?.project) ?? d.payload?.project_name ?? d.project].filter(Boolean).join(' · ') : d.title)));
   // "Permission · by rule" on an expanded line settled without you.
