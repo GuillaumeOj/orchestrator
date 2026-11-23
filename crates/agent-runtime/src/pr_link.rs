@@ -150,22 +150,16 @@ impl Runtime {
     pub(crate) fn prepare_pr_relaunch(&self, project: &Project, f: &Feature, l: &PrLink) -> Result<String> {
         let repo = &project.path;
         let branch = &l.head_ref;
-        let fetch =
-            |e: anyhow::Error| refused("fetch_failed", format!("could not fetch PR #{}: {e:#}", l.number), json!({}));
         let own = f.integration_worktree.as_deref().map(crate::paths::real);
         let holder = worktree::list(repo)?.into_iter().find(|w| w.branch.as_deref() == Some(branch.as_str()));
         let in_own = holder.as_ref().is_some_and(|w| own.as_deref() == Some(crate::paths::real(&w.path).as_path()));
         if holder.is_some() && !in_own {
             self.branch_checked_out(project, branch)?;
         }
-        gh::fetch_branches(repo, &[gh::branch_refspec(branch).as_str()], crate::pr::FETCH_DEADLINE).map_err(fetch)?;
-        let remote = format!("origin/{branch}");
-        let tip = gh::rev_sha(repo, &format!("refs/remotes/{remote}"))
-            .ok_or_else(|| fetch(anyhow!("{remote} not found after the fetch")))?;
+        let tip = fetch_pr_head(repo, l.number, branch, &[])?;
         if worktree::branch_exists(repo, branch) {
             let local = format!("refs/heads/{branch}");
-            let (ahead, behind) = cleanup::try_ahead_behind(repo, &local, &remote)
-                .ok_or_else(|| fetch(anyhow!("can't compare {local} with {remote}")))?;
+            let (ahead, behind) = local_position(repo, l.number, &local, branch)?;
             if ahead == 0 && behind > 0 {
                 match holder.as_ref().filter(|_| in_own) {
                     // A refused merge (local edits in the way) leaves the branch as it was. Hooks and
@@ -271,20 +265,11 @@ impl Runtime {
     /// branch (G5). `h.head_sha` becomes the head the feature is linked at.
     pub(crate) fn prepare_pr_branch(&self, repo: &Path, h: &mut PrHead) -> Result<()> {
         let n = h.number;
-        let fetch = |e: anyhow::Error| refused("fetch_failed", format!("could not fetch PR #{n}: {e:#}"), json!({}));
-        // Explicit refspecs: `origin/<head>` is updated even when the remote's
-        // fetch refspec leaves that branch out (a single-branch clone).
-        let specs: Vec<String> = [&h.head_ref, &h.base_ref].iter().map(|b| gh::branch_refspec(b)).collect();
-        let specs: Vec<&str> = specs.iter().map(String::as_str).collect();
-        gh::fetch_branches(repo, &specs, crate::pr::FETCH_DEADLINE).map_err(fetch)?;
-        let remote = format!("origin/{}", h.head_ref);
-        let tip = gh::rev_sha(repo, &format!("refs/remotes/{remote}"))
-            .ok_or_else(|| fetch(anyhow!("{remote} not found after the fetch")))?;
+        let tip = fetch_pr_head(repo, n, &h.head_ref, &[&h.base_ref])?;
         if worktree::branch_exists(repo, &h.head_ref) {
             let local = format!("refs/heads/{}", h.head_ref);
             // Unknown is not "0 ahead": the local commits would be kept unseen.
-            let (ahead, behind) = cleanup::try_ahead_behind(repo, &local, &remote)
-                .ok_or_else(|| fetch(anyhow!("can't compare {local} with {remote}")))?;
+            let (ahead, behind) = local_position(repo, n, &local, &h.head_ref)?;
             if ahead > 0 {
                 return Err(refused(
                     "local_ahead",
@@ -306,6 +291,30 @@ impl Runtime {
         h.head_sha = tip;
         Ok(())
     }
+}
+
+fn fetch_failed(n: u64, e: anyhow::Error) -> anyhow::Error {
+    refused("fetch_failed", format!("could not fetch PR #{n}: {e:#}"), json!({}))
+}
+
+/// Fetches `head` (and the `also` branches) with explicit refspecs, so
+/// `origin/<head>` is updated even when the remote's fetch refspec leaves
+/// that branch out (a single-branch clone); returns the head's sha.
+fn fetch_pr_head(repo: &Path, n: u64, head: &str, also: &[&str]) -> Result<String> {
+    let specs: Vec<String> = std::iter::once(head).chain(also.iter().copied()).map(gh::branch_refspec).collect();
+    let specs: Vec<&str> = specs.iter().map(String::as_str).collect();
+    gh::fetch_branches(repo, &specs, crate::pr::FETCH_DEADLINE).map_err(|e| fetch_failed(n, e))?;
+    let remote = format!("origin/{head}");
+    gh::rev_sha(repo, &format!("refs/remotes/{remote}"))
+        .ok_or_else(|| fetch_failed(n, anyhow!("{remote} not found after the fetch")))
+}
+
+/// `(ahead, behind)` of the local `local` ref against `origin/<head>`. Unknown
+/// is not "0 ahead": the local commits would be kept unseen.
+fn local_position(repo: &Path, n: u64, local: &str, head: &str) -> Result<(u32, u32)> {
+    let remote = format!("origin/{head}");
+    cleanup::try_ahead_behind(repo, local, &remote)
+        .ok_or_else(|| fetch_failed(n, anyhow!("can't compare {local} with {remote}")))
 }
 
 #[cfg(test)]
