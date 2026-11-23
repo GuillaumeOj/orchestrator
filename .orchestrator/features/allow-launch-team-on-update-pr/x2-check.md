@@ -52,3 +52,15 @@ None.
 2. No test of the `o` key on a row, nor of Esc on the PR dialog (only Cancel).
 3. No test of the 8 s "Still reading" line (`prs.slow`) nor of the logs-cut line (`data-logs-cut`).
 4. No test of the Feature pane's head-moved warning without a sha (only with `a41d7e0`) at the component level.
+
+## Code-review findings (not fixed here: other nodes' files; ux changes no code)
+
+| # | File:line | Finding | Suggested fix |
+|---|---|---|---|
+| R1 | `ui/src/components/chat/DecisionCard.svelte:70` | **Should fix.** The spec gate's linked note finds the feature by slug alone (`d.subject.feature`); slugs are unique per project only, and `pr-<n>-<title>` slugs collide easily across projects. The note can name another project's PR. | Match on the gate's run id (`d.subject.run`), slug as fallback. |
+| R2 | `crates/agent-runtime/src/team.rs:~1606` | `feature_delete` `kept` lists any kept branch, so a non-PR branch kept as unmerged gets `commits: null` and the toast says "can't tell whether its commits are pushed to PR #n". | List only the linked feature's own integration branch. |
+| R3 | `crates/agent-runtime/src/team.rs:~1540` | `feature_delete_plan` returns `unpushed: 0` when git cannot count, so the dialog says "pushed: it will be removed locally" but the delete keeps the branch. | Return `null` when unknown (make `try_unpushed` public); the UI already shows no line for null. |
+| R4 | `ui/src/lib/prlaunch.js:~62` | `prefillError` has no `bad_request` case (PR on an `orch/*` branch, invalid branch name): it offers Try again on a failure that never succeeds. | Show the core's message, no retry. |
+| R5 | `crates/agent-runtime/src/rebase.rs:90` | `rebase_continue` guesses "onto pr_head" from ancestry; a base rebase onto an older base commit also in the PR history is mislabelled, and the next `request_pr` is refused. | Record the target when `rebase_base` starts. |
+| R6 | `crates/agent-runtime/src/pr.rs:461` | Reopened linked PR: the return to `pr_open` tests `run.status == Integrating`, so a paused run stays in integrating. | Use `effective(run)` and `advance_run`. |
+| R7 | `crates/agent-runtime/src/pr.rs:592` | A pending linked `push_pr` gate stays open when the PR is closed (the `push_pr_update` ones are withdrawn). Approving it ends as a `pr_closed` refusal. | Withdraw linked `push_pr` gates on close, if the spec agrees. |
