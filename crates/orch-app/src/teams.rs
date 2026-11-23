@@ -135,8 +135,9 @@ impl Core {
         let rt = self.runtime()?;
         let run = rt.launch(&spec)?;
         let mut v = rt.run_value_of(&run);
-        // F8: the PR row is patched from it.
-        if let Some(f) = rt.db.feature(&run.feature_id)? {
+        // F8: the PR row is patched from it. The run exists now: a failed
+        // read must not report the launch as failed.
+        if let Some(f) = rt.db.feature(&run.feature_id).ok().flatten() {
             v["feature"] = agent_runtime::pr_link::feature_ref(&f, Some(&run));
         }
         Ok(v)

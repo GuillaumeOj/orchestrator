@@ -461,6 +461,12 @@ impl Runtime {
         // §5.3 steps 2 and 4: the head fetched and the local branch lined up,
         // still before anything is stored; then the link, branch and base.
         let feature = match (on_pr.as_mut(), spec.pr.as_ref()) {
+            // A deleted per-issue feature coming back keeps its mode.
+            (Some(_), Some(l)) if feature.pr_mode == orch_store::PrMode::PerIssue => {
+                let m =
+                    format!("a feature on PR #{} pushes to that PR only: one PR per issue is not available", l.number);
+                return Err(crate::pr_link::refused("per_issue", m, json!({})));
+            }
             (Some(pl), Some(sent)) => {
                 self.prepare_pr_branch(&project.path, pl)?;
                 let app = crate::feature_docs::app_base(&self.cfg.paths.root, &project.id, &feature.slug);

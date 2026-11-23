@@ -211,7 +211,9 @@ fn run() -> Result<()> {
             let kind = match a.next("kind")?.as_str() {
                 "solo" => WorktreeKindSpec::Solo { slug: a.next("slug")? },
                 "integration" => {
-                    WorktreeKindSpec::Integration { feature: a.next("feature")?, branch: a.opt("--branch")? }
+                    // The flag first, so `--branch B <feature>` is not read as the feature.
+                    let branch = a.opt("--branch")?;
+                    WorktreeKindSpec::Integration { feature: a.next("feature")?, branch }
                 }
                 "team" => WorktreeKindSpec::Team {
                     feature: a.next("feature")?,

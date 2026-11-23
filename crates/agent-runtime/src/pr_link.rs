@@ -120,23 +120,26 @@ impl Runtime {
         }
     }
 
-    /// The newest feature of the project linked to PR `number`, with its
-    /// latest run (archived features left out).
+    /// The feature of the project linked to PR `number` with an active run,
+    /// else the newest one linked to it, with its latest run (archived
+    /// features left out). Several may be linked (finished ones are kept).
     pub(crate) fn feature_on_pr(
         &self,
         project_id: &str,
         number: u64,
     ) -> Result<Option<(Feature, Option<orch_store::TeamRun>)>> {
-        let Some(f) = self
-            .db
-            .features(Some(project_id))?
-            .into_iter()
-            .find(|f| f.pr_link.as_ref().is_some_and(|l| l.number == number))
-        else {
-            return Ok(None);
-        };
-        let run = self.db.runs(Some(&f.id), false)?.into_iter().next();
-        Ok(Some((f, run)))
+        let mut first = None;
+        for f in self.db.features(Some(project_id))? {
+            if !f.pr_link.as_ref().is_some_and(|l| l.number == number) {
+                continue;
+            }
+            let run = self.db.runs(Some(&f.id), false)?.into_iter().next();
+            if run.as_ref().is_some_and(|r| !crate::team::effective(r).finished()) {
+                return Ok(Some((f, run)));
+            }
+            first.get_or_insert((f, run));
+        }
+        Ok(first)
     }
 
     /// Step 1 of §5.3: the refusals that need no fetch, then the PR re-read
@@ -234,13 +237,20 @@ impl Runtime {
         let h = &mut launch.head;
         let n = h.number;
         let fetch = |e: anyhow::Error| refused("fetch_failed", format!("could not fetch PR #{n}: {e:#}"), json!({}));
-        gh::fetch_branches(repo, &[&h.head_ref, &h.base_ref], crate::pr::FETCH_DEADLINE).map_err(fetch)?;
+        // Explicit refspecs: `origin/<head>` is updated even when the remote's
+        // fetch refspec leaves that branch out (a single-branch clone).
+        let specs: Vec<String> =
+            [&h.head_ref, &h.base_ref].iter().map(|b| format!("+refs/heads/{b}:refs/remotes/origin/{b}")).collect();
+        let specs: Vec<&str> = specs.iter().map(String::as_str).collect();
+        gh::fetch_branches(repo, &specs, crate::pr::FETCH_DEADLINE).map_err(fetch)?;
         let remote = format!("origin/{}", h.head_ref);
         let tip = gh::rev_sha(repo, &format!("refs/remotes/{remote}"))
             .ok_or_else(|| fetch(anyhow!("{remote} not found after the fetch")))?;
         if worktree::branch_exists(repo, &h.head_ref) {
             let local = format!("refs/heads/{}", h.head_ref);
-            let (ahead, behind) = cleanup::try_ahead_behind(repo, &local, &remote).unwrap_or((0, 0));
+            // Unknown is not "0 ahead": the local commits would be kept unseen.
+            let (ahead, behind) = cleanup::try_ahead_behind(repo, &local, &remote)
+                .ok_or_else(|| fetch(anyhow!("can't compare {local} with {remote}")))?;
             if ahead > 0 {
                 return Err(refused(
                     "local_ahead",

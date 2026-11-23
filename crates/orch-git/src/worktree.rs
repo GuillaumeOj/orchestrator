@@ -182,6 +182,11 @@ pub fn ensure(
     let (path, branch) = layout(&repo, kind)?;
     if let Some(row) = store.get_row(&path) {
         if row.state == WorktreeRowState::Ready && path.is_dir() {
+            // The same path on another branch (a feature deleted without its
+            // worktrees, launched again on a PR): never reused as this one.
+            if row.branch != branch {
+                bail!("{} is on {}, not {branch}: remove that worktree first", path.display(), row.branch);
+            }
             lock(&repo, &path, row.agent_id.as_deref())?;
             return Ok(row);
         }
