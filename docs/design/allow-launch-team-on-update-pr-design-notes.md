@@ -15,13 +15,15 @@ Section numbers follow ux-brief §2 (1–6); §7 is the keys and copy table, §8
 
 One project, so the boards read as one story. Project `shop-api` (GitHub `acme/shop`, default branch `main`), team "Default" v3.
 
-| PR | Title | Head → base | Author | CI | Review | Draft | Launch state |
+| PR | Title | Head → base | Author | CI (as the row prints it, `ci(checks)`) | Review | Draft | Launch state |
 |---|---|---|---|---|---|---|---|
-| #42 | chore(deps): update rust crate tokio to v1.48 | `renovate/tokio-1.x` → `main` | renovate[bot] (bot) | 5 passing · 1 failing | none | no | launchable |
-| #43 | chore(deps): update dependency vite to v7 | `renovate/vite-7.x` → `main` | renovate[bot] (bot) | 3 passing · 2 pending | none | no | active team: `pr-43-update-dependency-vite`, executing |
-| #44 | Bump serde to 1.0.230 | `dependabot/cargo/serde-1.0.230` → `main` | dependabot[bot] (bot) | 6 passing | approved | no | earlier team: `pr-44-bump-serde`, done |
-| #45 | Add retry to the mailer | `mia-dev:feat/mailer-retry` → `main` | mia-dev (fork) | 4 passing · 1 failing | changes requested | no | fork, disabled |
-| #46 | wip: split the cart module | `lena/cart-split` → `main` | lena | none reported | none | **yes** | launchable (draft) |
+| #42 | chore(deps): update rust crate tokio to v1.48 | `renovate/tokio-1.x` → `main` | renovate[bot] (bot) | 1 failing | none | no | launchable |
+| #43 | chore(deps): update dependency vite to v7 | `renovate/vite-7.x` → `main` | renovate[bot] (bot) | 2 pending | none | no | active team: `pr-43-update-dependency-vite`, executing |
+| #44 | Bump serde to 1.0.230 | `dependabot/cargo/serde-1.0.230` → `main` | dependabot[bot] (bot) | passing | approved | no | earlier team: `pr-44-bump-serde`, done |
+| #45 | Add retry to the mailer | `feat/mailer-retry` → `main` | mia-dev (fork) | 1 failing | changes requested | no | fork, disabled |
+| #46 | wip: split the cart module | `lena/cart-split` → `main` | lena | none | none | **yes** | launchable (draft) |
+
+`head_ref` is the branch name only (no `owner:` prefix); a fork row looks like any other, the Fork line says why it is disabled. Review reads `approved` / `changes requested` / `review required` through `reviewWord` (`lib/pr.js`); the pane's current `review_decision.toLowerCase()` would print `changes_requested`, so front switches to it.
 
 Linked feature for the Feature pane boards: `pr-42-update-rust-crate-tokio`, run phases used: executing (before push), pr gate, pr open, head moved, closed. Branch `renovate/tokio-1.x`, head at link `9f2c1ab`, someone else's push `a41d7e0`, team commits 3.
 
@@ -42,7 +44,7 @@ Today a row is one `<p>`: `#42 title (draft) head → base · CI … · review`.
 - **Line 2** (`caption`, `text.muted`): `head → base` (mono) · author · CI · review decision. Joined by ` · `, each piece present only when it has a value. Same order as today with the author inserted after the branches.
   - **Author**: the login; for `author.is_bot` a robot glyph (U+F06A9, ui confirms it exists in the shipped Nerd Font) before it, `aria-label="bot"`. A human author has no glyph. A null author (deleted account) shows `unknown author`.
   - **CI**: the text the pane builds today from `checks` (`ci(pr.checks)`); failing parts in `status.error`, nothing else coloured.
-  - **Review**: `changes requested` / `approved` as today (lower-cased `review_decision`); absent when null.
+  - **Review**: `approved` / `changes requested` / `review required` from `reviewWord(review_decision).text` (`lib/pr.js`). Not today's `review_decision.toLowerCase()`, which prints `changes_requested`. Absent when null.
 - Line 2 wraps under the title at narrow widths; the action stays on line 1. The label always stays "Launch team…": the button is `flex: none` and the title shrinks.
 
 ### 1.2 The action, per state (D3, §5.1)
@@ -51,8 +53,8 @@ The state comes from the row's `launch` and `feature` (api-contract §1). One bu
 
 | State | Condition | Line 1 action | Line 2 extra | Notes |
 |---|---|---|---|---|
-| **Launchable** | `launch.ok` and (`feature` null or its `run_status` is `done` / `failed`) | **Launch team…** (enabled) | none | Opens the PR dialog (§2). |
-| **Launchable, earlier team** | as above and `feature` set | **Launch team…** | `Earlier team: pr-44-bump-serde · done` where the slug is a link button → opens that feature | Failed: `· failed`. A finished feature does not hide the action (D3). |
+| **Launchable** | `launch.ok` (the core decides: `feature` null, no run yet, or `run_status` `done` / `failed`) | **Launch team…** (enabled) | none | Opens the PR dialog (§2). |
+| **Launchable, earlier team** | as above and `feature` set (without a `run_status` the line is `Earlier team: {slug}`) | **Launch team…** | `Earlier team: pr-44-bump-serde · done` where the slug is a link button → opens that feature | Failed: `· failed`. A finished feature does not hide the action (D3). |
 | **Active team** | `launch.code == "active_feature"` | **Open feature** (enabled) | `Team on this PR: pr-43-update-dependency-vite · executing` (slug is not a link: the button is the link) | `run_status` is shown with the same phase word the Feature pane header uses (spec, spec gate, planning, executing, pr gate, pr open…). |
 | **Fork** | `launch.code == "fork"` | **Launch team…** disabled (`aria-disabled`, still focusable) | `Fork PR: the app pushes to origin only` (visible text, `text.muted`, linked to the button with `aria-describedby`) | Tooltip on the button repeats the reason. The reason is the core's `launch.reason`; the copy above is the default. Enter / click do nothing. |
 | **Draft** | `is_draft` | as Launchable | none | Drafts are allowed (D4). The **draft** chip is the only mark. |
@@ -64,7 +66,7 @@ Closed and merged PRs are not listed (the list is open PRs only), so a PR that c
 
 ### 1.3 Key
 
-The pane has `f` fetch, `p` load PRs, `t` trust, `x` remove. Rows become focusable (Tab enters the list, **↑ / ↓** move between rows, the focused row has the usual focus ring, no row is focused by default).
+The pane has `f` fetch, `p` load PRs, `t` trust, `x` remove. Rows become focusable (Tab enters the list, **↑ / ↓** move between rows, the focused row has the usual focus ring, no row is focused by default). The keys below apply when the **row itself** is focused; on an inner button (the title link, the action, the earlier-team slug) Enter is that button's own and `l` / `o` still work. Tab walks row, then its buttons.
 
 | Key (row focused) | Does |
 |---|---|
@@ -118,7 +120,7 @@ Issues (optional)  [ chips ]
 
 | Part | Intake dialog | PR variant |
 |---|---|---|
-| **Origin chip** (`originChip`) | `From #13 Address step · in Checkout v2 · GitHub ↗` | `From PR #42 · GitHub ↗`. Built from `origin {kind:"pr", label:"PR #42", url}`; the PR title is the Title field's, so it is not repeated. The ↗ opens the PR (`aria-label="Open PR #42 in GitHub"`); the tooltip is the PR title. Same chip style and place as the other origins. |
+| **Origin chip** (`originChip`) | `From #13 Address step · in Checkout v2 · GitHub ↗` | `From PR #42 · GitHub ↗`. Built from `origin {kind:"pr", label:"PR #42", url}`; the PR title is the Title field's, so it is not repeated. The ↗ opens the PR (`aria-label="Open PR #42 in GitHub"`); the tooltip is the PR title. Same chip style and place as the other origins. Front: `originChip` has no `pr` branch (it reads `ref` / `source` / `tracker`, the contract sends `label`), and the untrusted note and the other intake notes sit in `intakeNote`, gated on `origin.kind === 'intake'`: both widen to `pr`. |
 | **Feature** segment (New / Existing) | shown | **Hidden**: a PR launch always creates a new feature (see F1). |
 | **Project** | select | read-only (the `shop-api` name as static text in the field style, no chevron): the PR belongs to it. |
 | **Slug** | editable | editable, prefilled `pr-42-update-rust-crate-tokio` (≤ 40, unique, from the core). |
@@ -168,7 +170,7 @@ The form is replaced by one `err` block (`role="alert"`) under the chip; the foo
 
 ### 2.7 Launch errors (inline, form kept)
 
-Shown in the existing `err` slot above the footer; the form stays editable and **Launch** stays enabled for the four fixable ones (the user fixes it outside the app, or edits and retries). Paths are shortened with `~` as the dialogs do (`shortPath`).
+Shown in the existing `err` slot above the footer; the form stays editable and **Launch** stays enabled for the three fixable ones (`branch_checked_out`, `local_ahead`, `fetch_failed`: the user fixes it outside the app, or edits and retries). Paths are shortened with `~` as the dialogs do (`shortPath`).
 
 | Code | Copy | After |
 |---|---|---|
@@ -188,7 +190,7 @@ The PR identity appears in two places, both from launch (before any push).
 
 ### 3.1 Header row 2
 
-`metaText` becomes `Default v3 · \u{E725} renovate/tokio-1.x · PR #42 · started 12 min ago` (pieces joined by ` · `): the branch piece uses `feature.branch` (api-contract §4: always present; an unlinked feature shows `orch/<slug>/integration`, so the hard-coded `FeaturePane.svelte:73` text goes), and a **`PR #42`** piece is added after it for a linked feature (link button, opens the PR; `aria-label="Open PR #42 on GitHub"`). The Docs card head `on the integration branch` stays correct (the integration branch is the PR branch).
+`metaText` becomes `Default v3 · \u{E725} renovate/tokio-1.x · PR #42 · started 12 min ago` (pieces joined by ` · `): the branch piece uses `feature.branch` (api-contract §4: always present; an unlinked feature shows `orch/<slug>/integration`, so the hard-coded text at `FeaturePane.svelte:74` on main goes; the `—` it shows when the feature has no integration worktree yet stays), and a **`PR #42`** piece is added after it for a linked feature (link button, opens the PR; `aria-label="Open PR #42 on GitHub"`). The Docs card head `on the integration branch` stays correct (the integration branch is the PR branch).
 
 ### 3.2 "PR and artifacts" card
 
@@ -210,7 +212,7 @@ Nothing pushed to PR #42 yet. The lead asks you to approve the push when the wor
 
 A warning block (`warnline`: glyph U+F0026, `status.queued`, as the dialog's blocked line) between the linked line and the PrLine:
 
-`PR #42's head moved: a41d7e0 was pushed outside the app, probably by renovate[bot]. The lead was told and brings it in with a rebase before asking for the push.` (`a41d7e0` is a link button to the commit on GitHub when the sha is known, see F4; the "probably by" clause is dropped for a human author: `was pushed outside the app.`)
+`PR #42's head moved: a41d7e0 was pushed outside the app, probably by renovate[bot]. The lead was told and brings it in with a rebase before asking for the push.` (`a41d7e0` is a link button to the commit on GitHub when the sha is known, see F4; the "probably by" clause is dropped for a human author: `was pushed outside the app.`). Without F4 (the contract has only the bool) the copy is `PR #42's head moved: a commit was pushed outside the app, probably by renovate[bot]. …` (no sha, no link).
 
 It has no button: the lead acts. It disappears when the branch contains the new head (the core resets `foreign_head`). The same block shows in `pr_open`.
 
@@ -333,6 +335,8 @@ Strings (exact), in addition to §1–§5: `Launch team…` · `Open feature` ·
 | **F9** | `author` can be null (deleted GitHub account) and `author.is_bot` can be false for a `[bot]` login. | Row and dialog must not crash or lie. | Contract says `is_bot` is derived from the login suffix too: keep it; state in the contract that `author` may be null (UI shows `unknown author`). |
 | **F10** | `active_feature` errors (prefill and launch) must say **which** feature to open. | §2.6's **Open feature** button needs `id` and `slug`. | `{code, message, feature: {id, slug, run_status}}` on `active_feature`. |
 | **F11** | Launch errors carry the path / count only inside `message`. | The UI wants the path in mono and `~`-shortened, and the commit count in plain words. | Optional: `details: {path}` for `branch_checked_out`, `{commits}` for `local_ahead`; the UI falls back to the message. |
+| **F12** | Spec D1: the lead commits the feature docs to the PR branch and removes them in a last commit, and the PR history keeps the add / remove pair. The push gate (§4) says "Push 3 commits" and lists the net diff, which has no docs; the dialog (§2.1) does not say the docs are committed to someone else's branch. | The user approves a count that includes two docs commits they cannot see in the file list, on a PR that is not theirs. | Gate: count commits as git does and add to the lease line `Includes the feature docs commits (added then removed).` when the pair is present, or let the core report `commits` and `docs_commits` and show `3 commits (2 are the feature docs)`. Dialog bullet 2: `…the docs are committed on the PR branch and removed before the push.` Confirm which. |
+| **F13** | `author.login` for bots from `gh pr list` can be `app/renovate` (`is_bot: true`), not `renovate[bot]`; the contract's `[bot]` suffix rule does not cover it, and the fixtures and the lead prompt use `renovate[bot]`. `headRepositoryOwner` is asked for in spec §5.1 but no contract field carries it, so the fork reason (§2.6, "mia-dev/shop") has no data. | Row and dialog would show `app/renovate`; the fork copy would lack the owner. | UI shows `author.login` as is (strip a leading `app/` for display only); contract adds `fork_owner` (or the core puts it in `launch.reason` and the prefill message). |
 
 ---
 
