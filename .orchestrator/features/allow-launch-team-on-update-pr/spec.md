@@ -59,10 +59,11 @@ fix it on that branch, and push the result to the same PR.
 
 ## 4. Decisions (lead's; the user can overturn them at spec approval)
 
-- **D1 · Feature docs stay off the PR.** The lead still writes and commits `spec.md` (the spec gate needs it), but
-  on a linked feature the lead removes `.orchestrator/features/<slug>/` in a last commit before `request_pr`, and
-  `request_pr` is refused while the PR diff (`origin/<base>...HEAD`) still contains that folder. The PR history keeps an
-  add/remove pair (gone on a squash merge). The lead protocol says so for linked features.
+- **D1 · Feature docs stay off the PR** (amended after B0, G1). Main now has `docs_location` (change-how-specs-are-saved,
+  #87): a linked feature is launched with its docs **and** designs in the **app folder** (`Loc::App`,
+  `<app data>/projects/<project>/features/<slug>`) whatever the project setting, so no `.orchestrator/features/<slug>/`
+  ever enters the PR. Guard: `request_pr` on a linked feature is still refused when `origin/<base>...HEAD` touches
+  `.orchestrator/features/<slug>/` (a doc committed by hand).
 - **D2 · The linked branch is never deleted on the remote**, and locally only when its head is in `origin/<head>`
   (pushed). Deleting a linked feature, pruning or removing the project keeps an unpushed local PR branch.
 - **D3 · One active feature per PR.** A PR already linked to a feature with a run that is not done/failed shows
@@ -71,6 +72,21 @@ fix it on that branch, and push the result to the same PR.
 - **D5 · Same lifecycle.** A linked run follows the usual states (spec → spec gate → planning → … → pr gate → pr open
   → done); no shortcut state. The spec gate stays: it is where the user sees what the team will change on someone
   else's PR.
+
+### 4.1 Gap decisions (B0 [back-notes.md](back-notes.md) G1–G6)
+
+- **G1** taken: D1 above. The lead prompt for a linked feature drops the "remove the docs" step.
+- **G2** `LaunchSpec.pr` carries no `cross_repo`: the launch re-reads the PR with `gh pr view` (open, same repo, head sha)
+  and refuses `fork` / `pr_closed` itself. Front never sends `cross_repo`.
+- **G3** The push lease is `run.pr.head_sha` (last watcher check), else `pr_link.head_sha_at_link`.
+- **G4** `rebase_base onto: "pr_head"` is allowed from `planning` on (planning, executing, integrating, pr_open) under the
+  existing "every task done, or ready with no branch" rule; `onto: "base"` keeps its states. The foreign-head turn says
+  so ("once no task is in progress").
+- **G5** Start ref not persisted: `complete()` (also the reconciler's) creates a missing local branch that is not
+  `orch/*` from `origin/<branch>` when that ref exists, else from `row.base` as today.
+- **G6** `foreign_head` is recomputed each check: true when `head_sha` ≠ `pushed_sha` (or ≠ link head before any
+  push) and `head_sha` is not an ancestor of the local HEAD; the lead turn is sent once per new foreign `head_sha`
+  (stored `foreign_head_sha`).
 
 ## 5. Behaviour
 
@@ -109,7 +125,7 @@ project's default team as for intake. Brief template in api-contract §2. A clos
    The worktree row keeps `base` = the PR base (diffs, cleanup, PR base stay right); the start ref is separate.
 5. Run as usual (lead started, brief queued, run `spec`). The lead prompt says: "Pull requests: this feature works on
    PR #42 (`renovate/foo` → `main`, opened by renovate[bot]). The integration branch is `renovate/foo`. Never open a
-   pull request; `request_pr` pushes to PR #42. Remove the feature docs before `request_pr` (D1)."
+   pull request; `request_pr` pushes to PR #42. The feature docs are in the app folder, never on the branch (D1)."
 
 ### 5.4 Merge, sync, rebase (back)
 
@@ -162,7 +178,7 @@ head is not in `origin/<head>`; they keep it and say so ("kept renovate/foo: 1 c
 
 1. A same-repo open PR in Project › Pull requests → Launch team… → dialog prefilled with failing check excerpts →
    Launch → the integration worktree is on `renovate/foo` at `origin/renovate/foo`; members branch from it.
-2. The run's spec gate, tasks and merges work as for any feature; the lead's `request_pr` after removing the docs
+2. The run's spec gate (docs in the app folder), tasks and merges work as for any feature; the lead's `request_pr`
    shows "Push n commits to PR #42"; approve → the commits are on `origin/renovate/foo`, no new PR exists, the run is
    `pr_open` on #42; CI and merge are followed; merge → `done`.
 3. Fork PR: action disabled with the reason. A PR with an active linked feature: Open feature.

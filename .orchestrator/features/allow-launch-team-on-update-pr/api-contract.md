@@ -13,7 +13,7 @@ Backend (`back`) ↔ UI (`front`). Additions only; an unlinked feature's shapes 
   "author": { "login": "renovate[bot]", "is_bot": true },          // is_bot: gh author.is_bot, or login ends with "[bot]"
   "cross_repo": false,                                              // isCrossRepository
   "head_sha": "9f2c…",                                              // headRefOid
-  "feature": { "id": "f_…", "slug": "pr-42-update-tokio", "run_status": "executing" } | null,
+  "feature": { "id": "f_…", "slug": "pr-42-update-rust-crate-tokio", "run_status": "executing" } | null,
   "launch": { "ok": true } | { "ok": false, "code": "fork" | "active_feature", "reason": "Fork PR: the app pushes to origin only" }
 }
 ```
@@ -63,7 +63,8 @@ No failing check → the section says "No check is failing right now (n pending)
 "pr": { "number": 42, "url": "…", "head_ref": "renovate/tokio-1.x", "base_ref": "main", "head_sha": "9f2c…", "author": "renovate[bot]" }   // optional
 ```
 
-With `pr`: `base` is ignored (the PR base is used), `pr_mode` must be null/`single`, `issues` allowed (task tracking
+With `pr`: the launch re-reads the PR (`gh pr view`: open, same repo, head sha; G2), docs and designs go to the app
+folder (D1), `base` is ignored (the PR base is used), `pr_mode` must be null/`single`, `issues` allowed (task tracking
 only). Launch errors `{code, message}`: `fork`, `pr_closed`, `active_feature`, `branch_checked_out` (message names
 the path), `local_ahead` (message names the commit count), `fetch_failed`.
 
@@ -81,7 +82,7 @@ For a linked run, `pr_number` / `pr_url` are set at launch and `run.pr` is fille
 
 ```jsonc
 "linked": true,              // the PR was not opened by the app
-"foreign_head": false        // the head moved outside the app since the app last saw / pushed it
+"foreign_head": false        // the head moved outside the app since the app last saw / pushed it (G6)
 ```
 
 `prs_view` (the PR card rows) shows the linked PR as `state: "open"` from launch.
@@ -97,7 +98,7 @@ Front: title "Push 3 commits to PR #42", approve label "Push". Outcome message o
 
 ## 7. Lead tools (orch-mcp)
 
-- `rebase_base { onto?: "base" | "pr_head" }`: `pr_head` only on a linked feature (else refused).
+- `rebase_base { onto?: "base" | "pr_head" }`: `pr_head` only on a linked feature (else refused), from `planning` on (G4).
 - `request_pr`: unchanged signature; on a linked feature it asks for a push (spec §5.5). Refusal texts:
-  "Remove .orchestrator/features/<slug>/ before pushing to PR #42 (it is someone else's PR)",
+  ".orchestrator/features/<slug>/ is in the diff: PR #42 is someone else's, remove it before pushing",
   "PR #42 is closed: ask the user", "No commit to push beyond PR #42's head".
