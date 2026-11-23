@@ -1,6 +1,6 @@
 # Allow to Launch a Team on Update PRs · API contract
 
-Backend (`back`) ↔ UI (`front`). Additions only; an unlinked feature's shapes are unchanged (new fields absent/null).
+Backend (`back`) ↔ UI (`front`). Additions only; an unlinked feature's shapes are unchanged (new fields absent/null), except `features[].branch`, always present.
 
 ## 1. `project_detail(id, withPrs: true)` → `prs[]`
 
@@ -47,9 +47,9 @@ Work on the PR's branch and push the fix to it; do not open another pull request
 
 ## Failing checks
 - test (ubuntu-latest) · <check url>
-  ```
+  ~~~
   <last lines of the failed log, or the annotations>
-  ```
+  ~~~
 
 ## PR description
 <the PR body, first 4 KB>
@@ -65,7 +65,7 @@ No failing check → the section says "No check is failing right now (n pending)
 
 With `pr`: the launch re-reads the PR (`gh pr view`: open, same repo, head sha; G2), docs and designs go to the app
 folder (D1), `base` is ignored (the PR base is used), `pr_mode` must be null/`single`, `issues` allowed (task tracking
-only). Launch errors `{code, message}`: `fork`, `pr_closed`, `active_feature`, `branch_checked_out` (message names
+only). Launch errors `{code, message}`: `fork`, `pr_closed`, `pr_merged`, `gh_missing`, `gh_auth`, `offline`, `active_feature`, `branch_checked_out` (message names
 the path), `local_ahead` (message names the commit count), `fetch_failed`.
 
 ## 4. Feature in `app_state.features[]` and the feature detail
@@ -90,11 +90,11 @@ For a linked run, `pr_number` / `pr_url` are set at launch and `run.pr` is fille
 ## 6. Gate payload (`push_pr`) for a linked feature
 
 ```jsonc
-{ "action": "push_pr", "branch": "renovate/tokio-1.x", "base": "main", "head": "…", "commits": 3,
-  "linked": { "number": 42, "url": "…" }, "lease": "9f2c…", "diff": { … } }   // diff over origin/<head>...HEAD
+{ "action": "push_pr", "branch": "renovate/tokio-1.x", "base": "main", "head": "…",
+  "linked": { "number": 42, "url": "…" }, "lease_sha": "9f2c…", "commits": [ /* same shape as push_pr_update's */ ], "diff": { … } }   // spec §5.5
 ```
 
-Front: title "Push 3 commits to PR #42", approve label "Push". Outcome message on success "Pushed to PR #42".
+Front: title "Push 3 commits to PR #42" (count = `commits.length`), approve label "Push". Outcome message on success "Pushed to PR #42".
 
 ## 7. Lead tools (orch-mcp)
 
@@ -129,3 +129,16 @@ Front: title "Push 3 commits to PR #42", approve label "Push". Outcome message o
   only the team's commits go to the PR." The gate counts the team's commits (`origin/<head>..HEAD`).
 - **F13** `is_bot` is true for `author.is_bot`, a `[bot]` suffix or an `app/` prefix; the UI strips a leading `app/`
   for display. PR rows gain `fork_owner` (headRepositoryOwner login, only when `cross_repo`); the fork reason uses it.
+
+## 9. Fixes after U1's review (lead; override the design notes where they differ)
+
+- Spec §5.5 / §5.6 / §5.7 amended: request_pr refuses while the last-seen PR head is not in HEAD (no force push can
+  drop a foreign commit); "nothing to push" = `origin/<head>..HEAD` empty; a closed linked PR before `pr_open` keeps
+  the run's state; D2 also deletes when the head is in `origin/<base>` or the PR is merged.
+- Gate payload: `lease_sha` and `commits` (array) like `push_pr_update` (§6).
+- `reviewWord(...)` may return null: use `?.text`, and no "no review" piece when null.
+- Fork reason copy: "Fork PR (from {fork_owner}): the app pushes to origin only." (no repo name; it has no data).
+- `local_ahead` copy: "Local {head} has {n} commit(s) PR #{number} does not have. Rename or delete that local
+  branch first." (no "push them": bot branches force-push).
+- Error counts in the notes (§6/§9) follow the boards (8 prefill / 6 launch states).
+- Slug examples: `pr-<n>-<kebab title>` cut at 40 on a word boundary (`pr-42-update-rust-crate-tokio`); the rule wins.

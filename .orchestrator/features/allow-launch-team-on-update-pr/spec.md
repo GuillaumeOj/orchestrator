@@ -67,7 +67,7 @@ fix it on that branch, and push the result to the same PR.
 - **D2 · The linked branch is never deleted on the remote**, and locally only when its head is in `origin/<head>`
   (pushed). Deleting a linked feature, pruning or removing the project keeps an unpushed local PR branch.
 - **D3 · One active feature per PR.** A PR already linked to a feature with a run that is not done/failed shows
-  **Open feature** instead of Launch team. A finished feature on the same PR can be relaunched (existing-feature path).
+  **Open feature** instead of Launch team. A PR launch always makes a new feature (F1, api-contract §8).
 - **D4 · Draft PRs are allowed**; closed/merged PRs are not listed (the list is open PRs only).
 - **D5 · Same lifecycle.** A linked run follows the usual states (spec → spec gate → planning → … → pr gate → pr open
   → done); no shortcut state. The spec gate stays: it is where the user sees what the team will change on someone
@@ -138,30 +138,43 @@ project's default team as for intake. Brief template in api-contract §2. A clos
 
 ### 5.5 Push to the PR (back)
 
-- `request_pr` on a linked feature without `pr_open`: refused when the docs folder is in the diff (D1), when there is
-  no commit beyond the link head; else a `push_pr` gate with `linked: {number, url}`, `diff_summary` over
-  `origin/<head>...HEAD` (the team's commits only) and `lease` = the PR head last seen (link head, or the last fetch).
-- Approved → `gh pr view` (still open, head still the lease; a moved head refuses with "PR #42 moved since the
-  request: rebase on it (`rebase_base` onto `pr_head`) and ask again") → `push_with_lease(HEAD, <head>, lease)` (a
-  plain fast-forward when the lease is an ancestor) → `pr_opened(linked url)` → `pr_open`, `pushed_sha` = HEAD. **No
+(Amended after U1's review; G3, G6, F1, F6 folded in.)
+
+- `request_pr` on a linked feature without `pr_open` is refused when:
+  - the PR is closed or merged;
+  - `.orchestrator/features/<slug>/` is in `origin/<base>...HEAD` (D1 guard);
+  - **the PR head the app last saw (the lease, G3) is not an ancestor of HEAD**, unless the last `rebase_base` (onto
+    `base`) started from a head that contained the lease (the team rewrote those commits itself). Otherwise someone
+    else pushed commits the branch does not have: "PR #42 has commits the branch does not have (abc1234): bring them
+    in with `rebase_base` onto `pr_head`, then ask again". A force push can therefore never drop a foreign commit;
+  - `origin/<head>..HEAD` is empty ("No commit to push to PR #42").
+- Else a `push_pr` gate with `linked: {number, url}`, `lease_sha`, `commits` (the `origin/<head>..HEAD` list, same
+  shape as `push_pr_update`'s) and `diff_summary` over `origin/<head>...HEAD` (the team's commits only).
+- Approved → `gh pr view` (still open; head still `lease_sha`, else the gate fails `pr_moved`, F6) → push: a
+  fast-forward when the lease is an ancestor of HEAD, else (only the rebase case above)
+  `--force-with-lease=<head>:<lease_sha>` → `pr_opened(linked url)` → `pr_open`, `pushed_sha` = HEAD. **No
   `gh pr create`.** Audit `pr_push_linked`.
-- In `pr_open` the existing `push_pr_update` path is used unchanged.
-- Closed linked PR → run `integrating`, the lead told "PR #42 was closed outside the app; ask the user", and
-  `request_pr` refused while the link's PR is closed. Merged → `done` as today.
+- In `pr_open` the existing `push_pr_update` path is used, with the same foreign-commit refusal (it already has
+  `foreign_pushes`).
+- **Closed linked PR before `pr_open`**: the run **keeps its state**; the lead is told "PR #42 was closed outside the
+  app; ask the user", `request_pr` is refused while it is closed; reopened → cleared, lead told (F5). Closed after
+  `pr_open` → `integrating` as today (with the same refusal instead of "opens a new pull request"). Merged → `done`.
 
 ### 5.6 Watcher (back)
 
-- Linked runs are checked by `pr_tick` from launch (not only in `pr_open`), so the Feature pane shows the PR's CI and
-  state from the start. Before `pr_open`, changes are reported to the lead only for closed/merged and a head moved.
-- **Head moved outside the app** (`head_sha` ≠ last seen and ≠ `pushed_sha`, not our push): one ORCH turn to the lead
-  ("PR #42's head moved to abc1234 (pushed by someone else, e.g. the updater). Bring it in with `rebase_base` onto
-  `pr_head` before asking for the push."), and `run.pr.foreign_head = true` for the UI. Reset when the branch contains
-  it again.
+- Linked runs are checked by `pr_tick` from launch (any state but done/failed), so the Feature pane shows the PR's CI
+  and state from the start. Before `pr_open`, only closed/reopened/merged and a foreign head are acted on.
+- **Foreign head** (G6): `foreign_head` = `head_sha` is not an ancestor of the local HEAD and ≠ `pushed_sha`;
+  `foreign_head_sha` = that head. One ORCH turn per new foreign head ("PR #42's head moved to abc1234 (pushed outside
+  the app, probably by renovate[bot]). Bring it in with `rebase_base` onto `pr_head` once no task is in progress,
+  before asking for the push."). Cleared when HEAD contains it.
 
 ### 5.7 Delete and cleanup (back)
 
-D2: `remove_worktree` / feature delete / prune / project removal never run `git branch -D` on a linked branch whose
-head is not in `origin/<head>`; they keep it and say so ("kept renovate/foo: 1 commit not pushed to PR #42").
+D2: `remove_worktree` / feature delete / prune / project removal never run `git branch -D` on a linked branch unless
+its head is in `origin/<head>`, **or in `origin/<base>`, or the linked PR is merged** (a merged PR usually deletes its
+head branch, so `origin/<head>` is gone). Otherwise they keep it and say so ("kept renovate/foo: 1 commit not pushed
+to PR #42"). Nothing is ever deleted on the remote.
 
 ### 5.8 UI (front, after ui)
 
@@ -170,7 +183,7 @@ head is not in `origin/<head>`; they keep it and say so ("kept renovate/foo: 1 c
   replacing Base; no PR mode control; copy "Checks out renovate/foo" instead of "Creates orch/…/integration";
   the prefilled brief editable; errors from launch inline (5.3.1, 5.3.4).
 - Feature pane: header / PR card shows "PR #42 · renovate/foo → main" from launch (state, CI, linked, foreign head
-  warning), the real branch name in place of the hard-coded one (`FeaturePane.svelte:73`).
+  warning), the real branch name in place of the hard-coded one (`FeaturePane.svelte`, the integration branch line).
 - Gate card for a linked push: "Push 3 commits to PR #42 (renovate/foo)" instead of "Open a pull request".
 - Delete-feature dialog: the real branch and D2's rule in the checkbox copy.
 
@@ -184,7 +197,7 @@ head is not in `origin/<head>`; they keep it and say so ("kept renovate/foo: 1 c
 3. Fork PR: action disabled with the reason. A PR with an active linked feature: Open feature.
 4. A head pushed by someone else before the push: lead told; the approval with the old lease is refused, never
    overwrites; `rebase_base onto pr_head` then a new request pushes.
-5. Closed linked PR: run back to `integrating`, no `gh pr create` possible.
+5. Closed linked PR: lead told, push refused until reopened, no `gh pr create` possible.
 6. Deleting a linked feature with unpushed commits keeps the local branch; nothing is ever deleted on the remote.
 7. Unlinked features behave exactly as before (all existing tests pass; `branch` NULL everywhere).
 
