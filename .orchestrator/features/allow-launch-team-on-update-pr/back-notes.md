@@ -2,7 +2,7 @@
 
 ## B1 · store, launch, branch, guards, D2
 - **Migration**: last on main is **24** (`features.docs_location`, `orch-store/src/migrations.rs:740`) → ours is **25**:
-  `ALTER TABLE features ADD COLUMN branch TEXT; ADD COLUMN pr_link TEXT;`. `FEATURE_COLS` + row mapping
+  `ALTER TABLE features ADD COLUMN branch TEXT;` + `ALTER TABLE features ADD COLUMN pr_link TEXT;` (SQLite: one column per ALTER). `FEATURE_COLS` + row mapping
   (`orch-store/src/teams.rs:842`), `Feature` struct (:45) gets `branch: Option<String>`, `pr_link: Option<PrLink>` (serde JSON).
   `Feature { .. }` literals to fix: `team.rs:~420`, `artifacts.rs:348`, `issues.rs:491`, `notion.rs:826,1005`, store tests.
   Hand-downgrade tests pin `user_version` (`runtime.rs:4254` drops docs_location, sets 22): check them after the bump.
