@@ -92,7 +92,15 @@ impl Runtime {
         let onto = lead_cx.as_ref().map(|cx| {
             let head = cx.feature.pr_link.as_ref().map(|l| format!("origin/{}", l.head_ref));
             match (head, commit::rebase_onto(&rec.worktree)) {
-                (Some(h), Some(sha)) if gh::rev_sha(&rec.worktree, &h).as_deref() == Some(sha.as_str()) => h,
+                // The PR head at the start, or an ancestor of it once fetched again.
+                (Some(h), Some(sha))
+                    if gh::rev_sha(&rec.worktree, &h)
+                        .is_some_and(|tip| orch_git::cleanup::is_merged(&rec.worktree, &sha, &tip))
+                        && !gh::rev_sha(&rec.worktree, &format!("origin/{}", cx.feature.base))
+                            .is_some_and(|b| b == sha) =>
+                {
+                    h
+                }
                 _ => format!("origin/{}", cx.feature.base),
             }
         });

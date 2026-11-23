@@ -74,13 +74,18 @@ impl Runtime {
                 short(&lease)
             );
         }
-        // The team's commits only: past the lease (or the remote head, rewritten).
-        let from = if ff { lease.clone() } else { remote.clone() };
+        // The team's commits only: past the lease, or (rebased onto the base)
+        // past the base, so the base's own new commits are not counted.
+        let from = if ff { lease.clone() } else { format!("origin/{}", cx.feature.base) };
         let commits = gh::commits_since(wt, &from)?;
         if commits.is_empty() {
             bail!("No commit to push to PR #{n}");
         }
         let branch = orch_git::worktree::current_branch(wt)?;
+        // The push goes to the checked-out branch: it must be the PR's head.
+        if branch != l.head_ref {
+            bail!("{} is on {branch}, not PR #{n}'s branch {}: nothing to push from it", wt.display(), l.head_ref);
+        }
         let head = gh::rev_sha(wt, "HEAD").ok_or_else(|| anyhow!("{branch} has no commit"))?;
         let id = self.add_item(
             Some(&rec.id),
@@ -112,7 +117,8 @@ impl Runtime {
     /// held `lease`: the team rewrote the PR's commits itself.
     fn rebased_from(&self, run_id: &str, wt: &Path, lease: &str, base: &str) -> bool {
         let _ = self.db.flush();
-        let last = self.db.run_events(run_id, 500).unwrap_or_default().into_iter().find(|e| e.kind == "git.rebase");
+        // The latest one however many events came after it.
+        let last = self.db.last_run_event(run_id, "git.rebase").ok().flatten();
         last.is_some_and(|e| {
             e.detail["onto"] == json!(format!("origin/{base}"))
                 && e.detail["from"].as_str().is_some_and(|f| orch_git::cleanup::is_merged(wt, lease, f))

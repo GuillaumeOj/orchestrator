@@ -1591,12 +1591,10 @@ impl Runtime {
             Ok(removed) => json!({"removed": removed}),
             Err(e) => json!({"error": format!("{e:#}")}),
         };
-        // D2 (F7): the PR branches kept for their unpushed commits.
+        // D2 (F7): the PR branches kept for their unpushed commits (`null`: git could not count them).
         let kept: Vec<Value> = worktrees
             .iter()
-            .filter_map(|r| {
-                Some(json!({"branch": r["kept_branch"].as_str()?, "commits": r["kept_unpushed"].as_u64()?}))
-            })
+            .filter_map(|r| Some(json!({"branch": r["kept_branch"].as_str()?, "commits": r["kept_unpushed"]})))
             .collect();
         let out = json!({"deleted": f.slug, "agents": agents, "worktrees": worktrees, "app_folder": app_folder, "kept": kept});
         self.db.audit("user", None, "feature_deleted", Some(&f.slug), "ok", out.clone())?;

@@ -355,9 +355,15 @@ impl Runtime {
     fn foreign_head_told(&self, run: &TeamRun, feature: &Feature, n: u64, head: &str) {
         let by = feature.pr_link.as_ref().and_then(|l| l.author.as_deref()).map(|a| format!(", probably by {a}"));
         self.run_event(&run.id, None, "pr.foreign_head", json!({"number": n, "head_sha": head}));
+        // G4: rebase_base onto pr_head is open from planning on.
+        let when = if matches!(effective(run), RunState::Draft | RunState::Spec | RunState::SpecGate) {
+            "once the spec is approved and no task is in progress"
+        } else {
+            "once no task is in progress"
+        };
         let text = format!(
             "ORCH: PR #{n}'s head moved to {} (pushed outside the app{}). Bring it in with mcp__orch__rebase_base \
-             {{\"onto\": \"pr_head\"}} once no task is in progress, before asking for the push.",
+             {{\"onto\": \"pr_head\"}} {when}, before asking for the push.",
             crate::inbox::short(head),
             by.unwrap_or_default()
         );
@@ -454,9 +460,21 @@ impl Runtime {
                 }
                 PrChange::Reopened if issue.is_none() && feature.pr_link.is_some() => {
                     self.run_event(&run.id, None, "pr.reopened", json!({"number": n}));
-                    tell.push(format!(
-                        "ORCH: PR #{n} is open again: mcp__orch__request_pr pushes the team's commits to it."
-                    ));
+                    // Closed once `pr_open` (the app had pushed): back to it, followed again.
+                    let pushed = pr.is_some_and(|p| p.pushed_sha.is_some());
+                    if pushed
+                        && run.status == RunState::Integrating
+                        && self.move_run(&run.id, RunState::PrOpen, "pull request reopened", false).is_ok()
+                    {
+                        tell.push(format!(
+                            "ORCH: PR #{n} is open again: the run is back to pr_open; mcp__orch__request_pr pushes \
+                             new commits to it."
+                        ));
+                    } else {
+                        tell.push(format!(
+                            "ORCH: PR #{n} is open again: mcp__orch__request_pr pushes the team's commits to it."
+                        ));
+                    }
                 }
                 PrChange::Reopened => {}
                 PrChange::Merged | PrChange::Closed if feature.pr_link.is_some() => {
@@ -572,6 +590,18 @@ impl Runtime {
         }
         self.run_event(&run.id, None, &format!("pr.{what}"), json!({"number": n, "linked": true}));
         self.withdraw_pr_updates(&run.id, None, &why);
+        if merged {
+            // The run is done: a push asked before the merge has nothing left to push to.
+            let run_id = run.id.as_str();
+            self.close_items_where(
+                |i| {
+                    i.payload.get("action") == Some(&json!("push_pr"))
+                        && i.payload.get("linked").is_some_and(Value::is_object)
+                        && i.payload.get("run").and_then(Value::as_str) == Some(run_id)
+                },
+                &why,
+            );
+        }
         let title = if merged {
             format!("Feature {} merged", feature.slug)
         } else {

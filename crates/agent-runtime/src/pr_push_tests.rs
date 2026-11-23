@@ -274,6 +274,22 @@ fn a_closed_linked_pr_keeps_the_run_refuses_the_push_and_clears_when_reopened() 
     assert_eq!(run_of(&fx, &run.id).status, RunState::Integrating);
     assert_eq!(told(rt, "was closed outside the app"), 2, "told for each closing the watcher saw");
     assert!(call(rt, LEAD, "request_pr", json!({"title": "x"})).1.contains("PR #42 is closed"));
+    // Reopened after the app had pushed: back to pr_open, followed again.
+    fx.pr.lock().unwrap().state = "OPEN";
+    rt.pr_tick(t0 + 7 * MIN);
+    assert_eq!(run_of(&fx, &run.id).status, RunState::PrOpen);
+    assert_eq!(told(rt, "ORCH: PR #42 is open again: the run is back to pr_open"), 1);
+
+    // Merged while a push waits: the run is done and the push gate goes.
+    fx.pr.lock().unwrap().state = "OPEN";
+    rt.pr_tick(t0 + 7 * MIN);
+    commit(rt, "late.txt");
+    ok(rt, LEAD, "request_pr", json!({}));
+    let gate = pending_gate(rt).unwrap();
+    fx.pr.lock().unwrap().state = "MERGED";
+    rt.pr_tick(t0 + 8 * MIN);
+    assert_eq!(run_of(&fx, &run.id).status, RunState::Done);
+    assert_eq!(item(rt, gate.id).status, orch_store::InboxStatus::Dismissed);
 }
 
 #[test]
@@ -337,6 +353,11 @@ fn a_rebase_onto_the_base_is_force_pushed_under_the_lease() {
         (gate.payload["force"].as_bool(), gate.payload["lease_sha"].as_str()),
         (Some(true), Some(linked_at.as_str()))
     );
+    // The PR's and the team's commits, not the base's new one.
+    let subjects: Vec<&str> =
+        gate.payload["commits"].as_array().unwrap().iter().filter_map(|c| c["subject"].as_str()).collect();
+    assert_eq!(subjects.len(), 2, "{subjects:?}");
+    assert!(!subjects.contains(&"main moves"), "{subjects:?}");
     rt.decide(gate.id, InboxDecision::Approve, None, None).unwrap();
     let local = rev(&lead_wt(rt), "HEAD");
     wait("the force push", || fx.origin_sha() == local);
