@@ -268,7 +268,7 @@ pub fn unpushed(repo: &Path, branch: &str, base: &str) -> Option<u32> {
 }
 
 /// [`unpushed`] with `None` only when git could not tell (never "0 commits").
-fn try_unpushed(repo: &Path, branch: &str, base: &str) -> Option<u32> {
+pub fn try_unpushed(repo: &Path, branch: &str, base: &str) -> Option<u32> {
     let (remote, origin_base) = (format!("origin/{branch}"), format!("origin/{base}"));
     let local = format!("refs/heads/{branch}");
     let args = ["rev-list", "--count", "--ignore-missing", &local, "--not", &remote, base, &origin_base];

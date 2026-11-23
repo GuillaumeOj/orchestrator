@@ -61,7 +61,10 @@ fn actions_ids(url: &str) -> Option<(String, Option<String>)> {
     let rest = url.split_once("/actions/runs/")?.1;
     let mut it = rest.split(['/', '?', '#']);
     let run = it.next().filter(|r| !r.is_empty() && r.bytes().all(|b| b.is_ascii_digit()))?;
-    let job = (it.next() == Some("job")).then(|| it.next()).flatten().filter(|j| j.bytes().all(|b| b.is_ascii_digit()));
+    let job = (it.next() == Some("job"))
+        .then(|| it.next())
+        .flatten()
+        .filter(|j| !j.is_empty() && j.bytes().all(|b| b.is_ascii_digit()));
     Some((run.to_string(), job.map(str::to_string)))
 }
 

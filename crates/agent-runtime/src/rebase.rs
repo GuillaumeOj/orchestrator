@@ -76,6 +76,10 @@ impl Runtime {
         // Behind only (no team commit yet): git fast-forwards.
         let onto = format!("origin/{target}");
         let r = commit::rebase_worktree(&rec.worktree, &onto, gitconfig.as_deref());
+        // A stop on conflicts is continued later: remember what it brings in.
+        if matches!(r, Ok(RebaseOutcome::Conflict { .. })) {
+            commit::set_rebase_label(&rec.worktree, Some(&onto));
+        }
         self.rebase_reply(cx, rec, r, &onto)
     }
 
@@ -88,23 +92,14 @@ impl Runtime {
             Some(seat) => Some(self.run_ctx(&seat.run_id)?).filter(|cx| cx.team.is_lead(&seat.node)),
             None => None,
         };
-        // What the rebase replays onto: the PR head when it is that one's tip.
-        let onto = lead_cx.as_ref().map(|cx| {
-            let head = cx.feature.pr_link.as_ref().map(|l| format!("origin/{}", l.head_ref));
-            match (head, commit::rebase_onto(&rec.worktree)) {
-                // The PR head at the start, or an ancestor of it once fetched again.
-                (Some(h), Some(sha))
-                    if gh::rev_sha(&rec.worktree, &h)
-                        .is_some_and(|tip| orch_git::cleanup::is_merged(&rec.worktree, &sha, &tip))
-                        && !gh::rev_sha(&rec.worktree, &format!("origin/{}", cx.feature.base))
-                            .is_some_and(|b| b == sha) =>
-                {
-                    h
-                }
-                _ => format!("origin/{}", cx.feature.base),
-            }
-        });
+        // What the rebase replays onto, as recorded when it started (base or PR head).
+        let onto = lead_cx
+            .as_ref()
+            .map(|cx| commit::rebase_label(&rec.worktree).unwrap_or_else(|| format!("origin/{}", cx.feature.base)));
         let r = commit::rebase_continue(&rec.worktree, self.agent_gitconfig(&rec.id).as_deref());
+        if !matches!(r, Ok(RebaseOutcome::Conflict { .. })) {
+            commit::set_rebase_label(&rec.worktree, None);
+        }
         match lead_cx {
             Some(cx) => self.rebase_reply(&cx, rec, r, onto.as_deref().unwrap_or_default()),
             None => {

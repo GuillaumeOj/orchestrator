@@ -31,6 +31,11 @@ fn log_helpers() {
         Some(("123".into(), Some("456".into())))
     );
     assert_eq!(actions_ids("https://github.com/o/r/actions/runs/123"), Some(("123".into(), None)));
+    assert_eq!(
+        actions_ids("https://github.com/o/r/actions/runs/123/job/"),
+        Some(("123".into(), None)),
+        "no empty job id"
+    );
     assert_eq!(actions_ids("https://ci.example.com/build/1"), None);
     assert_eq!(log_text("test\tRun cargo\t2025-01-02T03:04:05.1234567Z error: boom"), "error: boom");
     assert_eq!(log_text("no tabs here"), "no tabs here");

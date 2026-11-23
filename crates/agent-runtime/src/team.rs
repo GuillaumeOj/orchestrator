@@ -1537,11 +1537,12 @@ impl Runtime {
         let f = self.feature_by_id_or_slug(feature_id)?;
         let branch = f.integration_branch();
         let pr = orch_git::project::pr_branches(&self.db, &f.project_id).into_iter().find(|p| p.branch == branch);
+        // `null` when the count failed: cleanup keeps the branch then, so no promise.
         let unpushed = match (self.db.project(&f.project_id)?, pr) {
             (Some(p), Some(pr)) if f.is_linked() && !pr.merged => {
-                orch_git::cleanup::unpushed(&p.path, &branch, &f.base).unwrap_or(0)
+                orch_git::cleanup::try_unpushed(&p.path, &branch, &f.base).map_or(Value::Null, |n| json!(n))
             }
-            _ => 0,
+            _ => json!(0),
         };
         Ok(json!({"branch": branch, "linked": f.is_linked(), "unpushed": unpushed}))
     }

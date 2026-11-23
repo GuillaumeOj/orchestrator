@@ -1479,6 +1479,7 @@ mod tests {
         let text = ok(rt, LEAD, "commit", json!({"message": "resolve"}));
         assert!(text.starts_with("Rebased orch/fx/integration onto origin/main"), "{text}");
         assert_eq!(events(&fx, "git.rebase").len(), 1);
+        assert_eq!(events(&fx, "git.rebase")[0]["onto"], "origin/main", "the recorded target, not a guess");
         assert!(
             rt.db.audit_log(Some(LEAD), 50).unwrap().iter().any(|a| a.action == "rebase" && a.decision == "conflict")
         );
