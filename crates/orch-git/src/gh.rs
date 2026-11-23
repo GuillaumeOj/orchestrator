@@ -331,6 +331,12 @@ pub fn position(
 
 /// `git fetch origin <branch>…` (updates `origin/<branch>`: the PR's base and
 /// head, so both are local for the counts), with a deadline.
+/// The refspec that updates `origin/<branch>` even when the remote's fetch
+/// refspec leaves that branch out (a single-branch clone).
+pub fn branch_refspec(branch: &str) -> String {
+    format!("+refs/heads/{branch}:refs/remotes/origin/{branch}")
+}
+
 pub fn fetch_branches(dir: &Path, branches: &[&str], deadline: Duration) -> Result<()> {
     if branches.iter().any(|b| b.is_empty() || b.starts_with('-')) {
         bail!("invalid branch in {branches:?}");

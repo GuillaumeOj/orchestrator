@@ -227,8 +227,7 @@ impl Runtime {
         let fetch = |e: anyhow::Error| refused("fetch_failed", format!("could not fetch PR #{n}: {e:#}"), json!({}));
         // Explicit refspecs: `origin/<head>` is updated even when the remote's
         // fetch refspec leaves that branch out (a single-branch clone).
-        let specs: Vec<String> =
-            [&h.head_ref, &h.base_ref].iter().map(|b| format!("+refs/heads/{b}:refs/remotes/origin/{b}")).collect();
+        let specs: Vec<String> = [&h.head_ref, &h.base_ref].iter().map(|b| gh::branch_refspec(b)).collect();
         let specs: Vec<&str> = specs.iter().map(String::as_str).collect();
         gh::fetch_branches(repo, &specs, crate::pr::FETCH_DEADLINE).map_err(fetch)?;
         let remote = format!("origin/{}", h.head_ref);

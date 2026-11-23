@@ -57,12 +57,10 @@ impl Runtime {
             .map(|p| p.head_sha.clone())
             .filter(|s| orch_git::git::valid_sha(s))
             .unwrap_or_else(|| l.head_sha_at_link.clone());
-        let remote = format!("origin/{}", l.head_ref);
         if gh::rev_sha(wt, &lease).is_none()
             && let Ok(_watch) = self.pr_watch.try_lock()
         {
-            let spec = format!("+refs/heads/{0}:refs/remotes/{remote}", l.head_ref);
-            let _ = gh::fetch_branches(wt, &[&spec], crate::pr::FETCH_DEADLINE);
+            let _ = gh::fetch_branches(wt, &[&gh::branch_refspec(&l.head_ref)], crate::pr::FETCH_DEADLINE);
         }
         let ff = orch_git::cleanup::is_merged(wt, &lease, "HEAD");
         // A force push never drops a foreign commit: only the team's own
@@ -136,7 +134,7 @@ impl Runtime {
         let n = p["linked"]["number"].as_u64().unwrap_or(0);
         let url = p["linked"]["url"].as_str().unwrap_or("").to_string();
         let commits = p["commits"].as_array().map_or(0, Vec::len);
-        let force = !orch_git::cleanup::is_merged(&wt, &lease, &head);
+        let force = p["force"].as_bool().unwrap_or(false);
         let r = self.push_linked(&wt, n, &branch, &head, &lease, force);
         let _ = self.db.audit(
             "core",

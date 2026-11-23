@@ -69,7 +69,7 @@ impl Runtime {
             let _watch = self.pr_watch.lock().unwrap_or_else(|e| e.into_inner());
             // An explicit refspec: `origin/<head>` is updated even when the
             // remote's fetch refspec leaves the PR branch out.
-            let spec = format!("+refs/heads/{target}:refs/remotes/origin/{target}");
+            let spec = gh::branch_refspec(&target);
             gh::fetch_branches(&rec.worktree, &[&spec], FETCH_DEADLINE)
                 .map_err(|e| anyhow!("fetching origin/{target} failed: {e:#}"))?;
         }
