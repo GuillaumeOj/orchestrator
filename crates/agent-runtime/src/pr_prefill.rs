@@ -32,7 +32,7 @@ fn fork_reason(owner: Option<&str>) -> String {
 }
 
 /// Why a launch refuses the PR's branches (as `check_pr_launch` does), else `None`.
-fn unusable_branch(n: u64, head: &str, base: &str) -> Option<String> {
+pub(crate) fn unusable_branch(n: u64, head: &str, base: &str) -> Option<String> {
     if !orch_git::valid_branch(head) || !orch_git::valid_branch(base) {
         Some(format!("PR #{n}: invalid branch {head:?}"))
     } else if orch_git::is_app_branch(head) {

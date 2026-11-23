@@ -376,11 +376,10 @@ pub fn parse_pr_list(json: &str) -> Result<Vec<PullRequest>> {
             author: parse_author(p),
             cross_repo: p["isCrossRepository"].as_bool().unwrap_or(false),
             head_sha: p["headRefOid"].as_str().unwrap_or("").into(),
-            fork_owner: p["isCrossRepository"]
-                .as_bool()
-                .unwrap_or(false)
-                .then(|| p["headRepositoryOwner"]["login"].as_str().filter(|l| !l.is_empty()).map(str::to_string))
-                .flatten(),
+            fork_owner: p["headRepositoryOwner"]["login"]
+                .as_str()
+                .filter(|l| !l.is_empty() && p["isCrossRepository"].as_bool() == Some(true))
+                .map(str::to_string),
         })
         .collect())
 }

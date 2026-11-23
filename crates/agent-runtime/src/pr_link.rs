@@ -145,17 +145,10 @@ impl Runtime {
             _ => return Err(refused("pr_closed", format!("PR #{n} is closed"), json!({}))),
         }
         let b = &head.head_ref;
-        if !orch_git::valid_branch(b) || !orch_git::valid_branch(&head.base_ref) {
-            return Err(refused("bad_request", format!("PR #{n}: invalid branch {b:?}"), json!({})));
-        }
         // The app's own branches have their own feature (and the worktree
         // layout cuts a missing `orch/*` branch from the base, G5).
-        if orch_git::is_app_branch(b) {
-            return Err(refused(
-                "bad_request",
-                format!("PR #{n} is on the app's branch {b}: open its feature"),
-                json!({}),
-            ));
+        if let Some(reason) = crate::pr_prefill::unusable_branch(n, b, &head.base_ref) {
+            return Err(refused("bad_request", reason, json!({})));
         }
         self.branch_checked_out(project, b)?;
         Ok(head)
