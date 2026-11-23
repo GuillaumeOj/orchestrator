@@ -116,7 +116,6 @@
     external: 'yours',
   };
   const verdict = (w) => VERDICT[w.verdict] ?? w.verdict;
-  const ci = (c) => (!c ? '—' : c.failing ? `${c.failing} failing` : c.pending ? `${c.pending} pending` : c.passing ? 'passing' : 'none');
   // The app locks its own worktrees ("orchestrator agent <id>"): not worth a label.
   const lockText = (w) => (!w.locked || w.lock_reason?.startsWith('orchestrator agent ') ? '' : w.lock_reason ? ` · locked: ${w.lock_reason}` : ' · locked');
   const gone = (w) => w.verdict === 'prunable' || w.verdict === 'missing';

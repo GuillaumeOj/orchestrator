@@ -233,7 +233,9 @@
       toast(`Launched ${teamName} on ${slug} · the lead starts when the Governor admits it`);
     } catch (e) {
       if (isPr) {
-        prs.launchErr = launchError(codedOf(e), row, short);
+        const c = codedOf(e);
+        prs.launchErr = launchError(c, row, short);
+        if (['pr_closed', 'pr_merged', 'fork', 'active_feature'].includes(c.code)) o.onStale?.();
         busy = false;
         return;
       }

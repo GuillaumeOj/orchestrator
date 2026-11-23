@@ -47,7 +47,7 @@
     · {#if pr.author?.is_bot}<span role="img" aria-label="bot">{'\u{F06A9}'}</span> {/if}<span>{authorName(pr.author)}</span>
     {#if ci}· <span>CI {#if pr.checks?.failing}<span class="bad">{ci}</span>{:else}{ci}{/if}</span>{/if}
     {#if review}· <span>{review}</span>{/if}
-    {#if state === 'fork'}· <span id="fork-{pr.number}">{reason}</span>{/if}
+    {#if state === 'fork'}· <span id="fork-{pr.number}">{reason}</span>{:else if state === 'none' && pr.launch?.reason}· <span data-reason>{pr.launch.reason}</span>{/if}
     {#if pr.feature && state === 'active'}· <span data-feature>{featureLine(pr, 'active')}</span>
     {:else if pr.feature}· <span data-feature>Earlier team: <button type="button" class="linkbtn" onclick={() => onfeature(pr.feature)}>{pr.feature.slug}</button>{pr.feature.run_status ? ` · ${pr.feature.run_status}` : ''}</span>{/if}
   </div>

@@ -110,7 +110,12 @@ export function launchError(e, pr, shorten = (p) => p) {
             : msg,
       };
     case 'fetch_failed':
-      return { keep: true, text: `Couldn't fetch ${head} from origin: ${msg}. Check the connection and try again.` };
+      return {
+        keep: true,
+        text: /^could not/i.test(msg)
+          ? `${msg}. Check the connection and try again.`
+          : `Couldn't fetch ${head} from origin: ${msg}. Check the connection and try again.`,
+      };
     case 'pr_closed':
       return { text: `PR #${n} was closed since this dialog opened. A team can't work on it.` };
     case 'pr_merged':
