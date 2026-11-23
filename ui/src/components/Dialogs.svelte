@@ -62,7 +62,8 @@
   let launch = $state({ project_id: '', team_id: '', existing: '', slug: '', title: '', brief: '', base: '', off_hours: false });
   // allow-multiple-prs: the Issues chips and the Pull requests choice (ux-brief §1).
   // Launch on a PR (notes §2): `pr_prefill` is read once the dialog is open (loading → ready | error).
-  let prs = $state({ phase: 'ready', error: null, pr: null, notes: null, warnings: [], slow: false, launchErr: null });
+  const prState = (phase, o = {}) => ({ phase, error: null, pr: null, notes: null, warnings: [], slow: false, launchErr: null, ...o });
+  let prs = $state(prState('ready'));
   const short = (x) => shortPath(x, app.data?.core?.user_home ?? '');
   const isPr = $derived(o?.kind === 'launch' && o.origin?.kind === 'pr');
   const row = $derived(isPr ? o.origin.row : null);
@@ -71,7 +72,7 @@
   async function loadPr(ov) {
     clearTimeout(slowTimer);
     const r = ov.origin.row;
-    prs = { phase: 'loading', error: null, pr: null, notes: null, warnings: [], slow: false, launchErr: null };
+    prs = prState('loading');
     slowTimer = setTimeout(() => app.overlay === ov && (prs.slow = true), 8000);
     try {
       const res = await invoke('pr_prefill', { project: ov.projectId, number: r.number });
@@ -81,7 +82,7 @@
       launch = { project_id: pf.project_id ?? ov.projectId, team_id: pf.team_id ?? launch.team_id, existing: '', slug: pf.slug ?? '', title: pf.title ?? '', brief: pf.brief ?? '', base: '', off_hours: !!pf.off_hours };
       issueChips = (pf.issues ?? []).map((x) => chipOf(x));
       prMode = 'single';
-      prs = { phase: 'ready', error: null, pr: pf.pr ?? null, notes: res.notes ?? null, warnings: res.warnings ?? [], slow: false, launchErr: null };
+      prs = prState('ready', { pr: pf.pr ?? null, notes: res.notes ?? null, warnings: res.warnings ?? [] });
       queueMicrotask(() => {
         if (briefEl) briefEl.scrollTop = 0;
         startBtn?.focus();
@@ -90,7 +91,7 @@
       if (app.overlay !== ov) return;
       clearTimeout(slowTimer);
       const err = prefillError(codedOf(e), r.number);
-      prs = { phase: 'error', error: err, pr: null, notes: null, warnings: [], slow: false, launchErr: null };
+      prs = prState('error', { error: err });
       queueMicrotask(() => (startBtn ?? closeBtn)?.focus());
       if (['pr_closed', 'pr_merged', 'active_feature'].includes(codedOf(e).code)) ov.onStale?.();
     }

@@ -44,6 +44,17 @@ export function patchRow(pr, feature) {
 /** A long branch cut in the middle (> 48 chars). */
 export const midCut = (s, max = 48) => (s && s.length > max ? `${s.slice(0, 22)}…${s.slice(-(max - 23))}` : (s ?? ''));
 
+/** The `active_feature` error: which team is on the PR, and the feature to open (F10). */
+const activeFeature = (e, number) => {
+  const f = e.feature;
+  return {
+    text: f
+      ? `PR #${number} already has a team: ${f.slug}${f.run_status ? ` (${f.run_status})` : ''}.`
+      : (e.message ?? ''),
+    open: f ?? null,
+  };
+};
+
 /** Prefill error → { text, again, open } (§2.6). `pr` is { number }. */
 export function prefillError(e, number) {
   const code = e?.code ?? null;
@@ -57,13 +68,8 @@ export function prefillError(e, number) {
       return {
         text: msg || `PR #${number} comes from a fork. The app pushes to origin only, so it can't launch a team on it.`,
       };
-    case 'active_feature': {
-      const f = e.feature;
-      return {
-        text: f ? `PR #${number} already has a team: ${f.slug}${f.run_status ? ` (${f.run_status})` : ''}.` : msg,
-        open: f ?? null,
-      };
-    }
+    case 'active_feature':
+      return activeFeature(e, number);
     case 'gh_missing':
       return {
         text: "The GitHub CLI (gh) isn't installed. Install it, run gh auth login, then try again.",
@@ -122,13 +128,8 @@ export function launchError(e, pr, shorten = (p) => p) {
       return { text: `PR #${n} was merged since this dialog opened. There is nothing left to fix.` };
     case 'fork':
       return { text: msg || `PR #${n} comes from a fork. The app pushes to origin only.` };
-    case 'active_feature': {
-      const f = e.feature;
-      return {
-        text: f ? `PR #${n} already has a team: ${f.slug}${f.run_status ? ` (${f.run_status})` : ''}.` : msg,
-        open: f ?? null,
-      };
-    }
+    case 'active_feature':
+      return activeFeature(e, n);
     default:
       return { keep: true, text: msg };
   }
