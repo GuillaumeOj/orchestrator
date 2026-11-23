@@ -85,7 +85,7 @@ pub fn features(rt: &agent_runtime::runtime::Runtime) -> Result<Vec<Value>> {
             let (done, total) = run.as_ref().and_then(|r| counts.get(&r.id).copied()).unwrap_or_default();
             json!({
                 "id": f.id, "project_id": f.project_id, "slug": f.slug, "title": f.title,
-                "branch": f.integration_branch(), "archived": f.archived, "issues": f.issues, "pr_mode": f.pr_mode,
+                "branch": f.integration_branch(), "pr_link": f.pr_link, "archived": f.archived, "issues": f.issues, "pr_mode": f.pr_mode,
                 "docs_location": agent_runtime::feature_docs::FeatureDocs::of(&f),
                 "run": run.as_ref().map(|r| json!({"id": r.id, "status": r.status, "team_id": r.team_id, "pr_url": r.pr_url,
                                                    "prs_view": agent_runtime::issues::prs_view(r, &f, gates.get(&r.id).map_or(&[], Vec::as_slice))})),
@@ -133,7 +133,13 @@ impl Core {
 
     pub fn team_launch(&self, spec: agent_runtime::team::LaunchSpec) -> Result<Value> {
         let rt = self.runtime()?;
-        Ok(rt.run_value_of(&rt.launch(&spec)?))
+        let run = rt.launch(&spec)?;
+        let mut v = rt.run_value_of(&run);
+        // F8: the PR row is patched from it.
+        if let Some(f) = rt.db.feature(&run.feature_id)? {
+            v["feature"] = agent_runtime::pr_link::feature_ref(&f, Some(&run));
+        }
+        Ok(v)
     }
 
     /// The Feature pane: a feature's latest run with its agents, tasks, docs,
@@ -144,7 +150,7 @@ impl Core {
         match rt.db.runs(Some(&f.id), false)?.into_iter().next() {
             Some(run) => rt.run_json(&run.id),
             None => Ok(
-                json!({"feature": f, "run": null, "agents": [], "tasks": [], "docs": [], "artifacts": [], "timeline": []}),
+                json!({"feature": agent_runtime::pr_link::feature_json(&f), "run": null, "agents": [], "tasks": [], "docs": [], "artifacts": [], "timeline": []}),
             ),
         }
     }

@@ -757,6 +757,8 @@ impl Fx {
                 issues: vec![],
                 pr_mode: Default::default(),
                 docs_location: None,
+                branch: None,
+                pr_link: None,
             })
             .unwrap();
     }
@@ -1293,6 +1295,8 @@ fn app_state_rollup_and_actions_follow_what_runs() {
         issues: vec![],
         pr_mode: Default::default(),
         docs_location: None,
+        branch: None,
+        pr_link: None,
     };
     f.rt.db.upsert_feature(&feature).unwrap();
     let run = |rid: &str, status, pr: Option<&str>| orch_store::TeamRun {
@@ -1552,6 +1556,8 @@ fn a_node_starts_with_its_source_and_leaves_its_history_and_run_source() {
         issues: vec![],
         pr_mode: Default::default(),
         docs_location: None,
+        branch: None,
+        pr_link: None,
     };
     f.rt.db.upsert_feature(&feature).unwrap();
     f.rt.db
@@ -1814,6 +1820,8 @@ fn fake_start(f: &Fx) {
             issues: vec![],
             pr_mode: Default::default(),
             docs_location: None,
+            branch: None,
+            pr_link: None,
         })?;
         rt.db.upsert_run(&orch_store::TeamRun {
             id: id.clone(),
@@ -2723,6 +2731,8 @@ fn a_leads_first_turn_names_its_source_item_and_the_open_children() {
             issues: vec![],
             pr_mode: Default::default(),
             docs_location: None,
+            branch: None,
+            pr_link: None,
         })
         .unwrap();
     f.rt.db
@@ -2795,6 +2805,8 @@ fn fake_start_run(f: &Fx, slug: &str, node_row: u64) {
             issues: vec![],
             pr_mode: Default::default(),
             docs_location: None,
+            branch: None,
+            pr_link: None,
         })
         .unwrap();
     f.rt.db

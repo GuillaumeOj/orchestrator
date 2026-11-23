@@ -203,6 +203,51 @@ pub fn parse_pr_view(json: &str) -> Result<PrView> {
     })
 }
 
+/// A PR's head as a launch on it needs (allow-launch-team-on-update-pr §5.3):
+/// its state, branches, head commit and whether it comes from a fork.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PrHead {
+    pub number: u64,
+    pub url: String,
+    /// `open` / `merged` / `closed`.
+    pub state: String,
+    pub head_ref: String,
+    pub head_sha: String,
+    pub base_ref: String,
+    pub cross_repo: bool,
+    /// The author's login; `None` for a deleted account.
+    pub author: Option<String>,
+}
+
+pub const PR_HEAD_FIELDS: &str = "number,url,state,headRefName,headRefOid,baseRefName,isCrossRepository,author";
+
+/// The `gh` arguments of [`pr_head`].
+pub fn pr_head_args(number: u64) -> Vec<String> {
+    ["pr", "view", &number.to_string(), "--json", PR_HEAD_FIELDS].map(str::to_string).to_vec()
+}
+
+pub fn parse_pr_head(json: &str) -> Result<PrHead> {
+    let p: Value = serde_json::from_str(json).context("gh pr view: not JSON")?;
+    let s = |k: &str| p.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+    let number = p.get("number").and_then(Value::as_u64).with_context(|| format!("gh pr view: no PR in {json:.200}"))?;
+    Ok(PrHead {
+        number,
+        url: s("url"),
+        state: s("state").to_ascii_lowercase(),
+        head_ref: s("headRefName"),
+        head_sha: s("headRefOid"),
+        base_ref: s("baseRefName"),
+        cross_repo: p["isCrossRepository"].as_bool().unwrap_or(false),
+        author: p["author"]["login"].as_str().filter(|l| !l.is_empty()).map(str::to_string),
+    })
+}
+
+/// One PR's head, branches and fork flag, from a checkout of its repo.
+pub fn pr_head(dir: &Path, number: u64) -> Result<PrHead> {
+    let args = pr_head_args(number);
+    parse_pr_head(&gh(dir, &args.iter().map(String::as_str).collect::<Vec<_>>())?)
+}
+
 /// The `gh` arguments of [`pr_lookup`].
 pub fn pr_lookup_args(branch: &str) -> Vec<String> {
     ["pr", "view", branch, "--json", "number,url"].map(str::to_string).to_vec()
@@ -513,6 +558,33 @@ mod tests {
         let many: Vec<Value> = (0..150).map(|i| run(&format!("j{i:03}"), "COMPLETED", "SUCCESS")).collect();
         let c = summarize_jobs(&Value::Array(many));
         assert_eq!((c.total, c.done, c.jobs.len()), (150, 150, 100));
+    }
+
+    #[test]
+    fn parses_a_pr_head() {
+        let h = parse_pr_head(
+            r#"{"number":42,"url":"https://github.com/o/r/pull/42","state":"OPEN","headRefName":"renovate/tokio-1.x",
+                "headRefOid":"9f2c","baseRefName":"main","isCrossRepository":false,"author":{"login":"app/renovate"}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            h,
+            PrHead {
+                number: 42,
+                url: "https://github.com/o/r/pull/42".into(),
+                state: "open".into(),
+                head_ref: "renovate/tokio-1.x".into(),
+                head_sha: "9f2c".into(),
+                base_ref: "main".into(),
+                cross_repo: false,
+                author: Some("app/renovate".into()),
+            }
+        );
+        let fork = parse_pr_head(r#"{"number":7,"state":"MERGED","isCrossRepository":true,"author":null}"#).unwrap();
+        assert!(fork.cross_repo);
+        assert_eq!((fork.state.as_str(), fork.author), ("merged", None));
+        assert!(parse_pr_head("{}").is_err());
+        assert_eq!(pr_head_args(42)[2..4], ["42".to_string(), "--json".to_string()]);
     }
 
     #[test]

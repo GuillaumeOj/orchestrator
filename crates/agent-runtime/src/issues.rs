@@ -489,6 +489,8 @@ pub(crate) mod tests {
             issues: refs.iter().map(|r| IssueLink::new(r)).collect(),
             pr_mode: mode,
             docs_location: None,
+            branch: None,
+            pr_link: None,
         }
     }
 

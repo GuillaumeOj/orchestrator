@@ -9,8 +9,13 @@ use serde::{Deserialize, Serialize};
 pub enum WorktreeKindSpec {
     /// `orch/solo/<slug>` in `<repo>.worktrees/solo/<slug>`.
     Solo { slug: String },
-    /// `orch/<feature>/integration` in `<repo>.worktrees/<feature>/integration`.
-    Integration { feature: String },
+    /// `orch/<feature>/integration` (or `branch` when given: a PR's head
+    /// branch) in `<repo>.worktrees/<feature>/integration`.
+    Integration {
+        feature: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+    },
     /// `orch/<feature>/<role>-<n>` in `<repo>.worktrees/<feature>/<role>-<n>`.
     Team { feature: String, role: String, n: u32 },
 }

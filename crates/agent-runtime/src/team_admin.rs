@@ -150,7 +150,7 @@ impl Runtime {
         let loc = FeatureDocs::of(&cx.feature);
         let docs = crate::feature_docs::read_root(&cx.feature).map(|w| feature_docs(&loc, &w)).unwrap_or_default();
         Ok(json!({
-            "run": Self::run_value(&cx.run, &cx.feature, &self.run_pr_gates(run_id)), "feature": cx.feature, "team": cx.team, "project": {"id": cx.project.id, "name": cx.project.name, "backend": cx.project.backend().kind()},
+            "run": Self::run_value(&cx.run, &cx.feature, &self.run_pr_gates(run_id)), "feature": crate::pr_link::feature_json(&cx.feature), "team": cx.team, "project": {"id": cx.project.id, "name": cx.project.name, "backend": cx.project.backend().kind()},
             "rules": rules::rules_text(&cx.team), "agents": agents, "tasks": tasks, "docs": docs, "docs_location": loc,
             "artifacts": self.artifacts_json(&cx.feature)?,
             "timeline": self.timeline_json(run_id)?,

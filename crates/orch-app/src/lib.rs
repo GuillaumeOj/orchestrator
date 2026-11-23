@@ -223,6 +223,7 @@ pub fn run() {
             commands::task_update,
             commands::run_act,
             commands::feature_delete,
+            commands::feature_delete_plan,
             commands::message_send,
             commands::project_settings,
             commands::project_settings_set,

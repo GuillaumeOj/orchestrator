@@ -118,6 +118,10 @@ pub struct FeatureCtx {
     /// Where its docs and designs are saved (empty: the legacy folders).
     #[serde(default)]
     pub docs: crate::DocsLocation,
+    /// The integration branch when it is not `orch/<slug>/integration` (a
+    /// PR's head branch).
+    #[serde(default)]
+    pub branch: Option<String>,
 }
 
 /// The lead's "Pull requests" line (allow-multiple-prs spec §3.7), also the
@@ -139,7 +143,7 @@ pub fn prs_line(issues: &[String], per_issue: bool) -> String {
 
 impl FeatureCtx {
     pub fn integration_branch(&self) -> String {
-        format!("orch/{}/integration", self.slug)
+        self.branch.clone().unwrap_or_else(|| format!("orch/{}/integration", self.slug))
     }
     /// The resolved folders (the legacy ones when none was given).
     pub fn location(&self) -> crate::DocsLocation {

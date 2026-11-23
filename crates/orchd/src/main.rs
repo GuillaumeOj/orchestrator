@@ -22,7 +22,7 @@ usage: orchd [--home DIR] <command> [args]
                                 run the core in the foreground (Ctrl-C suspends every agent)
   install-helpers               copy orch-hook, orch-status and orch-mcp next to this binary into <home>/bin
   reconcile                     dry run of the startup reconciler (core not running)
-  worktree <repo> solo <slug> | integration <feature> | team <feature> <role> <n>  [--base B]
+  worktree <repo> solo <slug> | integration <feature> [--branch B] | team <feature> <role> <n>  [--base B]
   start <agent> --repo <path> [--slug S] [--base B] [--model M] [--effort E] [--mode manual|acceptEdits|auto|dontAsk|plan]
                 [--prompt TEXT] [--strict-mcp] [--allow-host H]... [--allow RULE]... [--tier low|normal|high|critical] [--message TEXT]
   send <agent> <text...>        queue a message (admitted by the Governor, delivered when idle)
@@ -210,7 +210,7 @@ fn run() -> Result<()> {
             let base = a.opt("--base")?;
             let kind = match a.next("kind")?.as_str() {
                 "solo" => WorktreeKindSpec::Solo { slug: a.next("slug")? },
-                "integration" => WorktreeKindSpec::Integration { feature: a.next("feature")? },
+                "integration" => WorktreeKindSpec::Integration { feature: a.next("feature")?, branch: a.opt("--branch")? },
                 "team" => WorktreeKindSpec::Team {
                     feature: a.next("feature")?,
                     role: a.next("role")?,

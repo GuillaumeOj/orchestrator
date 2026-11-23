@@ -824,6 +824,8 @@ mod tests {
                 issues: vec![],
                 pr_mode: Default::default(),
                 docs_location: None,
+                branch: None,
+                pr_link: None,
             })
             .unwrap();
         let e = rt.notion_publish("f1").unwrap_err().to_string();
@@ -1003,6 +1005,8 @@ mod tests {
                 issues: vec![],
                 pr_mode: Default::default(),
                 docs_location: None,
+                branch: None,
+                pr_link: None,
             })
             .unwrap();
         let settings = orch_store::ProjectSettings {

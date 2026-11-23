@@ -340,6 +340,7 @@ pub fn ctl(rt: &Runtime, req: CtlRequest) -> CtlReply {
                     intake: None,
                     issues,
                     pr_mode,
+                    pr: None,
                 })
                 .map(|r| rt.run_value_of(&r))
             }))

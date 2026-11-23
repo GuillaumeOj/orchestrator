@@ -33,7 +33,7 @@ pub use runtime_rows::upsert_worktree as upsert_worktree_tx;
 pub use runtime_rows::{AgentRow, HoldRowDb, RuntimeDiff, RuntimeRows, TurnRowDb};
 pub use teams::{
     Artifact, CiJob, CiSummary, DEFAULT_INTAKE_GLOB, DeliveryState, Feature, FileAccess, FileKind, GithubIntakeFilter,
-    IntakeInvalid, IntakeSource, IssueLink, Message, PrMode, PrPosition, PrStatus, ProjectFile, ProjectSettings, RunPr,
+    IntakeInvalid, IntakeSource, IssueLink, Message, PrLink, PrMode, PrPosition, PrStatus, ProjectFile, ProjectSettings, RunPr,
     SettingsEdit, Task, TaskBackendConfig, TaskFlow, TaskNote, TeamRun, issue_key, pr_number_from_url, valid_repo,
 };
 pub use tracker::{

@@ -583,6 +583,12 @@ pub async fn run_act(core: CoreState<'_>, run: String, action: String) -> Res<Va
     blocking(core, move |c| c.run_act(&run, &action)).await
 }
 
+/// F7: the integration branch and what a delete keeps of it.
+#[tauri::command]
+pub async fn feature_delete_plan(core: CoreState<'_>, feature: String) -> Res<Value> {
+    blocking(core, move |c| c.runtime()?.feature_delete_plan(&feature)).await
+}
+
 #[tauri::command]
 pub async fn feature_delete(core: CoreState<'_>, feature: String, remove_worktrees: bool, discard: bool) -> Res<Value> {
     blocking(core, move |c| c.feature_delete(&feature, remove_worktrees, discard)).await

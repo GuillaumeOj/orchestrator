@@ -1691,6 +1691,7 @@ pub(crate) mod tests {
                 intake: None,
                 issues: vec![],
                 pr_mode: Default::default(),
+                pr: None,
             })
             .unwrap();
         let s = core.state();
@@ -2257,7 +2258,7 @@ pub(crate) mod tests {
         // (spawning needs Claude Code), the team agent as launched.
         let solo = solo_spec(&core.project("repo").unwrap(), "solo", &NewSession::default()).allocation.unwrap();
         core.teams_view(Some("repo")).unwrap(); // installs the preset teams
-        core.team_launch(agent_runtime::team::LaunchSpec {
+        let launched = core.team_launch(agent_runtime::team::LaunchSpec {
             project_id: "repo".into(),
             team_id: "bugfix-squad".into(),
             slug: "fx".into(),
@@ -2268,8 +2269,14 @@ pub(crate) mod tests {
             intake: None,
             issues: vec![],
             pr_mode: Default::default(),
+            pr: None,
         })
         .unwrap();
+        // F8: the launch names its feature.
+        assert_eq!(launched["feature"], serde_json::json!({"id": "repo-fx", "slug": "fx", "run_status": "spec"}));
+        let feats = core.state()["features"].clone();
+        let fx = feats.as_array().unwrap().iter().find(|f| f["slug"] == "fx").unwrap();
+        assert_eq!((fx["branch"].as_str(), &fx["pr_link"]), (Some("orch/fx/integration"), &serde_json::Value::Null));
         let team = rt.store.read(|s| s.agents["fx-lead-1"].allocation.clone());
         assert_eq!((solo.as_str(), team.as_str()), ("repo", "repo"), "the project id, plan or not");
         let charged = |a: &str| rt.with_governor(|g| g.resolve_allocation(&a.into()).0.clone());
