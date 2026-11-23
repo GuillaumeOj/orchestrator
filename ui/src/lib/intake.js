@@ -271,6 +271,15 @@ export function originChip(origin) {
   if (!origin) return null;
   if (origin.kind === 'brief')
     return { text: `From the Overwatch's brief · ${origin.title ?? 'brief'}`, brief: true, decision: origin.decision };
+  if (origin.kind === 'pr')
+    return {
+      text: `From ${origin.label} · GitHub`,
+      tip: origin.title ?? '',
+      url: origin.url ?? null,
+      source: 'github',
+      name: 'GitHub',
+      ref: origin.label,
+    };
   const tracker = origin.tracker ?? (origin.source === 'repo_docs' ? 'local' : origin.source);
   const name = origin.tracker ? trackerName(tracker) : (SOURCE_NAME[origin.source] ?? origin.source);
   const from = `From ${origin.ref}${origin.title ? ` ${origin.title}` : ''}`;

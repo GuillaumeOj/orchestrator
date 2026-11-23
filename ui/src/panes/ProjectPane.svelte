@@ -6,12 +6,15 @@
   // Keys (pane-local): f fetch, p load PRs, t trust, x remove project.
   import { onMount, untrack } from 'svelte';
   import Menu from '../components/Menu.svelte';
+  import PrListRow from '../components/PrListRow.svelte';
   import StatusBadge from '../components/StatusBadge.svelte';
-  import { activeAgents, app, closePane, confirm, openAgent, openDiff, openProjectSettings, openShell, openTrust, projects, refresh, toast } from '../lib/app.svelte.js';
+  import { activeAgents, app, closePane, confirm, openAgent, openDiff, openFeature, openProjectSettings, openShell, openTrust, projects, refresh, toast } from '../lib/app.svelte.js';
   import { ago, dayTime, plural, shortPath } from '../lib/format.js';
+  import { openPrLaunch } from '../lib/intake.svelte.js';
   import { errText, invoke } from '../lib/ipc.js';
   import { keyIgnored } from '../lib/keyboard.js';
   import { onTopics, statusOf } from '../lib/now.svelte.js';
+  import { patchRow } from '../lib/prlaunch.js';
   import { tooltip } from '../lib/tooltip.js';
   import { originRemote, repoOfRemote } from '../lib/tracker.js';
   import { openWork } from '../lib/work.js';
@@ -83,6 +86,26 @@
       const r = await fetchDetail(true);
       if (r) prs = r.prs;
     }, false);
+
+  // The row's launch: the dialog reads the PR; a launch patches the row from its result (notes §1.2, F8).
+  const launchOnPr = (pr) =>
+    openPrLaunch(p.id, pr, {
+      onLaunched: (feature) => {
+        if (prs && !prs.error) prs = prs.map((x) => (x.number === pr.number ? patchRow(x, feature) : x));
+      },
+      onStale: loadPrs,
+    });
+  /** ↑ / ↓ between rows (§1.3). */
+  function prNav(e) {
+    if ((e.key !== 'ArrowDown' && e.key !== 'ArrowUp') || e.metaKey || e.ctrlKey || e.altKey) return;
+    const rows = [...e.currentTarget.querySelectorAll('li[data-pr]')];
+    const at = rows.indexOf(e.target.closest('li[data-pr]'));
+    const next = rows[at < 0 ? 0 : Math.max(0, Math.min(rows.length - 1, at + (e.key === 'ArrowDown' ? 1 : -1)))];
+    if (next) {
+      e.preventDefault();
+      next.focus();
+    }
+  }
 
   const VERDICT = {
     ok: 'in use or clean',
@@ -300,9 +323,12 @@
       <div class="ch"><b>Pull requests</b><span class="muted">gh</span><span class="grow"></span><button type="button" class="btn" onclick={loadPrs} disabled={!!busy} use:tooltip={{ label: 'Load PRs', key: 'p' }}>{busy === 'prs' ? 'Loading…' : 'Load PRs'}</button></div>
       {#if prs?.error}<p class="muted">{prs.error}</p>
       {:else if prs}
-        {#each prs as pr (pr.number)}
-          <p><b>#{pr.number}</b> {pr.title}{pr.is_draft ? ' (draft)' : ''} <span class="muted">{pr.head_ref} → {pr.base_ref} · CI {ci(pr.checks)}{pr.review_decision ? ` · ${pr.review_decision.toLowerCase()}` : ''}</span></p>
-        {:else}<p class="muted">No open pull request.</p>{/each}
+        <ul class="prs" aria-label="Pull requests" onkeydown={prNav}>
+          {#each prs as pr (pr.number)}
+            <PrListRow {pr} disabled={busy === 'prs'} onlaunch={launchOnPr} onfeature={(f) => openFeature(f.id)} />
+          {:else}<li class="muted none">No open pull request.</li>{/each}
+        </ul>
+      {:else if busy === 'prs'}<p class="muted">Loading pull requests from gh…</p>
       {:else}<p class="muted">Not loaded (a network call).</p>{/if}
     </section>
 
@@ -415,5 +441,12 @@
   }
   .warn {
     color: var(--color-status-queued);
+  }
+  .prs {
+    margin: 0;
+    padding: 0;
+  }
+  .none {
+    list-style: none;
   }
 </style>
