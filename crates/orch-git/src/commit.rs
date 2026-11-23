@@ -305,11 +305,6 @@ fn rebase_git(wt: &Path, gitconfig: Option<&Path>, args: &[&str]) -> Result<Stri
     run(c, None)
 }
 
-/// The commit the rebase in progress in `worktree_path` replays onto.
-pub fn rebase_onto(worktree_path: &Path) -> Option<String> {
-    rebase_file(&worktree::inspect(&real(worktree_path)).gitdir?, "onto")
-}
-
 /// The label (`origin/<branch>`) the app recorded when it started the rebase in progress.
 pub fn rebase_label(worktree_path: &Path) -> Option<String> {
     let gd = worktree::inspect(&real(worktree_path)).gitdir?;
