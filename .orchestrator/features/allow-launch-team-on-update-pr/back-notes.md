@@ -78,5 +78,3 @@
 - **G5** Worktree reconciler (`worktree.rs complete`) needs the start ref (see B1); contract silent. Persist start ref or derive from `origin/<branch>`.
 - **G6** Spec §5.6 "reset when the branch contains it again": define as `is_merged(head_sha, HEAD)`; pr_opened resets `run.pr=None` so
   `foreign_head` must be recomputed on the next tick (no stored flag loss on push).
-- **G7** Per-PR uniqueness is by `pr_link.number` within a project; a same-slug feature relaunched on another PR is refused (above); contract §1 `feature` = newest by `created_at_ms`.
-- **G8** `branch` ALWAYS present in `app_state.features[]` (contract §4) – confirm `Feature` serializer used by the snapshot (orch-app teams.rs:88 builds it by hand, so add there).
