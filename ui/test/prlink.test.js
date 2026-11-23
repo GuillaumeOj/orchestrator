@@ -60,6 +60,8 @@ describe('pane copy', () => {
     expect(linkedState({ status: 'pr_open', pr: { state: 'open' } })).toBe('open');
     expect(linkedState({ status: 'integrating', pr: { state: 'closed' } })).toBe('closed');
     expect(linkedState({ status: 'done', pr: { state: 'merged' } })).toBe('merged');
+    expect(linkedState(null)).toBe('none');
+    expect(linkedState({ status: 'failed' })).toBe('none');
   });
 
   it('warns about a moved head with its sha, or without', () => {
@@ -146,6 +148,9 @@ describe('delete dialog copy', () => {
   it('adds the kept branches to the toast', () => {
     expect(keptText([{ branch: 'renovate/tokio-1.x', commits: 2 }], feature)).toBe(
       ' · kept renovate/tokio-1.x: 2 commits not pushed to PR #42',
+    );
+    expect(keptText([{ branch: 'renovate/tokio-1.x', commits: null }], feature)).toBe(
+      " · kept renovate/tokio-1.x: can't tell whether its commits are pushed to PR #42",
     );
     expect(keptText([], feature)).toBe('');
     expect(keptText(undefined, feature)).toBe('');

@@ -53,11 +53,16 @@ export const prePushText = (n, gate) =>
 export const closedText = (n) =>
   `PR #${n} was closed on GitHub. The team can't push to it, and the app never opens another pull request. Reopen it on GitHub, or delete this feature.`;
 
-/** Where the pane stands for a linked feature: `before` (no push yet) | `open` | `closed` | `merged`. */
+/**
+ * Where the pane stands for a linked feature: `before` (no push yet) | `open` | `closed` | `merged`,
+ * `none` without a run, or once the run ended without a PR outcome (no push is coming).
+ */
 export function linkedState(run) {
-  const st = run?.pr?.state;
+  if (!run) return 'none';
+  const st = run.pr?.state;
   if (st === 'merged' || st === 'closed') return st;
-  return run?.status === 'pr_open' || run?.resume_status === 'pr_open' ? 'open' : 'before';
+  if (run.status === 'pr_open' || run.resume_status === 'pr_open') return 'open';
+  return run.status === 'done' || run.status === 'failed' ? 'none' : 'before';
 }
 
 /** The spec gate's muted line for a linked feature (§3.5, D5). */
@@ -145,10 +150,12 @@ export function deleteCopy(feature, plan = null) {
 /** The delete toast's tail for the branches kept (`kept: [{branch, commits}]`, §5, F7); '' when none. */
 export const keptText = (kept, feature) => {
   const n = linkOf(feature)?.number;
+  const to = n ? ` to PR #${n}` : '';
   return (kept ?? [])
-    .map(
-      (k) =>
-        ` · kept ${k.branch}: ${k.commits} commit${k.commits === 1 ? '' : 's'} not pushed${n ? ` to PR #${n}` : ''}`,
-    )
+    .map((k) => {
+      // `commits: null`: git could not count them, the branch is kept all the same.
+      if (k.commits == null) return ` · kept ${k.branch}: can't tell whether its commits are pushed${to}`;
+      return ` · kept ${k.branch}: ${k.commits} commit${k.commits === 1 ? '' : 's'} not pushed${to}`;
+    })
     .join('');
 };
