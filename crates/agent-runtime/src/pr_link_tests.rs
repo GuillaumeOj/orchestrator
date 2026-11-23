@@ -368,3 +368,76 @@ fn a_merged_pr_lets_its_branch_go_with_unpushed_commits() {
     assert!(!orch_git::worktree::branch_exists(&fx.repo, HEAD));
     assert!(out["worktrees"][0]["log"].as_array().unwrap().contains(&json!("deleted branch renovate/foo")));
 }
+
+/// A linked feature whose first run failed, its worktree kept: launched again without a `pr`.
+fn finished(fx: &Fx) -> (orch_store::Feature, PathBuf) {
+    let run = fx.rt.launch(&spec(fx, "pr-42")).unwrap();
+    fx.rt.set_run_state(&run.id, RunState::Failed, "test").unwrap();
+    let f = fx.rt.db.feature(&run.feature_id).unwrap().unwrap();
+    let wt = f.integration_worktree.clone().unwrap();
+    (f, wt)
+}
+
+fn relaunch(fx: &Fx) -> orch_store::Feature {
+    let run = fx.rt.launch(&LaunchSpec { pr: None, ..spec(fx, "pr-42") }).unwrap();
+    fx.rt.db.feature(&run.feature_id).unwrap().unwrap()
+}
+
+fn commit(wt: &Path, file: &str) {
+    std::fs::write(wt.join(file), file).unwrap();
+    g(wt, &["add", file]);
+    g(wt, &["-c", "user.name=A", "-c", "user.email=a@example.invalid", "commit", "-qm", file]);
+}
+
+#[test]
+fn a_relaunch_fast_forwards_a_branch_behind_and_refreshes_the_link_head() {
+    let fx = fx();
+    let (f, wt) = finished(&fx);
+    let old = f.pr_link.unwrap().head_sha_at_link;
+    fx.bot_push("dep2.txt");
+    let f = relaunch(&fx);
+    assert_ne!(old, fx.origin_sha());
+    assert_eq!(rev(&wt, "HEAD"), fx.origin_sha(), "fast-forwarded in its own worktree");
+    assert_eq!(f.pr_link.unwrap().head_sha_at_link, fx.origin_sha());
+    assert_eq!(f.integration_worktree.unwrap(), wt, "reused");
+}
+
+#[test]
+fn a_relaunch_keeps_the_commits_a_resumed_run_made() {
+    let fx = fx();
+    let (_, wt) = finished(&fx);
+    commit(&wt, "fix.txt");
+    let mine = rev(&wt, "HEAD");
+    let f = relaunch(&fx);
+    assert_eq!(rev(&wt, "HEAD"), mine, "no local_ahead refusal");
+    assert_eq!(
+        f.pr_link.unwrap().head_sha_at_link,
+        fx.origin_sha(),
+        "the push rule refuses until the head is brought in"
+    );
+}
+
+#[test]
+fn a_relaunch_keeps_a_diverged_branch_as_it_is() {
+    let fx = fx();
+    let (_, wt) = finished(&fx);
+    commit(&wt, "fix.txt");
+    let mine = rev(&wt, "HEAD");
+    fx.bot_push("dep2.txt");
+    let f = relaunch(&fx);
+    assert_eq!(rev(&wt, "HEAD"), mine);
+    assert_eq!(f.pr_link.unwrap().head_sha_at_link, fx.origin_sha());
+}
+
+#[test]
+fn a_relaunch_refuses_a_branch_held_by_another_worktree() {
+    let fx = fx();
+    let (f, wt) = finished(&fx);
+    g(&fx.repo, &["worktree", "unlock", wt.to_str().unwrap()]);
+    g(&fx.repo, &["worktree", "remove", "--force", wt.to_str().unwrap()]);
+    let other = fx.repo.parent().unwrap().join("other-wt");
+    g(&fx.repo, &["worktree", "add", "-q", other.to_str().unwrap(), HEAD]);
+    let e = refusal(&fx, &LaunchSpec { pr: None, ..spec(&fx, "pr-42") });
+    assert_eq!(e["code"], "branch_checked_out", "{e}");
+    assert_eq!(fx.rt.db.feature(&f.id).unwrap().unwrap().pr_link, f.pr_link, "nothing stored");
+}

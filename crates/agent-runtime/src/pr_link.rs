@@ -141,6 +141,48 @@ impl Runtime {
         self.read_open_pr(project, l.number).map(|_| ())
     }
 
+    /// Relaunch of a linked feature (§5.3 relaunch): fetches `origin/<head>`,
+    /// fast-forwards a local branch that is only behind, keeps one that is
+    /// ahead (the commits a resumed run kept) or diverged (the watcher's
+    /// `foreign_head` and `rebase_base` onto `pr_head` cover it), and returns
+    /// the fetched origin head, the new `head_sha_at_link`. The feature's own
+    /// kept worktree holding the branch is reused; another one refuses.
+    pub(crate) fn prepare_pr_relaunch(&self, project: &Project, f: &Feature, l: &PrLink) -> Result<String> {
+        let repo = &project.path;
+        let branch = &l.head_ref;
+        let fetch =
+            |e: anyhow::Error| refused("fetch_failed", format!("could not fetch PR #{}: {e:#}", l.number), json!({}));
+        let own = f.integration_worktree.as_deref().map(crate::paths::real);
+        let holder = worktree::list(repo)?.into_iter().find(|w| w.branch.as_deref() == Some(branch.as_str()));
+        let in_own = holder.as_ref().is_some_and(|w| own.as_deref() == Some(crate::paths::real(&w.path).as_path()));
+        if holder.is_some() && !in_own {
+            self.branch_checked_out(project, branch)?;
+        }
+        gh::fetch_branches(repo, &[gh::branch_refspec(branch).as_str()], crate::pr::FETCH_DEADLINE).map_err(fetch)?;
+        let remote = format!("origin/{branch}");
+        let tip = gh::rev_sha(repo, &format!("refs/remotes/{remote}"))
+            .ok_or_else(|| fetch(anyhow!("{remote} not found after the fetch")))?;
+        if worktree::branch_exists(repo, branch) {
+            let local = format!("refs/heads/{branch}");
+            let (ahead, behind) = cleanup::try_ahead_behind(repo, &local, &remote)
+                .ok_or_else(|| fetch(anyhow!("can't compare {local} with {remote}")))?;
+            if ahead == 0 && behind > 0 {
+                match holder.as_ref().filter(|_| in_own) {
+                    // A refused merge (local edits in the way) leaves the branch as it was.
+                    Some(w) => drop(orch_git::git(&w.path, &["merge", "--ff-only", "-q", &tip])),
+                    None => {
+                        let old = gh::rev_sha(repo, &local).unwrap_or_default();
+                        orch_git::git(
+                            repo,
+                            &["update-ref", "-m", "orch: fast-forward to the PR head", &local, &tip, &old],
+                        )?;
+                    }
+                }
+            }
+        }
+        Ok(tip)
+    }
+
     /// D3: one active feature per PR (no run at all counts as not active);
     /// `but` is the feature being launched.
     fn no_active_feature(&self, project: &Project, n: u64, but: Option<&str>) -> Result<()> {

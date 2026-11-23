@@ -23,7 +23,7 @@ use anyhow::{Result, anyhow, bail};
 use governor::{AgentId, TurnKind};
 use orch_git::commit::MergeOutcome;
 use orch_protocol::{WorktreeKindSpec, now_ms};
-use orch_store::{Artifact, Feature, Message, Project, Task, TeamRun};
+use orch_store::{Artifact, Feature, Message, PrLink, Project, Task, TeamRun};
 use orch_tasks::TaskService;
 use orch_team::{FeatureCtx, RoleDef, RunState, TaskStatus, Team, rules};
 use serde::{Deserialize, Serialize};
@@ -411,6 +411,7 @@ impl Runtime {
         // §5.3 step 1: a launch on a PR, checked (and the PR re-read) first.
         // F1: it always makes a new feature (a deleted one too: its old
         // worktree and docs are not the PR's).
+        let mut relaunch_tip = None;
         let on_pr = match (&spec.pr, &existing) {
             (Some(_), Some(f)) => {
                 let m = if f.archived {
@@ -429,6 +430,7 @@ impl Runtime {
                     return Err(crate::pr_link::per_issue_refused(f.pr_link.as_ref().map_or(0, |l| l.number)));
                 }
                 self.check_pr_relaunch(&project, f)?;
+                relaunch_tip = Some(self.prepare_pr_relaunch(&project, f, f.pr_link.as_ref().unwrap())?);
                 None
             }
             (None, _) => None,
@@ -492,7 +494,11 @@ impl Runtime {
                 let app = crate::feature_docs::app_base(&self.cfg.paths.root, &project.id, &feature.slug);
                 crate::pr_link::linked_feature(feature, &head, sent, &app.to_string_lossy())
             }
-            None => feature,
+            // The kept link follows the head fetched now (the lease fallback).
+            None => match (relaunch_tip, feature.pr_link.clone()) {
+                (Some(tip), Some(l)) => Feature { pr_link: Some(PrLink { head_sha_at_link: tip, ..l }), ..feature },
+                _ => feature,
+            },
         };
         // §3.4: the app folders exist before any agent is told about them, and
         // before anything is stored or created, so a failure leaves nothing behind.
