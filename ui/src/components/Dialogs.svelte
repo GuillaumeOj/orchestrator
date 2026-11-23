@@ -20,6 +20,7 @@
   import { EFFORTS, MODEL_CHOICES, PERMISSION_MODES } from '../lib/options.js';
   import { nextOffHours, OFF_DISABLED, offHoursAllowed } from '../lib/pacing.js';
   import { authorName, codedOf, launchError, midCut, prefillError, warningText } from '../lib/prlaunch.js';
+  import { branchOf, deleteCopy } from '../lib/prlink.js';
   import { PRESSURE } from '../lib/status.js';
   import { runFinished, slugify } from '../lib/teams.js';
   import { tooltip } from '../lib/tooltip.js';
@@ -254,12 +255,21 @@
   // default (unmerged ones are kept unless discarded); an agent's worktree
   // (merged? dirty? shared?) decides its default once its plan is loaded.
   let del = $state({ plan: null, remove: false, discard: false });
+  let fplan = $state(null); // feature_delete_plan: { branch, linked, unpushed }
   $effect(() => {
     const ov = o;
     if (!ov?.kind.startsWith('delete-')) return;
     untrack(() => {
       del = { plan: null, remove: ov.kind === 'delete-feature', discard: false };
       error = null;
+      fplan = null;
+      if (ov.kind === 'delete-feature') {
+        // What deleting would keep (F7); without it the generic copy ships.
+        invoke('feature_delete_plan', { feature: ov.featureId })
+          .then((plan) => app.overlay === ov && (fplan = plan))
+          .catch(() => {});
+        return;
+      }
       if (ov.kind !== 'delete-agent') return;
       invoke('agent_action', { id: ov.agentId, action: 'delete_plan', message: null })
         .then((plan) => {
@@ -293,6 +303,7 @@
   const confirmDeleteAgent = () => runDelete(o.agentId, () => deleteAgent(o.agentId, del.remove, del.discard));
 
   const delFeature = $derived(o?.kind === 'delete-feature' ? features().find((f) => f.id === o.featureId) : null);
+  const delCopy = $derived(delFeature ? deleteCopy(delFeature, fplan) : null);
   const delFeatureAgents = $derived(delFeature ? activeAgents().filter((a) => a.team?.feature_id === delFeature.id) : []);
 
   const confirmDeleteFeature = () => runDelete(delFeature?.slug ?? o.featureId, () => deleteFeature(o.featureId, del.remove, del.discard));
@@ -692,10 +703,19 @@
         <span>• Its team run ends (failed, deleted by the user).</span>
         <span>• {delFeatureAgents.length ? `Killed (checked) and deleted: ${delFeatureAgents.map((a) => a.id).join(', ')}.` : 'No agent left.'}</span>
         <span>• The feature leaves the sidebar. Tasks, timeline, usage and audit log stay.</span>
+        {#if delCopy?.linked}<span data-pr-stays>• {delCopy.stays}</span>{/if}
       </div>
-      <label class="check"><input type="checkbox" bind:checked={del.remove} /> Remove its worktrees and branches, <span class="mono">{delFeature?.branch ?? `orch/${delFeature?.slug ?? '…'}/integration`}</span> included</label>
-      {#if del.remove}
-        <label class="check"><input type="checkbox" bind:checked={del.discard} /> Discard unmerged work (otherwise unmerged worktrees are kept)</label>
+      {#if delCopy?.linked}
+        <label class="check"><input type="checkbox" bind:checked={del.remove} /> {delCopy.remove}</label>
+        {#if del.remove && delCopy.kept}<p class="muted cap" data-kept>{delCopy.kept}</p>{/if}
+        {#if del.remove}
+          <label class="check"><input type="checkbox" bind:checked={del.discard} /> {delCopy.discard}</label>
+        {/if}
+      {:else}
+        <label class="check"><input type="checkbox" bind:checked={del.remove} /> Remove its worktrees and branches, <span class="mono">{branchOf(delFeature)}</span> included</label>
+        {#if del.remove}
+          <label class="check"><input type="checkbox" bind:checked={del.discard} /> Discard unmerged work (otherwise unmerged worktrees are kept)</label>
+        {/if}
       {/if}
       {#if error}<p class="err">{error}</p>{/if}
       <div class="foot">

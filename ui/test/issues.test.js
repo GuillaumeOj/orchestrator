@@ -271,7 +271,7 @@ describe('PR gate cards (ux-brief §3)', () => {
     expect(g.note).toBeNull();
   });
   it('single mode with issues shows Closes; without, the card is unchanged', () => {
-    expect(prGate(gate({ action: 'push_pr', issue: null }), feature)).toEqual({
+    expect(prGate(gate({ action: 'push_pr', issue: null }), feature)).toMatchObject({
       title: null,
       sub: null,
       note: null,

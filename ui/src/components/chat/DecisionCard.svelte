@@ -20,6 +20,7 @@
     refLabel,
     SOURCES_SHOWN,
   } from '../../lib/overwatch.js';
+  import { linkOf, specGateNote } from '../../lib/prlink.js';
   import { programTag } from '../../lib/program.js';
   import { cardSubject, decidedText, GITHUB_LINE, isGithub, cardTitle as sandboxTitle } from '../../lib/sandbox.js';
   import { decisionKind, LIFECYCLE } from '../../lib/status.js';
@@ -63,7 +64,10 @@
   const opening = $derived(live && brief && app.overlay?.intake?.brief_decision === d.id);
   // A PR gate's feature (its issues): the run the gate names.
   const gateFeature = $derived(d.kind === 'gate' && d.payload?.run ? features().find((f) => f.run?.id === d.payload.run) : null);
-  const pg = $derived(prGate(d, gateFeature));
+  const gateRun = $derived(gateFeature?.run ?? null);
+  const pg = $derived(prGate(d, gateFeature, gateRun));
+  // A spec gate on a linked feature says whose PR the team will change (notes §3.5, D5).
+  const specLinked = $derived(d.kind === 'gate' && d.gate === 'spec' ? linkOf(features().find((f) => f.slug === d.subject?.feature)) : null);
   const sandbox = $derived(d.kind === 'sandbox');
   const cardTitle = $derived(sandbox ? sandboxTitle(d) : (pg?.title ?? (brief ? [d.title ?? d.payload?.title, projectName(d.project ?? d.payload?.project) ?? d.payload?.project_name ?? d.project].filter(Boolean).join(' · ') : d.title)));
   // "Permission · by rule" on an expanded line settled without you.
@@ -79,7 +83,7 @@
   const answered = $derived(!!options && (options.questions.every((_, i) => choices[i]?.length) || !!notes.trim()));
   // What still opens something once it is settled: the pane, the PR, the Notion page.
   const opens = $derived((d.actions ?? []).filter((x) => x.id === 'open' || x.key === 'o'));
-  const prUrl = $derived(d.lifecycle?.effect === 'pr_opened' ? d.lifecycle.effect_detail : null);
+  const prUrl = $derived(d.lifecycle?.effect === 'pr_opened' || d.lifecycle?.effect === 'pr_pushed' ? d.lifecycle.effect_detail : null);
   const primary = $derived(deliveryPrimary(d));
   // What a delivery or a crash-looped startup card adds to its context blocks,
   // while there is still something to press (not once settled, pending or stale).
@@ -240,6 +244,8 @@
   {#if sandbox}<div class="subject secondary">{cardSubject(d, projectName)}</div>
   {:else if subjectLine(d)}<div class="subject secondary">{subjectLine(d)}</div>{/if}
   {#if pg?.note}<div class="why muted" data-pr-note>{pg.note}</div>{/if}
+  {#if specLinked}<div class="why muted" data-linked-note>{specGateNote(specLinked)}</div>{/if}
+  {#if pg?.moved && waitsOnUser}<div class="why warn" data-pr-moved><span aria-hidden="true">{'\u{F0026}'}</span> {pg.moved}</div>{/if}
   {#if askText}<div class="why muted" data-asks>{askText}</div>{/if}
   {#if d.summary && !d.context?.length}<p class="summary">{d.summary}</p>{/if}
   {#if brief}
@@ -252,7 +258,9 @@
       </blockquote>
     {/if}
   {:else}
+    {#if pg?.diffHead}<div class="muted cap" data-pr-diffhead>{pg.diffHead}</div>{/if}
     <ContextBlocks decision={d} bind:choices onjump={(id) => onref({ kind: 'chat', id })} />
+    {#if pg?.lease}<p class="muted note cap" data-pr-lease>{pg.lease}</p>{/if}
   {/if}
   {#if acting && options}
     <textarea class="field" rows="2" bind:value={notes} onkeydown={notesKey} aria-label="Your answer" placeholder="Add details or answer in your own words · ⏎ to send"></textarea>
@@ -450,6 +458,12 @@
   }
   .title {
     font: var(--text-body-strong);
+  }
+  .why.warn {
+    color: var(--color-status-queued);
+  }
+  .cap {
+    font: var(--text-caption);
   }
   .why {
     margin-top: calc(-1 * var(--space-xs));
