@@ -98,6 +98,13 @@ impl RunCtx {
             per_issue: self.feature.pr_mode == orch_store::PrMode::PerIssue,
             docs: crate::feature_docs::FeatureDocs::of(&self.feature),
             branch: self.feature.branch.clone(),
+            pr: self.feature.pr_link.as_ref().map(|l| orch_team::LinkedPr {
+                number: l.number,
+                url: l.url.clone(),
+                head: l.head_ref.clone(),
+                base: l.base_ref.clone(),
+                author: l.author.clone(),
+            }),
         }
     }
 }
@@ -303,7 +310,7 @@ impl Runtime {
         self.advance_inner(run_id, to, why, false)
     }
 
-    fn move_run(&self, run_id: &str, to: RunState, why: &str, checked: bool) -> Result<TeamRun> {
+    pub(crate) fn move_run(&self, run_id: &str, to: RunState, why: &str, checked: bool) -> Result<TeamRun> {
         let mut run = self.db.run(run_id)?.ok_or_else(|| anyhow!("no team run {run_id}"))?;
         if run.status == to {
             return Ok(run);
@@ -402,16 +409,29 @@ impl Runtime {
         let links = crate::issues::links(&issues, &rows, repo.as_deref());
         let existing = self.db.feature_by_slug(&project.id, &spec.slug)?;
         // §5.3 step 1: a launch on a PR, checked (and the PR re-read) first.
-        // F1: it always makes a new feature (a deleted one may come back).
-        let on_pr = match &spec.pr {
-            Some(_) if existing.as_ref().is_some_and(|f| !f.archived) => {
-                let m = format!("feature {} exists: pick another slug", spec.slug);
+        // F1: it always makes a new feature (a deleted one too: its old
+        // worktree and docs are not the PR's).
+        let on_pr = match (&spec.pr, &existing) {
+            (Some(_), Some(f)) => {
+                let m = if f.archived {
+                    format!("feature {} existed (deleted): pick another slug", spec.slug)
+                } else {
+                    format!("feature {} exists: pick another slug", spec.slug)
+                };
                 return Err(crate::pr_link::refused("slug_taken", m, json!({})));
             }
-            Some(l) => {
+            (Some(l), None) => {
                 Some((self.check_pr_launch(&project, l, spec.pr_mode == Some(orch_store::PrMode::PerIssue))?, l))
             }
-            None => None,
+            // A linked feature launched again keeps its link: its PR is re-read.
+            (None, Some(f)) if f.pr_link.is_some() && self.db.runs(Some(&f.id), true)?.is_empty() => {
+                if spec.pr_mode == Some(orch_store::PrMode::PerIssue) {
+                    return Err(crate::pr_link::per_issue_refused(f.pr_link.as_ref().map_or(0, |l| l.number)));
+                }
+                self.check_pr_relaunch(&project, f)?;
+                None
+            }
+            (None, _) => None,
         };
         let now = now_ms();
         let feature = match existing {
@@ -559,6 +579,17 @@ impl Runtime {
         // The tracker item the run came from, and its open children (B5).
         let hint =
             format!("{}{hint}", self.source_item_hint(&cx.run.id).map(|h| format!("{h}\n\n")).unwrap_or_default());
+        // §5.3.5: the PR the team works on, and that it is never replaced.
+        let hint = match &feature.pr_link {
+            Some(l) => format!(
+                "{hint}This feature works on PR #{n} ({}): its branch {} is your integration branch. Never open a \
+                 pull request; mcp__orch__request_pr pushes to PR #{n}.\n\n",
+                l.url,
+                l.head_ref,
+                n = l.number
+            ),
+            None => hint,
+        };
         format!(
             "ORCH: you lead the team on feature {} ({}). Brief from the user:\n\n{}\n\n{hint}Follow your protocol: write the docs in {}, {}, then call mcp__orch__request_spec_approval.",
             feature.title,

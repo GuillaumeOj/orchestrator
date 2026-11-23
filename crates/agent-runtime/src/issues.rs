@@ -266,7 +266,9 @@ pub fn prs_view(run: &TeamRun, feature: &Feature, gates: &[GateRef]) -> Vec<PrVi
                 number: run.pr_number,
                 url: run.pr_url.clone(),
                 pr: run.pr.clone(),
-                gate: gate("push_pr_update", None),
+                // A linked PR is open from launch: its push gate is a `push_pr` one.
+                gate: gate("push_pr_update", None)
+                    .or_else(|| gate("push_pr", None).filter(|_| feature.pr_link.is_some())),
             }]
         }
         PrMode::PerIssue => feature

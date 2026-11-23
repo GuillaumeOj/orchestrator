@@ -120,8 +120,32 @@ impl Runtime {
         if per_issue {
             return Err(per_issue_refused(n));
         }
-        // D3: one active feature per PR (no run at all counts as not active).
+        self.no_active_feature(project, n, None)?;
+        let head = self.read_open_pr(project, n)?;
+        let b = &head.head_ref;
+        // The app's own branches have their own feature (and the worktree
+        // layout cuts a missing `orch/*` branch from the base, G5).
+        if let Some(reason) = crate::pr_prefill::unusable_branch(n, b, &head.base_ref) {
+            return Err(refused("bad_request", reason, json!({})));
+        }
+        self.branch_checked_out(project, b)?;
+        Ok(head)
+    }
+
+    /// A linked feature launched again without a `pr` (its link kept): its
+    /// PR re-read with the same refusals (D3, fork, closed, merged). Its own
+    /// worktree may still hold the branch: that is not checked.
+    pub(crate) fn check_pr_relaunch(&self, project: &Project, f: &Feature) -> Result<()> {
+        let Some(l) = &f.pr_link else { return Ok(()) };
+        self.no_active_feature(project, l.number, Some(&f.id))?;
+        self.read_open_pr(project, l.number).map(|_| ())
+    }
+
+    /// D3: one active feature per PR (no run at all counts as not active);
+    /// `but` is the feature being launched.
+    fn no_active_feature(&self, project: &Project, n: u64, but: Option<&str>) -> Result<()> {
         if let Some((f, run)) = self.feature_on_pr(&project.id, n)?
+            && Some(f.id.as_str()) != but
             && run.as_ref().is_some_and(|r| !crate::team::effective(r).finished())
         {
             return Err(refused(
@@ -130,6 +154,11 @@ impl Runtime {
                 json!({"feature": feature_ref(&f, run.as_ref())}),
             ));
         }
+        Ok(())
+    }
+
+    /// The PR re-read (G2): refused offline, from a fork, closed or merged.
+    fn read_open_pr(&self, project: &Project, n: u64) -> Result<PrHead> {
         if !self.cfg.conditions.online() {
             return Err(refused("offline", format!("offline: PR #{n} can't be read"), json!({})));
         }
@@ -144,31 +173,36 @@ impl Runtime {
             "merged" => return Err(refused("pr_merged", format!("PR #{n} is merged"), json!({}))),
             _ => return Err(refused("pr_closed", format!("PR #{n} is closed"), json!({}))),
         }
-        let b = &head.head_ref;
-        // The app's own branches have their own feature (and the worktree
-        // layout cuts a missing `orch/*` branch from the base, G5).
-        if let Some(reason) = crate::pr_prefill::unusable_branch(n, b, &head.base_ref) {
-            return Err(refused("bad_request", reason, json!({})));
-        }
-        self.branch_checked_out(project, b)?;
         Ok(head)
     }
 
     /// `branch_checked_out` when `branch` is checked out in a worktree of the
-    /// project, the main checkout included (F1: naming the feature holding it).
+    /// project, the main checkout included (F1: naming the feature holding
+    /// it, a deleted linked one whose worktree was kept too).
     pub(crate) fn branch_checked_out(&self, project: &Project, branch: &str) -> Result<()> {
         let Some(w) = worktree::list(&project.path)?.into_iter().find(|w| w.branch.as_deref() == Some(branch)) else {
             return Ok(());
         };
         let path = crate::paths::real(&w.path);
-        let holder = self
-            .db
-            .features(Some(&project.id))?
-            .into_iter()
-            .find(|f| f.integration_worktree.as_deref().map(crate::paths::real).as_deref() == Some(path.as_path()));
+        let holds =
+            |f: &Feature| f.integration_worktree.as_deref().map(crate::paths::real).as_deref() == Some(path.as_path());
+        let live = self.db.features(Some(&project.id))?.into_iter().find(holds);
+        let deleted = match &live {
+            Some(_) => None,
+            None => self.db.linked_features(&project.id)?.into_iter().find(|f| f.archived && holds(f)),
+        };
         let shown = crate::paths::tilde(&path);
-        Err(match holder {
-            Some(f) => {
+        Err(match (live, deleted) {
+            (_, Some(f)) => refused(
+                "branch_checked_out",
+                format!(
+                    "{branch} is checked out in {shown} (deleted feature {}, its worktree kept): remove that \
+                     worktree first",
+                    f.slug
+                ),
+                json!({"details": {"path": path, "feature": feature_ref(&f, None)}}),
+            ),
+            (Some(f), None) => {
                 let run = self.db.runs(Some(&f.id), false)?.into_iter().next();
                 refused(
                     "branch_checked_out",
@@ -176,7 +210,7 @@ impl Runtime {
                     json!({"details": {"path": path, "feature": feature_ref(&f, run.as_ref())}}),
                 )
             }
-            None => refused(
+            (None, None) => refused(
                 "branch_checked_out",
                 format!("{branch} is checked out in {shown}; switch that checkout to another branch first"),
                 json!({"details": {"path": path}}),
@@ -230,4 +264,4 @@ impl Runtime {
 
 #[cfg(test)]
 #[path = "pr_link_tests.rs"]
-mod tests;
+pub(crate) mod tests;

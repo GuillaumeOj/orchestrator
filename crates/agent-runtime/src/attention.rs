@@ -487,6 +487,10 @@ pub mod copy {
     pub fn pr_gate(feature: &str) -> String {
         format!("PR gate · {feature}")
     }
+    /// A linked feature's push to someone else's PR.
+    pub fn pr_push(n: u64, feature: &str) -> String {
+        format!("push to PR #{n} · {feature}")
+    }
     pub fn restart_gate(detail: &str) -> String {
         format!("restart gate · {}", cut(detail, 40))
     }
@@ -878,7 +882,10 @@ impl<'a> Ctx<'a> {
                 _ => {
                     let feature = self.feature_of(a).map(str::to_string).unwrap_or_else(|| s("feature").to_string());
                     let reason = match s("action") {
-                        "push_pr" => copy::pr_gate(&feature),
+                        "push_pr" => match it.payload["linked"]["number"].as_u64() {
+                            Some(n) => copy::pr_push(n, &feature),
+                            None => copy::pr_gate(&feature),
+                        },
                         "restart_gate" => copy::restart_gate(s("detail")),
                         _ => copy::spec_gate(&feature),
                     };

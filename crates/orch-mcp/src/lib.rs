@@ -205,8 +205,9 @@ pub fn tools() -> Value {
         ),
         tool(
             "rebase_base",
-            "Bring the base branch in: fetch origin/<base> and rebase the integration branch onto it (task merges are kept). Only once every task is merged, and with no PR or update request waiting for the user. On a conflict the rebase stops: fix the files, then call commit to continue; `abort` gives up and restores the branch. Then run the tests and call request_pr to push.",
-            json!({"abort": {"type": "boolean", "description": "Abort the rebase in progress and restore the branch."}}),
+            "Bring the base branch in: fetch origin/<base> and rebase the integration branch onto it (task merges are kept). Only once every task is merged, and with no PR or update request waiting for the user. On a conflict the rebase stops: fix the files, then call commit to continue; `abort` gives up and restores the branch. Then run the tests and call request_pr to push. A feature on someone else's PR can bring that PR's head in instead (`onto: \"pr_head\"`, from planning on): a branch only behind it is fast-forwarded.",
+            json!({"abort": {"type": "boolean", "description": "Abort the rebase in progress and restore the branch."},
+                   "onto": {"type": "string", "enum": ["base", "pr_head"], "description": "What to bring in: the base branch (default), or the head of the PR the feature works on."}}),
             &[],
         ),
         tool(

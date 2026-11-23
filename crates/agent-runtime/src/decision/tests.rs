@@ -243,6 +243,21 @@ fn gates_spec_pr_and_restart() {
         json!({"action": "push_pr", "issue": "#12", "branch": "orch/checkout/issue/12", "base": "main", "title": "T"}),
     );
     assert_eq!(f.one("gate-6").title, "PR gate · shop-checkout · issue #12");
+    // A push to someone else's PR (allow-launch-team-on-update-pr §5.5).
+    f.item(
+        Some("lead-1"),
+        "gate",
+        "lead-1: push 2 commit(s) to PR #42 (renovate/foo)",
+        json!({"action": "push_pr", "branch": "renovate/foo", "base": "main", "linked": {"number": 42, "url": "u"},
+               "lease_sha": "9f2c", "force": false,
+               "commits": [{"sha": "0123456789ab", "subject": "fix CI"}, {"sha": "ba9876543210", "subject": "lint"}],
+               "diff": {"files": [{"path": "src/a.rs", "added": 4, "removed": 1}], "added": 4, "removed": 1}}),
+    );
+    let d = f.one("gate-7");
+    assert_eq!((d.gate, d.title.as_str()), (Some("pr"), "Push 2 commits to PR #42 (renovate/foo)"));
+    assert_eq!(d.summary, "renovate/foo → PR #42 · 2 commit(s)");
+    assert_eq!(types(&d), ["markdown", "diff_summary"]);
+    assert_eq!(d.actions[0].label, "Push");
     let d = f.one("gate-3");
     assert_eq!((d.gate, d.title.as_str()), (Some("restart"), "Still waiting after a restart · lead-1"));
     assert_eq!(action_ids(&d), ["approve", "reject", "open"]);

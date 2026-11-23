@@ -253,6 +253,17 @@ pub struct PrStatus {
     /// The last check failed: the rest is the last good status.
     #[serde(default)]
     pub error: Option<String>,
+    /// The PR was not opened by the app: the feature is linked to it
+    /// (allow-launch-team-on-update-pr §5.6).
+    #[serde(default)]
+    pub linked: bool,
+    /// The head moved outside the app: not what the app pushed (or linked
+    /// at) and not in the local branch (G6).
+    #[serde(default)]
+    pub foreign_head: bool,
+    /// That moved head while `foreign_head` (F4); the lead is told once per sha.
+    #[serde(default)]
+    pub foreign_head_sha: Option<String>,
 }
 
 /// CI of a PR: one job per CheckRun / StatusContext.
@@ -2048,6 +2059,9 @@ mod tests {
             rewritten: false,
             checked_at_ms: 9,
             error: None,
+            linked: true,
+            foreign_head: true,
+            foreign_head_sha: Some("abc".into()),
         });
         s.upsert_run(&run).unwrap();
         assert_eq!(s.run("r1").unwrap().unwrap(), run, "the PR status round-trips");

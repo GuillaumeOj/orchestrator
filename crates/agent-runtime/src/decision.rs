@@ -505,6 +505,37 @@ fn stored(cx: &Ctx, i: &InboxItem) -> Decision {
             ];
             (title, summary, ctx, actions)
         }
+        // A linked feature's push to someone else's PR (§5.5).
+        ("gate", Some("pr")) if p.get("linked").is_some_and(Value::is_object) => {
+            let n = p["linked"]["number"].as_u64().unwrap_or(0);
+            let commits = p.get("commits").and_then(Value::as_array).cloned().unwrap_or_default();
+            let k = commits.len();
+            let title = format!("Push {k} commit{} to PR #{n} ({})", if k == 1 { "" } else { "s" }, s(p, "branch"));
+            let how = if p.get("force").and_then(Value::as_bool).unwrap_or(false) {
+                " · rebased (force push with lease)"
+            } else {
+                ""
+            };
+            let summary = format!("{} → PR #{n} · {} commit(s){how}", s(p, "branch"), commits.len());
+            let list: Vec<String> = commits
+                .iter()
+                .take(30)
+                .map(|c| format!("- `{}` {}", crate::inbox::short(s(c, "sha")), s(c, "subject")))
+                .collect();
+            let mut ctx = vec![markdown(&list.join("\n"), None)];
+            let diff = p.get("diff").cloned().unwrap_or(Value::Null);
+            if !diff.is_null() {
+                ctx.push(json!({"type": "diff_summary", "files": diff.get("files"), "added": diff.get("added"),
+                                "removed": diff.get("removed")}));
+            }
+            let actions = vec![
+                act("approve", "Push", Some("a")),
+                act("reject", "Reject", Some("r")),
+                act("reply", "Reply", Some("enter")),
+                OPEN_PANE,
+            ];
+            (title, summary, ctx, actions)
+        }
         ("gate", Some("pr")) => {
             let feature = subject_of(cx, agent, None).get("feature").and_then(Value::as_str).map(str::to_string);
             let title =

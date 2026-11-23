@@ -17,16 +17,18 @@ use crate::runtime::tests::test_cfg;
 use crate::team::tests::{call, ok};
 use crate::team::{GhFactory, LaunchSpec};
 
-const HEAD: &str = "renovate/foo";
-const LEAD: &str = "pr-42-lead-1";
+pub(crate) const HEAD: &str = "renovate/foo";
+pub(crate) const LEAD: &str = "pr-42-lead-1";
 
 /// PR #42 as GitHub has it; its head is `HEAD` in the bare origin.
-struct Pr {
-    origin: PathBuf,
-    state: &'static str,
-    cross_repo: bool,
-    head_ref: String,
-    views: u32,
+pub(crate) struct Pr {
+    pub(crate) origin: PathBuf,
+    pub(crate) state: &'static str,
+    pub(crate) cross_repo: bool,
+    pub(crate) head_ref: String,
+    pub(crate) views: u32,
+    /// `gh pr create` calls (a linked feature never makes one).
+    pub(crate) created: u32,
 }
 
 struct FakeGh(Arc<Mutex<Pr>>);
@@ -34,13 +36,27 @@ struct FakeGh(Arc<Mutex<Pr>>);
 impl orch_tasks::github::Gh for FakeGh {
     fn run(&self, args: &[String]) -> Result<String> {
         let mut p = self.0.lock().unwrap();
-        if args[..2] != ["pr", "view"] || args.get(4).map(String::as_str) != Some(orch_git::gh::PR_HEAD_FIELDS) {
+        if args[..2] == ["pr", "create"] {
+            p.created += 1;
+            bail!("a linked feature never opens a PR");
+        }
+        let fields = args.get(4).map(String::as_str);
+        if args[..2] != ["pr", "view"]
+            || !matches!(fields, Some(orch_git::gh::PR_HEAD_FIELDS | orch_git::gh::PR_VIEW_FIELDS))
+        {
             bail!("unexpected gh {args:?}");
         }
         p.views += 1;
         let n: u64 = args[2].parse()?;
         let sha =
             orch_git::git(&p.origin, &["rev-parse", &p.head_ref]).map(|s| s.trim().to_string()).unwrap_or_default();
+        // The watcher's view (state, CI, mergeability).
+        if fields == Some(orch_git::gh::PR_VIEW_FIELDS) {
+            return Ok(json!({"number": n, "url": format!("https://github.com/o/r/pull/{n}"), "state": p.state,
+                             "headRefOid": sha, "baseRefName": "main", "mergeable": "MERGEABLE",
+                             "mergeStateStatus": "CLEAN", "statusCheckRollup": []})
+            .to_string());
+        }
         Ok(json!({"number": n, "url": format!("https://github.com/o/r/pull/{n}"), "state": p.state,
                   "headRefName": p.head_ref, "headRefOid": sha, "baseRefName": "main",
                   "isCrossRepository": p.cross_repo, "author": {"login": "app/renovate"}})
@@ -49,7 +65,7 @@ impl orch_tasks::github::Gh for FakeGh {
 }
 
 #[derive(Debug, Default)]
-struct Net(AtomicBool);
+pub(crate) struct Net(pub(crate) AtomicBool);
 
 impl orch_git::fetch::Conditions for Net {
     fn battery(&self) -> Option<u8> {
@@ -60,25 +76,25 @@ impl orch_git::fetch::Conditions for Net {
     }
 }
 
-struct Fx {
-    offline: Arc<Net>,
+pub(crate) struct Fx {
+    pub(crate) offline: Arc<Net>,
     _d: tempfile::TempDir,
     _rd: tempfile::TempDir,
-    rt: Arc<Runtime>,
-    pr: Arc<Mutex<Pr>>,
-    repo: PathBuf,
-    pid: String,
+    pub(crate) rt: Arc<Runtime>,
+    pub(crate) pr: Arc<Mutex<Pr>>,
+    pub(crate) repo: PathBuf,
+    pub(crate) pid: String,
     /// A clone of origin to push to the PR from (the updater).
-    bot: PathBuf,
+    pub(crate) bot: PathBuf,
 }
 
 impl Fx {
-    fn origin_sha(&self) -> String {
+    pub(crate) fn origin_sha(&self) -> String {
         g(&self.pr.lock().unwrap().origin, &["rev-parse", HEAD]).trim().to_string()
     }
 
     /// The updater pushes one more commit to the PR.
-    fn bot_push(&self, file: &str) {
+    pub(crate) fn bot_push(&self, file: &str) {
         std::fs::write(self.bot.join(file), file).unwrap();
         g(&self.bot, &["add", file]);
         g(&self.bot, &["-c", "user.name=B", "-c", "user.email=b@example.invalid", "commit", "-qm", file]);
@@ -88,7 +104,7 @@ impl Fx {
 
 /// A project whose origin has PR #42 on `renovate/foo` (one commit past main),
 /// never fetched into the main checkout.
-fn fx() -> Fx {
+pub(crate) fn fx() -> Fx {
     let d = tempfile::Builder::new().prefix("orchrt").tempdir_in(orch_protocol::test_tmp()).unwrap();
     let (rd, repo) = scratch_repo();
     let origin = rd.path().join("origin.git");
@@ -97,7 +113,14 @@ fn fx() -> Fx {
     let bot = rd.path().join("bot");
     g(rd.path(), &["clone", "-q", origin.to_str().unwrap(), bot.to_str().unwrap()]);
     g(&bot, &["checkout", "-q", "-b", HEAD]);
-    let pr = Arc::new(Mutex::new(Pr { origin, state: "OPEN", cross_repo: false, head_ref: HEAD.into(), views: 0 }));
+    let pr = Arc::new(Mutex::new(Pr {
+        origin,
+        state: "OPEN",
+        cross_repo: false,
+        head_ref: HEAD.into(),
+        views: 0,
+        created: 0,
+    }));
     let mut cfg = test_cfg(d.path(), false);
     let h = pr.clone();
     cfg.gh = Some(GhFactory(Arc::new(move || Box::new(FakeGh(h.clone())))));
@@ -127,7 +150,7 @@ fn link() -> PrLink {
     }
 }
 
-fn spec(fx: &Fx, slug: &str) -> LaunchSpec {
+pub(crate) fn spec(fx: &Fx, slug: &str) -> LaunchSpec {
     LaunchSpec {
         project_id: fx.pid.clone(),
         team_id: "bugfix-squad".into(),
@@ -141,12 +164,12 @@ fn spec(fx: &Fx, slug: &str) -> LaunchSpec {
 }
 
 /// The JSON of a refused launch.
-fn refusal(fx: &Fx, s: &LaunchSpec) -> Value {
+pub(crate) fn refusal(fx: &Fx, s: &LaunchSpec) -> Value {
     let e = fx.rt.launch(s).unwrap_err();
     serde_json::from_str(&e.to_string()).unwrap_or_else(|_| panic!("not a coded error: {e:#}"))
 }
 
-fn rev(dir: &Path, r: &str) -> String {
+pub(crate) fn rev(dir: &Path, r: &str) -> String {
     g(dir, &["rev-parse", r]).trim().to_string()
 }
 

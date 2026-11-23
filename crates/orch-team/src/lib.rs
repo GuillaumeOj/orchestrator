@@ -11,7 +11,7 @@ pub mod rules;
 pub mod run;
 pub mod validate;
 
-pub use compile::{FeatureCtx, NodeConfig, compile_node, prs_line, tools_for};
+pub use compile::{FeatureCtx, LinkedPr, NodeConfig, compile_node, linked_prs_line, prs_line, tools_for};
 pub use docs_location::{DocsLocation, FeatureDocsSetting, Loc, LocKind};
 pub use export::{ImportError, TeamFile};
 pub use model::{

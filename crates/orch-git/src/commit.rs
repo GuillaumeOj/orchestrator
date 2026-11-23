@@ -305,6 +305,11 @@ fn rebase_git(wt: &Path, gitconfig: Option<&Path>, args: &[&str]) -> Result<Stri
     run(c, None)
 }
 
+/// The commit the rebase in progress in `worktree_path` replays onto.
+pub fn rebase_onto(worktree_path: &Path) -> Option<String> {
+    rebase_file(&worktree::inspect(&real(worktree_path)).gitdir?, "onto")
+}
+
 fn rebase_file(gitdir: &Path, name: &str) -> Option<String> {
     ["rebase-merge", "rebase-apply"]
         .iter()
