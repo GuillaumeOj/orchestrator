@@ -23,9 +23,7 @@ export function linkedLine(link) {
 export function foreignHeadWarning(link, pr) {
   const n = link.number;
   const by =
-    link.author && link.author !== 'unknown author' && /\[bot\]$|^app\//.test(link.author)
-      ? `, probably by ${authorName({ login: link.author })}`
-      : '';
+    link.author && /\[bot\]$|^app\//.test(link.author) ? `, probably by ${authorName({ login: link.author })}` : '';
   const sha = pr?.foreign_head_sha ?? null;
   const tail = ' The lead was told and brings it in with a rebase before asking for the push.';
   return sha

@@ -84,18 +84,12 @@
       ? [
           v.team ? `${v.team.name} v${v.team.version}` : null,
           `\u{E725} ${v.feature.integration_worktree ? branchOf(v.feature) : '—'}`,
-          'PR',
+          link ? 'PR' : null, // the slot of the link button (notes §3.1)
           run ? `started ${ago(run.started_at_ms)}` : null,
-        ]
+        ].filter(Boolean)
       : [],
   );
-  // The `PR` slot is the link button of a linked feature (notes §3.1); the text keeps the pieces for the tooltip.
-  const metaText = $derived(
-    metaPieces
-      .filter((x) => x && (x !== 'PR' || link))
-      .map((x) => (x === 'PR' ? `PR #${link.number}` : x))
-      .join(' · '),
-  );
+  const metaText = $derived(metaPieces.map((x) => (x === 'PR' ? `PR #${link.number}` : x)).join(' · '));
 
 
   // allow-multiple-prs: the card lists one row per issue in that mode (the view keeps `issue: null` in single mode).
@@ -378,7 +372,7 @@
           <Menu items={menu} label="More actions" />
         </span>
       </div>
-      <div class="row2 muted" use:tooltip={ifCut(metaText)}>{#each metaPieces.filter((x) => x && (x !== 'PR' || link)) as piece, i (i)}{#if i}{' · '}{/if}{#if piece === 'PR'}<button type="button" class="link" aria-label="Open PR #{link.number} on GitHub" onclick={() => openUrl(link.url)}>PR #{link.number}</button>{:else}{piece}{/if}{/each}</div>
+      <div class="row2 muted" use:tooltip={ifCut(metaText)}>{#each metaPieces as piece, i (i)}{#if i}{' · '}{/if}{#if piece === 'PR'}<button type="button" class="link" aria-label="Open PR #{link.number} on GitHub" onclick={() => openUrl(link.url)}>PR #{link.number}</button>{:else}{piece}{/if}{/each}</div>
       <FeatureIssues feature={v.feature} {run} onsaved={(f) => (v = { ...v, feature: f })} />
     </header>
 
