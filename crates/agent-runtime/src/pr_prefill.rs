@@ -31,6 +31,17 @@ fn fork_reason(owner: Option<&str>) -> String {
     }
 }
 
+/// Why a launch refuses the PR's branches (as `check_pr_launch` does), else `None`.
+fn unusable_branch(n: u64, head: &str, base: &str) -> Option<String> {
+    if !orch_git::valid_branch(head) || !orch_git::valid_branch(base) {
+        Some(format!("PR #{n}: invalid branch {head:?}"))
+    } else if orch_git::is_app_branch(head) {
+        Some(format!("PR #{n} is on the app's branch {head}: open its feature"))
+    } else {
+        None
+    }
+}
+
 /// `pr-<n>-<kebab title>` cut at `SLUG_MAX` on a word boundary.
 pub fn pr_slug(number: u64, title: &str) -> String {
     let full = format!("pr-{number}-{}", kebab(title, 200));
@@ -126,6 +137,8 @@ impl Runtime {
             linked.as_ref().filter(|(_, run)| run.as_ref().is_some_and(|r| !crate::team::effective(r).finished()));
         let launch = if pr.cross_repo {
             json!({"ok": false, "code": "fork", "reason": fork_reason(pr.fork_owner.as_deref())})
+        } else if let Some(reason) = unusable_branch(pr.number, &pr.head_ref, &pr.base_ref) {
+            json!({"ok": false, "code": "bad_request", "reason": reason})
         } else if let Some((f, run)) = active {
             json!({"ok": false, "code": "active_feature",
                 "reason": format!("PR #{} already has a team: feature {}", pr.number, f.slug),
@@ -170,6 +183,9 @@ impl Runtime {
             "open" => {}
             "merged" => return Err(refused("pr_merged", format!("PR #{n} is merged"), json!({}))),
             _ => return Err(refused("pr_closed", format!("PR #{n} is closed"), json!({}))),
+        }
+        if let Some(reason) = unusable_branch(n, &h.head_ref, &h.base_ref) {
+            return Err(refused("bad_request", reason, json!({})));
         }
         let title = view["title"].as_str().unwrap_or("").to_string();
         let rollup = &view["statusCheckRollup"];

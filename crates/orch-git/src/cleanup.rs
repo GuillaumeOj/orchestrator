@@ -264,10 +264,15 @@ pub struct PrBranch {
 /// `origin/<base>` has (refs that don't resolve are skipped); `None` when
 /// there are none, or no such branch.
 pub fn unpushed(repo: &Path, branch: &str, base: &str) -> Option<u32> {
+    try_unpushed(repo, branch, base).filter(|n| *n > 0)
+}
+
+/// [`unpushed`] with `None` only when git could not tell (never "0 commits").
+fn try_unpushed(repo: &Path, branch: &str, base: &str) -> Option<u32> {
     let (remote, origin_base) = (format!("origin/{branch}"), format!("origin/{base}"));
     let local = format!("refs/heads/{branch}");
     let args = ["rev-list", "--count", "--ignore-missing", &local, "--not", &remote, base, &origin_base];
-    git(repo, &args).ok()?.trim().parse().ok().filter(|n| *n > 0)
+    git(repo, &args).ok()?.trim().parse().ok()
 }
 
 /// Removes one worktree (and optionally its branch). With `Confirm::Safe` it
@@ -432,6 +437,10 @@ fn remove(
         if b == base {
             // Never the base itself (`-d` would delete it when HEAD has it).
             out.log.push(format!("kept branch {b}: it is the base"));
+        } else if pr_head(&b).is_some_and(|p| !p.merged) && try_unpushed(repo, &b, base).is_none() {
+            // Unknown is not "0 unpushed": the commits would be deleted unseen.
+            out.log.push(format!("kept branch {b}: can't tell whether its commits are pushed to origin/{b}"));
+            out.kept_branch = Some(b);
         } else if let Some(n) = pr_head(&b).filter(|p| !p.merged).and_then(|_| unpushed(repo, &b, base)) {
             // A PR head (D2), pruned too: pushed is enough, merged is not needed.
             out.log.push(format!("kept branch {b}: {n} commit(s) not pushed to origin/{b}"));
