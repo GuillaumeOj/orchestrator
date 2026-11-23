@@ -42,13 +42,7 @@ impl Runtime {
             Some("merged") => bail!("PR #{n} is merged: the feature is done"),
             _ => {}
         }
-        // D1 guard: the docs live in the app folder; one committed by hand is refused.
-        let docs = format!(".orchestrator/features/{}/", cx.feature.slug);
-        let range = format!("origin/{}...HEAD", cx.feature.base);
-        let touched = orch_git::git(wt, &["diff", "--name-only", &range, "--", &docs])?;
-        if !touched.trim().is_empty() {
-            bail!("{docs} is in the diff: PR #{n} is someone else's, remove it before pushing");
-        }
+        self.linked_docs_guard(wt, cx)?;
         // G3: the head the watcher last saw, else the head at launch.
         let lease = cx
             .run
@@ -109,6 +103,19 @@ impl Runtime {
              result; there is nothing else to do for it now.",
             commits.len()
         ))
+    }
+
+    /// D1 guard: the docs live in the app folder; one committed by hand is
+    /// refused, for the first push and for the updates after it.
+    pub(crate) fn linked_docs_guard(&self, wt: &Path, cx: &RunCtx) -> Result<()> {
+        let Some(l) = cx.feature.pr_link.as_ref() else { return Ok(()) };
+        let docs = format!(".orchestrator/features/{}/", cx.feature.slug);
+        let range = format!("origin/{}...HEAD", cx.feature.base);
+        let touched = orch_git::git(wt, &["diff", "--name-only", &range, "--", &docs])?;
+        if !touched.trim().is_empty() {
+            bail!("{docs} is in the diff: PR #{} is someone else's, remove it before pushing", l.number);
+        }
+        Ok(())
     }
 
     /// The run's last `rebase_base` onto the base started from a head that

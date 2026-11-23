@@ -1172,6 +1172,10 @@ impl Runtime {
         }
         // The PR is open: push the new commits to it rather than open another.
         if let Some(run) = self.open_pr_run(rec) {
+            // Someone else's PR: the docs guard holds for the updates too.
+            if let Some(cx) = cx.as_ref() {
+                self.linked_docs_guard(&rec.worktree, cx)?;
+            }
             return self.request_pr_update(rec, &run);
         }
         // Someone else's PR: a push to it, never a new one (§5.5).

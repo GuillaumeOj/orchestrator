@@ -23,6 +23,8 @@ impl Runtime {
         let gitconfig = self.agent_gitconfig(&rec.id);
         if args.get("abort").and_then(Value::as_bool).unwrap_or(false) {
             let r = commit::rebase_abort(&rec.worktree, gitconfig.as_deref());
+            // The rebase is over: its recorded target goes with it.
+            commit::set_rebase_label(&rec.worktree, None);
             return self.rebase_reply(cx, rec, r, &format!("origin/{}", cx.feature.base));
         }
         // The branch brought in: the base, or (a linked feature) the PR head.
