@@ -2,6 +2,7 @@
 //! branch it works on (merge guard, protected branch), and D2 on delete.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Result, bail};
@@ -38,7 +39,8 @@ impl orch_tasks::github::Gh for FakeGh {
         }
         p.views += 1;
         let n: u64 = args[2].parse()?;
-        let sha = orch_git::git(&p.origin, &["rev-parse", &p.head_ref]).map(|s| s.trim().to_string()).unwrap_or_default();
+        let sha =
+            orch_git::git(&p.origin, &["rev-parse", &p.head_ref]).map(|s| s.trim().to_string()).unwrap_or_default();
         Ok(json!({"number": n, "url": format!("https://github.com/o/r/pull/{n}"), "state": p.state,
                   "headRefName": p.head_ref, "headRefOid": sha, "baseRefName": "main",
                   "isCrossRepository": p.cross_repo, "author": {"login": "app/renovate"}})
@@ -46,7 +48,20 @@ impl orch_tasks::github::Gh for FakeGh {
     }
 }
 
+#[derive(Debug, Default)]
+struct Net(AtomicBool);
+
+impl orch_git::fetch::Conditions for Net {
+    fn battery(&self) -> Option<u8> {
+        None
+    }
+    fn online(&self) -> bool {
+        !self.0.load(Ordering::SeqCst)
+    }
+}
+
 struct Fx {
+    offline: Arc<Net>,
     _d: tempfile::TempDir,
     _rd: tempfile::TempDir,
     rt: Arc<Runtime>,
@@ -86,15 +101,17 @@ fn fx() -> Fx {
     let mut cfg = test_cfg(d.path(), false);
     let h = pr.clone();
     cfg.gh = Some(GhFactory(Arc::new(move || Box::new(FakeGh(h.clone())))));
+    let offline = Arc::new(Net::default());
+    cfg.conditions = offline.clone();
     let rt = Runtime::new(cfg).unwrap();
-    rt.overwatch.manual.store(true, std::sync::atomic::Ordering::SeqCst);
+    rt.overwatch.manual.store(true, Ordering::SeqCst);
     let p = orch_git::project::register(&rt.db, &repo).unwrap();
     let (roles, team) = orch_team::presets::bugfix_squad();
     for r in &roles {
         rt.db.upsert_role(r, 1).unwrap();
     }
     rt.db.save_team(&team, &roles, 1).unwrap();
-    let f = Fx { _d: d, _rd: rd, rt, pr, repo, pid: p.id, bot };
+    let f = Fx { offline, _d: d, _rd: rd, rt, pr, repo, pid: p.id, bot };
     f.bot_push("dep.txt");
     f
 }
@@ -213,11 +230,17 @@ fn a_local_head_behind_the_pr_is_fast_forwarded_and_one_ahead_refused() {
 #[test]
 fn refusals_come_before_anything_is_stored() {
     let fx = fx();
-    let none = |fx: &Fx| fx.rt.db.features(Some(&fx.pid)).unwrap().is_empty() && fx.rt.db.runs(None, false).unwrap().is_empty();
+    let none = |fx: &Fx| {
+        fx.rt.db.features(Some(&fx.pid)).unwrap().is_empty() && fx.rt.db.runs(None, false).unwrap().is_empty()
+    };
     // Per-issue mode.
     let s = LaunchSpec { pr_mode: Some(orch_store::PrMode::PerIssue), ..spec(&fx, "pr-42") };
     assert_eq!(refusal(&fx, &s)["code"], "per_issue");
     assert_eq!(fx.pr.lock().unwrap().views, 0, "refused before gh");
+    fx.offline.0.store(true, Ordering::SeqCst);
+    assert_eq!(refusal(&fx, &spec(&fx, "pr-42"))["code"], "offline");
+    fx.offline.0.store(false, Ordering::SeqCst);
+    assert_eq!(fx.pr.lock().unwrap().views, 0);
     // A fork, a closed and a merged PR.
     fx.pr.lock().unwrap().cross_repo = true;
     assert_eq!(refusal(&fx, &spec(&fx, "pr-42"))["code"], "fork");
@@ -226,7 +249,7 @@ fn refusals_come_before_anything_is_stored() {
     assert_eq!(refusal(&fx, &spec(&fx, "pr-42"))["message"], "PR #42 is closed");
     fx.pr.lock().unwrap().state = "MERGED";
     let e = refusal(&fx, &spec(&fx, "pr-42"));
-    assert_eq!((e["code"].as_str(), e["message"].as_str()), (Some("pr_closed"), Some("PR #42 is merged")));
+    assert_eq!((e["code"].as_str(), e["message"].as_str()), (Some("pr_merged"), Some("PR #42 is merged")));
     fx.pr.lock().unwrap().state = "OPEN";
     // The head checked out in the user's main checkout.
     g(&fx.repo, &["fetch", "-q", "origin", HEAD]);
@@ -290,4 +313,35 @@ fn deleting_a_linked_feature_keeps_unpushed_commits_and_never_touches_the_remote
     let f = fx.rt.db.feature(&other.feature_id).unwrap().unwrap();
     assert_eq!((f.branch, f.pr_link, other.pr_number), (None, None, None));
     assert_eq!(fx.rt.delete_feature(&other.feature_id, true, false).unwrap()["kept"], json!([]));
+}
+
+#[test]
+fn gh_failures_have_their_code() {
+    let missing = anyhow::Error::new(std::io::Error::from(std::io::ErrorKind::NotFound)).context("gh pr view");
+    assert_eq!(crate::pr_link::gh_error_code(&missing, "fetch_failed"), "gh_missing");
+    let auth = anyhow::anyhow!("gh pr view 42: To get started with GitHub CLI, please run:  gh auth login");
+    assert_eq!(crate::pr_link::gh_error_code(&auth, "fetch_failed"), "gh_auth");
+    assert_eq!(crate::pr_link::gh_error_code(&anyhow::anyhow!("HTTP 502"), "fetch_failed"), "fetch_failed");
+}
+
+#[test]
+fn a_merged_pr_lets_its_branch_go_with_unpushed_commits() {
+    let fx = fx();
+    let mut run = fx.rt.launch(&spec(&fx, "pr-42")).unwrap();
+    let wt = fx.rt.db.feature(&run.feature_id).unwrap().unwrap().integration_worktree.unwrap();
+    std::fs::write(wt.join("fix.txt"), "fix").unwrap();
+    ok(&fx.rt, LEAD, "commit", json!({"message": "fix the build"}));
+    // Squash-merged on GitHub: nothing local says so but the watcher's state.
+    run.pr = Some(orch_store::PrStatus { state: "merged".into(), ..Default::default() });
+    fx.rt.db.upsert_run(&run).unwrap();
+    assert_eq!(fx.rt.feature_delete_plan("pr-42").unwrap()["unpushed"], 0);
+    let out = fx.rt.delete_feature(&run.feature_id, true, false).unwrap();
+    assert_eq!(out["kept"], json!([]), "{out}");
+    assert!(!orch_git::worktree::branch_exists(&fx.repo, HEAD));
+    assert!(
+        out["worktrees"][0]["log"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("deleted branch renovate/foo: its PR is merged"))
+    );
 }

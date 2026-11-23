@@ -1487,19 +1487,18 @@ impl Runtime {
         Ok(run)
     }
 
-    /// Deletes a feature: its runs end as failed ("deleted by the user"), every
-    /// agent of the feature is deleted (killed, checked, archived), then the
-    /// feature is archived. With `remove_worktrees`, the agents' worktrees and
-    /// the integration worktree go too (unmerged work needs `discard`). Stops
-    /// at the first agent whose kill can't be verified: the feature stays.
     /// F7: what deleting the feature does to its integration branch: the
     /// real branch, whether it is a PR's, and its commits `origin/<head>`
-    /// lacks (kept on delete, D2; 0 for an unlinked feature).
+    /// lacks (kept on delete, D2; 0 for an unlinked feature or a merged PR).
     pub fn feature_delete_plan(&self, feature_id: &str) -> Result<Value> {
         let f = self.feature_by_id_or_slug(feature_id)?;
         let branch = f.integration_branch();
         let unpushed = match self.db.project(&f.project_id)? {
-            Some(p) if f.is_linked() && orch_git::worktree::branch_exists(&p.path, &branch) => {
+            Some(p)
+                if f.is_linked()
+                    && !self.linked_pr_merged(&f)
+                    && orch_git::worktree::branch_exists(&p.path, &branch) =>
+            {
                 orch_git::cleanup::unpushed(&p.path, &branch, &f.base).unwrap_or(0)
             }
             _ => 0,
@@ -1507,6 +1506,12 @@ impl Runtime {
         Ok(json!({"branch": branch, "linked": f.is_linked(), "unpushed": unpushed}))
     }
 
+    /// Deletes a feature: its runs end as failed ("deleted by the user"), every
+    /// agent of the feature is deleted (killed, checked, archived), then the
+    /// feature is archived. With `remove_worktrees`, the agents' worktrees and
+    /// the integration worktree go too (unmerged work needs `discard`). Stops
+    /// at the first agent whose kill can't be verified: the feature stays. A PR
+    /// branch with commits its PR lacks is kept (D2, `kept`).
     pub fn delete_feature(&self, feature_id: &str, remove_worktrees: bool, discard: bool) -> Result<Value> {
         let mut f = self.db.feature(feature_id)?.ok_or_else(|| anyhow!("no feature {feature_id}"))?;
         // First the runs, so the team tick starts no new seat meanwhile.
@@ -1555,7 +1560,9 @@ impl Runtime {
         // D2 (F7): the PR branches kept for their unpushed commits.
         let kept: Vec<Value> = worktrees
             .iter()
-            .filter_map(|r| Some(json!({"branch": r["kept_branch"].as_str()?, "commits": r["kept_unpushed"].as_u64()?})))
+            .filter_map(|r| {
+                Some(json!({"branch": r["kept_branch"].as_str()?, "commits": r["kept_unpushed"].as_u64()?}))
+            })
             .collect();
         let out = json!({"deleted": f.slug, "agents": agents, "worktrees": worktrees, "app_folder": app_folder, "kept": kept});
         self.db.audit("user", None, "feature_deleted", Some(&f.slug), "ok", out.clone())?;

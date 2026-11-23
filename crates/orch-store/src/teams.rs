@@ -1977,8 +1977,13 @@ mod tests {
             head_sha_at_link: "9f2c".into(),
             author: Some("renovate[bot]".into()),
         };
-        let linked =
-            Feature { id: "f9".into(), slug: "pr-42".into(), branch: Some("renovate/foo".into()), pr_link: Some(link), ..f.clone() };
+        let linked = Feature {
+            id: "f9".into(),
+            slug: "pr-42".into(),
+            branch: Some("renovate/foo".into()),
+            pr_link: Some(link),
+            ..f.clone()
+        };
         s.upsert_feature(&linked).unwrap();
         let back = s.feature("f9").unwrap().unwrap();
         assert_eq!(back, linked);

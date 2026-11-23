@@ -190,7 +190,7 @@ impl Runtime {
             bail!("agent {a} uses this worktree: archive or kill it first");
         }
         let confirm = if confirm_discard { Confirm::DiscardUnmerged } else { Confirm::Safe };
-        let Some(out) = self.remove_one(&p, &wt, |base, branch| {
+        let Some(mut out) = self.remove_one(&p, &wt, |base, branch| {
             cleanup::remove_worktree_of(&p.path, &wt, base, branch, delete_branch, confirm)
         })?
         else {
@@ -200,6 +200,7 @@ impl Runtime {
             // Already gone (a second click, another pane): nothing to do.
             return Ok(RemoveOutcome::default());
         };
+        self.drop_merged_pr_branch(&p, &mut out);
         self.db.audit(
             "user",
             None,
@@ -237,7 +238,8 @@ impl Runtime {
                 continue;
             }
             match self.remove_one(&p, &wt, |base, branch| cleanup::prune_worktree(&p.path, &wt, base, branch)) {
-                Ok(Some(o)) => {
+                Ok(Some(mut o)) => {
+                    self.drop_merged_pr_branch(&p, &mut o);
                     if o.branch_deleted
                         && let Some(b) = &w.branch
                     {

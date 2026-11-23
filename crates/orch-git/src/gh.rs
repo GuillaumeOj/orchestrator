@@ -229,7 +229,8 @@ pub fn pr_head_args(number: u64) -> Vec<String> {
 pub fn parse_pr_head(json: &str) -> Result<PrHead> {
     let p: Value = serde_json::from_str(json).context("gh pr view: not JSON")?;
     let s = |k: &str| p.get(k).and_then(Value::as_str).unwrap_or("").to_string();
-    let number = p.get("number").and_then(Value::as_u64).with_context(|| format!("gh pr view: no PR in {json:.200}"))?;
+    let number =
+        p.get("number").and_then(Value::as_u64).with_context(|| format!("gh pr view: no PR in {json:.200}"))?;
     Ok(PrHead {
         number,
         url: s("url"),

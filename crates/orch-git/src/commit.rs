@@ -443,9 +443,15 @@ mod tests {
     fn merges_into_a_worktree_and_reports_conflicts() {
         let (d, repo) = scratch_repo();
         let led = MemLedger::default();
-        let integ = worktree::ensure(&led, &repo, &WorktreeKindSpec::Integration { feature: "f".into(), branch: None }, None, None)
-            .unwrap()
-            .path;
+        let integ = worktree::ensure(
+            &led,
+            &repo,
+            &WorktreeKindSpec::Integration { feature: "f".into(), branch: None },
+            None,
+            None,
+        )
+        .unwrap()
+        .path;
         let back = worktree::ensure(
             &led,
             &repo,
@@ -522,9 +528,15 @@ mod tests {
     fn feature() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf, PathBuf) {
         let (d, repo) = scratch_repo();
         let led = MemLedger::default();
-        let integ = worktree::ensure(&led, &repo, &WorktreeKindSpec::Integration { feature: "f".into(), branch: None }, None, None)
-            .unwrap()
-            .path;
+        let integ = worktree::ensure(
+            &led,
+            &repo,
+            &WorktreeKindSpec::Integration { feature: "f".into(), branch: None },
+            None,
+            None,
+        )
+        .unwrap()
+        .path;
         let back = worktree::ensure(
             &led,
             &repo,

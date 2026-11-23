@@ -252,15 +252,16 @@ pub struct RemoveOutcome {
 
 /// D2 (allow-launch-team-on-update-pr): a branch in the app's root that is
 /// not the app's own (`orch/*`) is the head of a PR a linked feature works
-/// on. Its commits that `origin/<branch>` (and `base`) lack: `None` when it
-/// can go. It is never deleted with commits there, even when confirmed, and
-/// never on the remote.
+/// on. Its commits that neither `origin/<branch>` nor the base (`base`,
+/// `origin/<base>`) has: `None` when it can go. It is never deleted with
+/// commits there, even when confirmed (the caller may when it knows the PR
+/// is merged), and never on the remote.
 pub fn unpushed(repo: &Path, branch: &str, base: &str) -> Option<u32> {
     if branch.starts_with("orch/") {
         return None;
     }
     let remote = format!("origin/{branch}");
-    if is_merged(repo, branch, &remote) || is_merged(repo, branch, base) {
+    if [remote.as_str(), base, &format!("origin/{base}")].iter().any(|to| is_merged(repo, branch, to)) {
         return None;
     }
     let n = try_ahead_behind(repo, branch, &remote).map_or_else(|| ahead_behind(repo, branch, base).0, |(a, _)| a);
@@ -344,6 +345,8 @@ fn remove(
     {
         branch = Some(b.to_string());
     }
+    // D2: someone else's branch in our root is a linked feature's PR head.
+    let pr_head = |b: &str| !outside && !b.starts_with("orch/");
     let mut out = RemoveOutcome::default();
     if confirm == Confirm::Safe {
         if outside
@@ -368,7 +371,7 @@ fn remove(
         let tip = match &branch {
             Some(_) if keep_unmerged => None,
             // A PR head (D2) is kept below rather than refused.
-            Some(b) if !b.starts_with("orch/") => None,
+            Some(b) if pr_head(b) => None,
             Some(b) => Some(b.clone()),
             None => git_wt.as_ref().and_then(|w| w.head.clone()),
         };
@@ -417,13 +420,14 @@ fn remove(
         if b == base {
             // Never the base itself (`-d` would delete it when HEAD has it).
             out.log.push(format!("kept branch {b}: it is the base"));
-        } else if keep_unmerged && !is_merged(repo, &b, base) {
-            out.log.push(format!("kept branch {b}: not merged into {base}"));
-            out.kept_branch = Some(b);
-        } else if let Some(n) = unpushed(repo, &b, base) {
+        } else if let Some(n) = unpushed(repo, &b, base).filter(|_| pr_head(&b)) {
+            // A PR head (D2), pruned too: pushed is enough, merged is not needed.
             out.log.push(format!("kept branch {b}: {n} commit(s) not pushed to origin/{b}"));
             out.kept_branch = Some(b);
             out.kept_unpushed = Some(n);
+        } else if keep_unmerged && !pr_head(&b) && !is_merged(repo, &b, base) {
+            out.log.push(format!("kept branch {b}: not merged into {base}"));
+            out.kept_branch = Some(b);
         } else {
             // Merged into the base (checked above) or confirmed: `-D`, since
             // `-d` would check HEAD or the upstream, not the base.
@@ -763,7 +767,28 @@ mod tests {
         std::fs::remove_dir_all(&row.path).unwrap();
         let o = prune_worktree(&repo, &row.path, "main", Some(&row.branch)).unwrap();
         assert!(o.worktree_removed && !o.branch_deleted, "{o:?}");
-        assert_eq!(o.kept_branch.as_deref(), Some("renovate/foo"));
+        assert_eq!((o.kept_branch.as_deref(), o.kept_unpushed), (Some("renovate/foo"), Some(1)));
         assert!(worktree::branch_exists(&repo, "renovate/foo"));
+        // Pushed: a prune deletes it, though not merged into main.
+        let (_d, repo) = with_pr_branch();
+        let row = linked(&store, &repo);
+        std::fs::remove_dir_all(&row.path).unwrap();
+        let o = prune_worktree(&repo, &row.path, "main", Some(&row.branch)).unwrap();
+        assert!(o.worktree_removed && o.branch_deleted, "{o:?}");
+    }
+
+    #[test]
+    fn a_pr_branch_merged_into_origin_base_goes() {
+        let (d, repo) = with_pr_branch();
+        let store = MemLedger::default();
+        let row = linked(&store, &repo);
+        commit_file(&row.path, "fix.txt", "f", "team fix");
+        // The PR was merged (with its head deleted): the fix is in origin/main only.
+        let origin = d.path().join("origin.git");
+        tgit(&row.path, &["push", "-q", origin.to_str().unwrap(), "HEAD:main"]);
+        tgit(&repo, &["fetch", "-q", "origin", "main"]);
+        assert_eq!(unpushed(&repo, "renovate/foo", "main"), None);
+        let o = remove_worktree(&repo, &row.path, "main", true, Confirm::Safe).unwrap();
+        assert!(o.branch_deleted, "{o:?}");
     }
 }

@@ -2258,20 +2258,21 @@ pub(crate) mod tests {
         // (spawning needs Claude Code), the team agent as launched.
         let solo = solo_spec(&core.project("repo").unwrap(), "solo", &NewSession::default()).allocation.unwrap();
         core.teams_view(Some("repo")).unwrap(); // installs the preset teams
-        let launched = core.team_launch(agent_runtime::team::LaunchSpec {
-            project_id: "repo".into(),
-            team_id: "bugfix-squad".into(),
-            slug: "fx".into(),
-            title: "Fix X".into(),
-            brief: "b".into(),
-            base: None,
-            off_hours: false,
-            intake: None,
-            issues: vec![],
-            pr_mode: Default::default(),
-            pr: None,
-        })
-        .unwrap();
+        let launched = core
+            .team_launch(agent_runtime::team::LaunchSpec {
+                project_id: "repo".into(),
+                team_id: "bugfix-squad".into(),
+                slug: "fx".into(),
+                title: "Fix X".into(),
+                brief: "b".into(),
+                base: None,
+                off_hours: false,
+                intake: None,
+                issues: vec![],
+                pr_mode: Default::default(),
+                pr: None,
+            })
+            .unwrap();
         // F8: the launch names its feature.
         assert_eq!(launched["feature"], serde_json::json!({"id": "repo-fx", "slug": "fx", "run_status": "spec"}));
         let feats = core.state()["features"].clone();

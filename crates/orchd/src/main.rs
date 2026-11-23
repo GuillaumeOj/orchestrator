@@ -210,7 +210,9 @@ fn run() -> Result<()> {
             let base = a.opt("--base")?;
             let kind = match a.next("kind")?.as_str() {
                 "solo" => WorktreeKindSpec::Solo { slug: a.next("slug")? },
-                "integration" => WorktreeKindSpec::Integration { feature: a.next("feature")?, branch: a.opt("--branch")? },
+                "integration" => {
+                    WorktreeKindSpec::Integration { feature: a.next("feature")?, branch: a.opt("--branch")? }
+                }
                 "team" => WorktreeKindSpec::Team {
                     feature: a.next("feature")?,
                     role: a.next("role")?,

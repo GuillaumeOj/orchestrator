@@ -24,6 +24,22 @@ pub(crate) fn refused(code: &str, message: impl Into<String>, extra: Value) -> a
     anyhow!(v.to_string())
 }
 
+/// The code of a failed `gh` call (api-contract §2–3): `gh_missing` (not
+/// installed), `gh_auth` (not logged in), else `fallback`.
+pub fn gh_error_code(e: &anyhow::Error, fallback: &'static str) -> &'static str {
+    if e.chain().any(|c| c.downcast_ref::<std::io::Error>().is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound))
+    {
+        return "gh_missing";
+    }
+    let m = format!("{e:#}").to_ascii_lowercase();
+    if ["gh auth login", "not logged in", "authentication", "http 401", "bad credentials"].iter().any(|k| m.contains(k))
+    {
+        "gh_auth"
+    } else {
+        fallback
+    }
+}
+
 /// `{id, slug, run_status}` of a feature (F8, F10); `run_status` null without a run.
 pub fn feature_ref(f: &Feature, run: Option<&orch_store::TeamRun>) -> Value {
     json!({"id": f.id, "slug": f.slug, "run_status": run.map(crate::team::effective)})
@@ -67,6 +83,35 @@ impl PrLaunch {
 }
 
 impl Runtime {
+    /// A linked feature whose PR the watcher saw merged (its latest run).
+    pub(crate) fn linked_pr_merged(&self, f: &Feature) -> bool {
+        f.is_linked()
+            && self
+                .db
+                .runs(Some(&f.id), false)
+                .ok()
+                .and_then(|r| r.into_iter().next())
+                .is_some_and(|r| r.pr.as_ref().is_some_and(|p| p.state == "merged"))
+    }
+
+    /// D2: a PR head branch kept for commits `origin/<head>` lacks goes
+    /// anyway when its linked PR is merged (a merge usually deletes the head
+    /// on GitHub). Never on the remote.
+    pub(crate) fn drop_merged_pr_branch(&self, project: &Project, out: &mut cleanup::RemoveOutcome) {
+        let Some(b) = out.kept_branch.clone().filter(|_| out.kept_unpushed.is_some()) else { return };
+        let features = self.db.features(Some(&project.id)).unwrap_or_default();
+        if !features.iter().any(|f| f.integration_branch() == b && self.linked_pr_merged(f)) {
+            return;
+        }
+        match orch_git::git(&project.path, &["branch", "-D", &b]) {
+            Ok(_) => {
+                out.log.push(format!("deleted branch {b}: its PR is merged"));
+                (out.branch_deleted, out.kept_branch, out.kept_unpushed) = (true, None, None);
+            }
+            Err(e) => out.log.push(format!("kept branch {b}: {e}")),
+        }
+    }
+
     /// `gh pr view <n>` for a launch; tests replace `gh` through `cfg.gh`.
     pub(crate) fn gh_pr_head(&self, dir: &Path, number: u64) -> Result<PrHead> {
         match self.gh_override() {
@@ -82,8 +127,11 @@ impl Runtime {
         project_id: &str,
         number: u64,
     ) -> Result<Option<(Feature, Option<orch_store::TeamRun>)>> {
-        let Some(f) =
-            self.db.features(Some(project_id))?.into_iter().find(|f| f.pr_link.as_ref().is_some_and(|l| l.number == number))
+        let Some(f) = self
+            .db
+            .features(Some(project_id))?
+            .into_iter()
+            .find(|f| f.pr_link.as_ref().is_some_and(|l| l.number == number))
         else {
             return Ok(None);
         };
@@ -115,15 +163,19 @@ impl Runtime {
                 json!({"feature": feature_ref(&f, run.as_ref())}),
             ));
         }
-        let head = self
-            .gh_pr_head(&project.path, n)
-            .map_err(|e| refused("fetch_failed", format!("could not read PR #{n}: {e:#}"), json!({})))?;
+        if !self.cfg.conditions.online() {
+            return Err(refused("offline", format!("offline: PR #{n} can't be read"), json!({})));
+        }
+        let head = self.gh_pr_head(&project.path, n).map_err(|e| {
+            refused(gh_error_code(&e, "fetch_failed"), format!("could not read PR #{n}: {e:#}"), json!({}))
+        })?;
         if head.cross_repo {
             return Err(refused("fork", "Fork PR: the app pushes to origin only", json!({})));
         }
-        if head.state != "open" {
-            let what = if head.state == "merged" { "merged" } else { "closed" };
-            return Err(refused("pr_closed", format!("PR #{n} is {what}"), json!({})));
+        match head.state.as_str() {
+            "open" => {}
+            "merged" => return Err(refused("pr_merged", format!("PR #{n} is merged"), json!({}))),
+            _ => return Err(refused("pr_closed", format!("PR #{n} is closed"), json!({}))),
         }
         let b = &head.head_ref;
         if !orch_git::valid_branch(b) || !orch_git::valid_branch(&head.base_ref) {
@@ -132,7 +184,11 @@ impl Runtime {
         // The app's own branches have their own feature (and the worktree
         // layout cuts a missing `orch/*` branch from the base, G5).
         if b.starts_with("orch/") {
-            return Err(refused("bad_request", format!("PR #{n} is on the app's branch {b}: open its feature"), json!({})));
+            return Err(refused(
+                "bad_request",
+                format!("PR #{n} is on the app's branch {b}: open its feature"),
+                json!({}),
+            ));
         }
         if let Some(e) = self.branch_checked_out(project, b)? {
             return Err(e);
@@ -147,9 +203,11 @@ impl Runtime {
             return Ok(None);
         };
         let path = crate::paths::real(&w.path);
-        let holder = self.db.features(Some(&project.id))?.into_iter().find(|f| {
-            f.integration_worktree.as_deref().map(crate::paths::real).as_deref() == Some(path.as_path())
-        });
+        let holder = self
+            .db
+            .features(Some(&project.id))?
+            .into_iter()
+            .find(|f| f.integration_worktree.as_deref().map(crate::paths::real).as_deref() == Some(path.as_path()));
         let shown = crate::paths::tilde(&path);
         Ok(Some(match holder {
             Some(f) => {

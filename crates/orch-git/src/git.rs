@@ -142,8 +142,30 @@ mod tests {
         for ok in ["renovate/tokio-1.x", "dependabot/cargo/serde-1.0.200", "main", "fix_it", "a/b/c"] {
             assert!(valid_branch(ok), "{ok}");
         }
-        for bad in ["", "-x", "/a", "a/", "a..b", "a//b", "a b", "a~1", "a^", "a:b", "a?", "a*", "a[", "a\\b",
-            "a@{u}", "@", ".a", "a/.b", "a.lock", "a/b.lock/c", "a.", "a\tb"] {
+        for bad in [
+            "",
+            "-x",
+            "/a",
+            "a/",
+            "a..b",
+            "a//b",
+            "a b",
+            "a~1",
+            "a^",
+            "a:b",
+            "a?",
+            "a*",
+            "a[",
+            "a\\b",
+            "a@{u}",
+            "@",
+            ".a",
+            "a/.b",
+            "a.lock",
+            "a/b.lock/c",
+            "a.",
+            "a\tb",
+        ] {
             assert!(!valid_branch(bad), "{bad}");
         }
     }
