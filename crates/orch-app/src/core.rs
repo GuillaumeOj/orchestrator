@@ -1189,6 +1189,11 @@ impl Core {
         Ok(v)
     }
 
+    /// The launch prefill of PR `number` of `project` (allow-launch-team-on-update-pr §5.2).
+    pub fn pr_prefill(&self, project: &str, number: u64) -> Result<Value> {
+        self.runtime()?.pr_prefill(project, number)
+    }
+
     /// FR-103 on demand.
     pub fn project_fetch(&self, id: &str) -> Result<Value> {
         let rt = self.runtime()?;

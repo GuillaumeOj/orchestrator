@@ -52,6 +52,32 @@ pub struct PullRequest {
     pub is_draft: bool,
     pub review_decision: Option<String>,
     pub checks: ChecksSummary,
+    /// `None` for a deleted account (api-contract §8 F9).
+    #[serde(default)]
+    pub author: Option<PrAuthor>,
+    /// The head branch lives in a fork.
+    #[serde(default)]
+    pub cross_repo: bool,
+    #[serde(default)]
+    pub head_sha: String,
+    /// The fork's owner, only when `cross_repo` (F13).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fork_owner: Option<String>,
+}
+
+/// A PR's author; `is_bot` for `author.is_bot`, a `[bot]` suffix or an `app/` prefix (F13).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PrAuthor {
+    pub login: String,
+    pub is_bot: bool,
+}
+
+/// The author of a `gh` PR JSON object; `None` without a login.
+pub fn parse_author(p: &Value) -> Option<PrAuthor> {
+    let login = p["author"]["login"].as_str().filter(|l| !l.is_empty())?.to_string();
+    let is_bot =
+        p["author"]["is_bot"].as_bool().unwrap_or(false) || login.ends_with("[bot]") || login.starts_with("app/");
+    Some(PrAuthor { login, is_bot })
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -347,6 +373,14 @@ pub fn parse_pr_list(json: &str) -> Result<Vec<PullRequest>> {
             is_draft: p["isDraft"].as_bool().unwrap_or(false),
             review_decision: review_decision(p),
             checks: summarize_rollup(&p["statusCheckRollup"]),
+            author: parse_author(p),
+            cross_repo: p["isCrossRepository"].as_bool().unwrap_or(false),
+            head_sha: p["headRefOid"].as_str().unwrap_or("").into(),
+            fork_owner: p["isCrossRepository"]
+                .as_bool()
+                .unwrap_or(false)
+                .then(|| p["headRepositoryOwner"]["login"].as_str().filter(|l| !l.is_empty()).map(str::to_string))
+                .flatten(),
         })
         .collect())
 }
@@ -367,21 +401,18 @@ pub fn available(dir: &Path) -> bool {
     gh(dir, &["auth", "status"]).is_ok()
 }
 
+/// The fields of `gh pr list` (the PR list rows, spec §5.1).
+pub const PR_LIST_FIELDS: &str = "number,title,headRefName,baseRefName,state,url,isDraft,reviewDecision,statusCheckRollup,author,isCrossRepository,headRefOid,headRepositoryOwner";
+
+/// The `gh` arguments of [`prs`].
+pub fn pr_list_args() -> Vec<String> {
+    ["pr", "list", "--state", "open", "--limit", "50", "--json", PR_LIST_FIELDS].map(str::to_string).to_vec()
+}
+
 /// Open PRs with their checks.
 pub fn prs(repo: &Path) -> Result<Vec<PullRequest>> {
-    parse_pr_list(&gh(
-        repo,
-        &[
-            "pr",
-            "list",
-            "--state",
-            "open",
-            "--limit",
-            "50",
-            "--json",
-            "number,title,headRefName,baseRefName,state,url,isDraft,reviewDecision,statusCheckRollup",
-        ],
-    )?)
+    let args = pr_list_args();
+    parse_pr_list(&gh(repo, &args.iter().map(String::as_str).collect::<Vec<_>>())?)
 }
 
 /// Recent workflow runs of a branch.
@@ -679,6 +710,25 @@ mod tests {
         assert_ne!(g(&bare, &["rev-parse", "feat"]).trim(), newer);
         assert!(push_with_lease(&wt, "origin", &newer, "feat", "--force").is_err());
         assert!(push_with_lease(&wt, "--receive-pack=x", &newer, "feat", &new).is_err());
+    }
+
+    #[test]
+    fn pr_list_author_fork_and_head() {
+        let json = r#"[
+          {"number":1,"author":{"login":"renovate[bot]","is_bot":false},"isCrossRepository":false,"headRefOid":"abc"},
+          {"number":2,"author":{"login":"app/dependabot","is_bot":false},"isCrossRepository":true,
+           "headRepositoryOwner":{"login":"someone"}},
+          {"number":3,"author":{"login":"ann","is_bot":false}},
+          {"number":4,"author":null}]"#;
+        let prs = parse_pr_list(json).unwrap();
+        let a = |i: usize| prs[i].author.as_ref().map(|a| (a.login.as_str(), a.is_bot));
+        assert_eq!(
+            (a(0), a(1), a(2), a(3)),
+            (Some(("renovate[bot]", true)), Some(("app/dependabot", true)), Some(("ann", false)), None)
+        );
+        assert_eq!((prs[0].cross_repo, prs[0].head_sha.as_str(), prs[0].fork_owner.as_deref()), (false, "abc", None));
+        assert_eq!((prs[1].cross_repo, prs[1].fork_owner.as_deref()), (true, Some("someone")));
+        assert!(pr_list_args().contains(&PR_LIST_FIELDS.to_string()));
     }
 
     #[test]

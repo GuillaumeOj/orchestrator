@@ -977,6 +977,12 @@ pub async fn project_detail(core: CoreState<'_>, id: String, with_prs: bool) -> 
     blocking(core, move |c| c.project_detail(&id, with_prs)).await
 }
 
+/// The launch prefill of a PR: brief, slug, link, notes, warnings (api-contract §2).
+#[tauri::command]
+pub async fn pr_prefill(core: CoreState<'_>, project: String, number: u64) -> Res<Value> {
+    blocking(core, move |c| c.pr_prefill(&project, number)).await
+}
+
 #[tauri::command]
 pub async fn project_fetch(core: CoreState<'_>, id: String) -> Res<Value> {
     blocking(core, move |c| c.project_fetch(&id)).await

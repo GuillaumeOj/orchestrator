@@ -286,6 +286,7 @@ pub fn run() {
             commands::project_add,
             commands::project_clone,
             commands::project_detail,
+            commands::pr_prefill,
             commands::rename_project,
             commands::set_default_branch,
             commands::project_branches,

@@ -37,6 +37,7 @@ pub mod policy;
 pub mod power;
 pub mod pr;
 pub mod pr_link;
+pub mod pr_prefill;
 pub mod preflight;
 pub mod presets;
 pub mod procs;

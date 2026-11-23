@@ -62,7 +62,7 @@ the UI then runs without agents and says why in a banner.
 The app uses the core services directly (no stubs left):
 
 - **Projects** (§4.1): the store's registry through the runtime (`Runtime::add_project`,
-  `clone_project`, `project_detail`, `fetch_project`, `remove_worktree`, `removal_plan`,
+  `clone_project`, `project_detail`, `pr_prefill`, `fetch_project`, `remove_worktree`, `removal_plan`,
   `remove_project`), backed by [orch-git](../orch-git/README.md). Without a runtime (another core
   owns the socket) the app opens the store itself and can still register projects. Git state for
   the sidebar and status bar: `orch_git::status` every 10 s; background fetch every minute's pass

@@ -69,7 +69,7 @@ impl Runtime {
         Ok(p)
     }
 
-    fn project(&self, id: &str) -> Result<Project> {
+    pub(crate) fn project(&self, id: &str) -> Result<Project> {
         self.db.project(id)?.ok_or_else(|| anyhow!("no project {id}"))
     }
 
@@ -129,7 +129,7 @@ impl Runtime {
             "agents": agents,
         });
         if with_prs {
-            v["prs"] = match orch_git::gh::prs(&p.path) {
+            v["prs"] = match self.pr_list(&p) {
                 Ok(prs) => json!(prs),
                 Err(e) => json!({"error": format!("{e:#}")}),
             };

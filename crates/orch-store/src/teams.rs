@@ -82,8 +82,8 @@ pub struct PrLink {
     pub url: String,
     pub head_ref: String,
     pub base_ref: String,
-    /// The PR head when the feature was launched.
-    #[serde(default)]
+    /// The PR head when the feature was launched (`head_sha` in a launch request, api-contract §3).
+    #[serde(default, alias = "head_sha")]
     pub head_sha_at_link: String,
     #[serde(default)]
     pub author: Option<String>,
