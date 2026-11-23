@@ -463,8 +463,8 @@ impl Runtime {
                     // Closed once `pr_open` (the app had pushed): back to it, followed again.
                     let pushed = pr.is_some_and(|p| p.pushed_sha.is_some());
                     if pushed
-                        && run.status == RunState::Integrating
-                        && self.move_run(&run.id, RunState::PrOpen, "pull request reopened", false).is_ok()
+                        && effective(run) == RunState::Integrating
+                        && self.advance_inner(&run.id, RunState::PrOpen, "pull request reopened", false).is_ok()
                     {
                         tell.push(format!(
                             "ORCH: PR #{n} is open again: the run is back to pr_open; mcp__orch__request_pr pushes \
@@ -590,18 +590,16 @@ impl Runtime {
         }
         self.run_event(&run.id, None, &format!("pr.{what}"), json!({"number": n, "linked": true}));
         self.withdraw_pr_updates(&run.id, None, &why);
-        if merged {
-            // The run is done: a push asked before the merge has nothing left to push to.
-            let run_id = run.id.as_str();
-            self.close_items_where(
-                |i| {
-                    i.payload.get("action") == Some(&json!("push_pr"))
-                        && i.payload.get("linked").is_some_and(Value::is_object)
-                        && i.payload.get("run").and_then(Value::as_str) == Some(run_id)
-                },
-                &why,
-            );
-        }
+        // A push asked before the merge or the close has nothing to push to.
+        let run_id = run.id.as_str();
+        self.close_items_where(
+            |i| {
+                i.payload.get("action") == Some(&json!("push_pr"))
+                    && i.payload.get("linked").is_some_and(Value::is_object)
+                    && i.payload.get("run").and_then(Value::as_str) == Some(run_id)
+            },
+            &why,
+        );
         let title = if merged {
             format!("Feature {} merged", feature.slug)
         } else {
@@ -738,7 +736,8 @@ impl Runtime {
         // foreign commits already in the base (checked above).
         let lease = pr.head_sha.clone();
         let force = !orch_git::cleanup::is_merged(wt, &lease, "HEAD");
-        let commits = gh::commits_since(wt, if force { &base_ref } else { &lease })?;
+        let from = if force { base_ref } else { lease.clone() };
+        let commits = gh::commits_since(wt, &from)?;
         if commits.is_empty() || head == lease {
             bail!("nothing to push: {branch} has no commit that PR #{n} lacks");
         }
@@ -748,16 +747,16 @@ impl Runtime {
             format!("{}: push {} commit(s) to PR #{n} ({branch})", rec.id, commits.len())
         };
         let url = run.pr_url.clone().unwrap_or_default();
-        let id = self.add_item(
-            Some(&rec.id),
-            "gate",
-            title,
-            json!({"action": "push_pr_update", "run": run.id, "issue": null, "branch": branch, "pr_number": n, "url": url,
+        let mut payload = json!({"action": "push_pr_update", "run": run.id, "issue": null, "branch": branch, "pr_number": n, "url": url,
                    "commits": commits.iter().map(|(sha, subject)| json!({"sha": sha, "subject": subject})).collect::<Vec<_>>(),
                    "force": force, "lease_sha": lease, "foreign_replaced": foreign_replaced, "head": head,
-                   "base": pr.base, "worktree": wt}),
-            PRIORITY_GATE,
-        )?;
+                   "base": pr.base, "worktree": wt});
+        // A linked PR is someone else's: its gate shows the team's new commits only.
+        if self.db.feature(&run.feature_id).ok().flatten().is_some_and(|f| f.is_linked()) {
+            payload["linked"] = json!({"number": n, "url": url});
+            payload["diff_base"] = json!(from);
+        }
+        let id = self.add_item(Some(&rec.id), "gate", title, payload, PRIORITY_GATE)?;
         self.db.audit(
             &format!("agent:{}", rec.id),
             Some(&rec.id),

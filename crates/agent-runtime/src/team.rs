@@ -341,7 +341,7 @@ impl Runtime {
         self.advance_inner(run_id, to, why, true)
     }
 
-    fn advance_inner(&self, run_id: &str, to: RunState, why: &str, checked: bool) -> Result<TeamRun> {
+    pub(crate) fn advance_inner(&self, run_id: &str, to: RunState, why: &str, checked: bool) -> Result<TeamRun> {
         let mut run = self.db.run(run_id)?.ok_or_else(|| anyhow!("no team run {run_id}"))?;
         if !run.status.held() || to.held() || to == RunState::Failed {
             return self.move_run(run_id, to, why, checked);
@@ -1599,9 +1599,14 @@ impl Runtime {
             Err(e) => json!({"error": format!("{e:#}")}),
         };
         // D2 (F7): the PR branches kept for their unpushed commits (`null`: git could not count them).
+        // Only the linked feature's own integration branch: other kept branches (unmerged work) are not a PR's.
+        let own = f.is_linked().then(|| f.integration_branch());
         let kept: Vec<Value> = worktrees
             .iter()
-            .filter_map(|r| Some(json!({"branch": r["kept_branch"].as_str()?, "commits": r["kept_unpushed"]})))
+            .filter_map(|r| {
+                let b = r["kept_branch"].as_str().filter(|b| own.as_deref() == Some(*b))?;
+                Some(json!({"branch": b, "commits": r["kept_unpushed"]}))
+            })
             .collect();
         let out = json!({"deleted": f.slug, "agents": agents, "worktrees": worktrees, "app_folder": app_folder, "kept": kept});
         self.db.audit("user", None, "feature_deleted", Some(&f.slug), "ok", out.clone())?;

@@ -1284,12 +1284,12 @@ impl Core {
                     .collect();
                 Ok(json!({"action": "spec_approval", "summary": s("summary"), "docs": docs, "feature_id": feature_id}))
             }
-            "push_pr" => {
+            action @ ("push_pr" | "push_pr_update") => {
                 // A push to a linked PR shows the team's commits only (§5.5): from
                 // its `diff_base` (the lease, or the base after a rebase).
                 let from = Some(s("diff_base")).filter(|b| p.get("linked").is_some() && !b.is_empty());
                 let d = orch_git::diff::diff(&wt, from.as_deref().unwrap_or(&s("base")), DIFF_PATCH_MAX)?;
-                Ok(json!({"action": "push_pr", "title": s("title"), "body": s("body"), "branch": s("branch"),
+                Ok(json!({"action": action, "title": s("title"), "body": s("body"), "branch": s("branch"),
                           "base": s("base"), "files": d.files, "truncated": d.truncated}))
             }
             // A hold the core found still open at a restart (no payload of its own).
@@ -1793,16 +1793,19 @@ pub(crate) mod tests {
                 git(&["branch", "lease"]);
             }
         }
-        let push = |extra: Value| {
-            let mut p = json!({"action": "push_pr", "run": run["id"], "branch": "main", "base": "base",
+        let push_as = |action: &str, extra: Value| {
+            let mut p = json!({"action": action, "run": run["id"], "branch": "main", "base": "base",
                                "worktree": wt.path(), "diff_base": "lease"});
             p.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
             let id = rt.store.write(|s| s.add_inbox_item(None, "gate", "push".into(), p, 20)).unwrap();
             let files = core.gate_detail(&format!("gate-{id}")).unwrap()["files"].clone();
             files.as_array().unwrap().iter().map(|f| f["path"].as_str().unwrap().to_string()).collect::<Vec<_>>()
         };
+        let push = |extra: Value| push_as("push_pr", extra);
         assert_eq!(push(json!({})), ["b.txt", "c.txt"], "unlinked: past the base");
         assert_eq!(push(json!({"linked": {"number": 42}})), ["c.txt"], "linked: the team's commits only");
+        assert_eq!(push_as("push_pr_update", json!({"linked": {"number": 42}})), ["c.txt"], "linked update gate");
+        assert_eq!(push_as("push_pr_update", json!({})), ["b.txt", "c.txt"], "unlinked update gate: past the base");
         let r = core.inbox_act(gate["id"].as_str().unwrap(), "approve", None, None).unwrap();
         assert_eq!(r["lifecycle"]["state"], "sent", "the lead is told");
         assert_eq!(core.state()["features"][0]["run"]["status"], "planning");

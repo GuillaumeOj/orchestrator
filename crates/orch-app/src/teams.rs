@@ -88,11 +88,20 @@ pub fn features(rt: &agent_runtime::runtime::Runtime) -> Result<Vec<Value>> {
                 "branch": f.integration_branch(), "pr_link": f.pr_link, "archived": f.archived, "issues": f.issues, "pr_mode": f.pr_mode,
                 "docs_location": agent_runtime::feature_docs::FeatureDocs::of(&f),
                 "run": run.as_ref().map(|r| json!({"id": r.id, "status": r.status, "team_id": r.team_id, "pr_url": r.pr_url,
+                                                   "pr": run_pr_json(r.pr.as_ref()),
                                                    "prs_view": agent_runtime::issues::prs_view(r, &f, gates.get(&r.id).map_or(&[], Vec::as_slice))})),
                 "tasks": {"done": done, "total": total},
             })
         })
         .collect())
+}
+
+/// The run's PR for the feature list: what the push gate's "PR head moved"
+/// warning reads (`null` while the watcher has seen none).
+fn run_pr_json(pr: Option<&orch_store::PrStatus>) -> Value {
+    pr.map_or(Value::Null, |p| {
+        json!({"state": p.state, "linked": p.linked, "foreign_head": p.foreign_head, "foreign_head_sha": p.foreign_head_sha})
+    })
 }
 
 /// What `task_update` changes: each `None` is left as it is.
@@ -387,6 +396,22 @@ mod tests {
         assert_eq!(linear_move(&lin(&["ENG"], None), &lin(&["OPS"], None)), (true, true));
         // Away from Linear: nothing.
         assert_eq!(linear_move(&lin(&["ENG"], None), &gh), (false, false));
+    }
+
+    #[test]
+    fn the_feature_list_run_carries_the_watched_pr() {
+        assert_eq!(run_pr_json(None), Value::Null);
+        let pr = orch_store::PrStatus {
+            state: "open".into(),
+            linked: true,
+            foreign_head: true,
+            foreign_head_sha: Some("abc".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            run_pr_json(Some(&pr)),
+            json!({"state": "open", "linked": true, "foreign_head": true, "foreign_head_sha": "abc"})
+        );
     }
 
     #[test]

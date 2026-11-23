@@ -144,6 +144,9 @@ fn a_linked_feature_pushes_the_team_commits_to_its_pr_and_never_opens_one() {
         (gate.payload["action"].as_str(), gate.payload["pr_number"].as_u64()),
         (Some("push_pr_update"), Some(42))
     );
+    // The gate shows the team's new commits only: from the lease, on a linked PR.
+    assert_eq!(gate.payload["diff_base"], gate.payload["lease_sha"]);
+    assert_eq!(gate.payload["linked"]["number"], 42);
     rt.decide(gate.id, InboxDecision::Approve, None, None).unwrap();
     let local = rev(&lead_wt(rt), "HEAD");
     wait("the update", || fx.origin_sha() == local);
@@ -290,6 +293,39 @@ fn a_closed_linked_pr_keeps_the_run_refuses_the_push_and_clears_when_reopened() 
     rt.pr_tick(t0 + 8 * MIN);
     assert_eq!(run_of(&fx, &run.id).status, RunState::Done);
     assert_eq!(item(rt, gate.id).status, orch_store::InboxStatus::Dismissed);
+}
+
+#[test]
+fn a_closed_linked_pr_withdraws_the_push_gate_and_a_reopen_while_paused_resumes_into_pr_open() {
+    let fx = fx();
+    let rt = &fx.rt;
+    let run = approved(&fx);
+    let t0 = now_ms();
+    rt.set_run_state(&run.id, RunState::Integrating, "test").unwrap();
+    commit(rt, "fix.txt");
+    ok(rt, LEAD, "request_pr", json!({}));
+    let gate = pending_gate(rt).unwrap();
+    assert_eq!(gate.payload["action"], "push_pr");
+    fx.pr.lock().unwrap().state = "CLOSED";
+    rt.pr_tick(t0 + MIN);
+    rt.pr_tick(t0 + 2 * MIN);
+    assert_eq!(item(rt, gate.id).status, orch_store::InboxStatus::Dismissed, "the push gate goes with the close");
+    assert_eq!(told(rt, "was closed outside the app"), 1);
+
+    // pr_open, closed, then paused: the reopen resumes into pr_open.
+    fx.pr.lock().unwrap().state = "OPEN";
+    rt.pr_tick(t0 + 3 * MIN);
+    ok(rt, LEAD, "request_pr", json!({}));
+    rt.decide(pending_gate(rt).unwrap().id, InboxDecision::Approve, None, None).unwrap();
+    wait("pr_open", || run_of(&fx, &run.id).status == RunState::PrOpen);
+    fx.pr.lock().unwrap().state = "CLOSED";
+    rt.pr_tick(t0 + 4 * MIN);
+    assert_eq!(run_of(&fx, &run.id).status, RunState::Integrating);
+    rt.set_run_state(&run.id, RunState::Paused, "test").unwrap();
+    fx.pr.lock().unwrap().state = "OPEN";
+    rt.pr_tick(t0 + 5 * MIN);
+    let r = run_of(&fx, &run.id);
+    assert_eq!((r.status, r.resume_status), (RunState::Paused, Some(RunState::PrOpen)), "the pause holds");
 }
 
 #[test]
