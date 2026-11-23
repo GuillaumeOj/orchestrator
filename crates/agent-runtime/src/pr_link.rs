@@ -168,8 +168,13 @@ impl Runtime {
                 .ok_or_else(|| fetch(anyhow!("can't compare {local} with {remote}")))?;
             if ahead == 0 && behind > 0 {
                 match holder.as_ref().filter(|_| in_own) {
-                    // A refused merge (local edits in the way) leaves the branch as it was.
-                    Some(w) => drop(orch_git::git(&w.path, &["merge", "--ff-only", "-q", &tip])),
+                    // A refused merge (local edits in the way) leaves the branch as it was. Hooks and
+                    // fsmonitor off: this runs in the core, outside the sandbox, in a worktree the team
+                    // wrote to (a tracked hook script is the agent's to edit).
+                    Some(w) => {
+                        let hooks_off = ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"];
+                        drop(orch_git::git(&w.path, &[&hooks_off[..], &["merge", "--ff-only", "-q", &tip]].concat()))
+                    }
                     None => {
                         let old = gh::rev_sha(repo, &local).unwrap_or_default();
                         orch_git::git(
