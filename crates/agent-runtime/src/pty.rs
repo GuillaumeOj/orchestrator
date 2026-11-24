@@ -5,6 +5,7 @@
 
 use std::collections::VecDeque;
 use std::io::{Read, Write};
+use std::num::NonZeroU16;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
@@ -95,7 +96,7 @@ impl Output {
             let seen = squash(&b.tail_text).contains(TRUST_DIALOG_TEXT)
                 || b.screen.as_ref().is_some_and(|p| {
                     let s = p.screen();
-                    s.rows(0, s.size().1).any(|r| shows_trust_header(&r))
+                    s.rows(0, s.size().1.get()).any(|r| shows_trust_header(&r))
                 });
             self.trust_dialog.store(seen, Ordering::Relaxed);
         }
@@ -158,7 +159,7 @@ impl Output {
     pub fn screen_text(&self) -> Option<String> {
         let b = self.lock();
         let s = b.screen.as_ref()?.screen();
-        Some(s.rows(0, s.size().1).collect::<Vec<_>>().join("\n"))
+        Some(s.rows(0, s.size().1.get()).collect::<Vec<_>>().join("\n"))
     }
 
     /// The PTY was resized: so is the screen model.
@@ -192,8 +193,8 @@ pub const DEFAULT_ROWS: u16 = 50;
 pub const DEFAULT_COLS: u16 = 160;
 
 /// The screen model panics on an empty grid: one cell at least.
-fn grid(rows: u16, cols: u16) -> (u16, u16) {
-    (rows.max(1), cols.max(1))
+fn grid(rows: u16, cols: u16) -> (NonZeroU16, NonZeroU16) {
+    (NonZeroU16::new(rows).unwrap_or(NonZeroU16::MIN), NonZeroU16::new(cols).unwrap_or(NonZeroU16::MIN))
 }
 
 /// One screen row (or line) holds the trust dialog's header.
