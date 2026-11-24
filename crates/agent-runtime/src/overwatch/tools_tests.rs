@@ -680,6 +680,8 @@ fn mentionable(rt: &Runtime, d: &std::path::Path, status: RunState) -> std::path
         issues: vec![],
         pr_mode: Default::default(),
         docs_location: None,
+        branch: None,
+        pr_link: None,
     };
     rt.db.upsert_feature(&f).unwrap();
     set_run(rt, status);

@@ -108,6 +108,29 @@ pub fn valid_id(s: &str) -> bool {
         && !s.starts_with('-')
 }
 
+/// The app's own branches (`orch/solo/…`, `orch/<feature>/…`), never a PR's
+/// head that a linked feature works on.
+pub fn is_app_branch(b: &str) -> bool {
+    b.starts_with("orch/")
+}
+
+/// A branch name git accepts (`git check-ref-format --branch`, without
+/// spawning git) and that is safe on a command line: no leading `-`.
+pub fn valid_branch(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 255
+        && !s.starts_with('-')
+        && !s.starts_with('/')
+        && !s.ends_with('/')
+        && !s.ends_with('.')
+        && !s.contains("..")
+        && !s.contains("//")
+        && !s.contains("@{")
+        && s != "@"
+        && s.chars().all(|c| !c.is_ascii_control() && !" ~^:?*[\\".contains(c))
+        && s.split('/').all(|c| !c.starts_with('.') && !c.ends_with(".lock"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -117,6 +140,39 @@ mod tests {
         assert!(valid_id("solo-fix_1"));
         for bad in ["", "-x", "a/b", "a b", "../x", &"x".repeat(65)] {
             assert!(!valid_id(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn branches() {
+        for ok in ["renovate/tokio-1.x", "dependabot/cargo/serde-1.0.200", "main", "fix_it", "a/b/c"] {
+            assert!(valid_branch(ok), "{ok}");
+        }
+        for bad in [
+            "",
+            "-x",
+            "/a",
+            "a/",
+            "a..b",
+            "a//b",
+            "a b",
+            "a~1",
+            "a^",
+            "a:b",
+            "a?",
+            "a*",
+            "a[",
+            "a\\b",
+            "a@{u}",
+            "@",
+            ".a",
+            "a/.b",
+            "a.lock",
+            "a/b.lock/c",
+            "a.",
+            "a\tb",
+        ] {
+            assert!(!valid_branch(bad), "{bad}");
         }
     }
 

@@ -243,7 +243,36 @@ pub struct RemoveOutcome {
     /// The branch was kept because it is not merged into the base (a
     /// worktree outside the app's root, or a prune).
     pub kept_branch: Option<String>,
+    /// A PR head branch kept because `origin/<branch>` lacks this many of its
+    /// commits (allow-launch-team-on-update-pr D2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kept_unpushed: Option<u32>,
     pub log: Vec<String>,
+}
+
+/// A PR head branch a linked feature works on (allow-launch-team-on-update-pr
+/// D2): kept on removal while it has commits [`unpushed`] counts, unless its
+/// PR is `merged` (a merge usually deletes the head on GitHub). Never deleted
+/// on the remote.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PrBranch {
+    pub branch: String,
+    pub merged: bool,
+}
+
+/// The commits of `branch` that none of `origin/<branch>`, `base` and
+/// `origin/<base>` has (refs that don't resolve are skipped); `None` when
+/// there are none, or no such branch.
+pub fn unpushed(repo: &Path, branch: &str, base: &str) -> Option<u32> {
+    try_unpushed(repo, branch, base).filter(|n| *n > 0)
+}
+
+/// [`unpushed`] with `None` only when git could not tell (never "0 commits").
+pub fn try_unpushed(repo: &Path, branch: &str, base: &str) -> Option<u32> {
+    let (remote, origin_base) = (format!("origin/{branch}"), format!("origin/{base}"));
+    let local = format!("refs/heads/{branch}");
+    let args = ["rev-list", "--count", "--ignore-missing", &local, "--not", &remote, base, &origin_base];
+    git(repo, &args).ok()?.trim().parse().ok()
 }
 
 /// Removes one worktree (and optionally its branch). With `Confirm::Safe` it
@@ -263,27 +292,35 @@ pub fn remove_worktree(
     delete_branch: bool,
     confirm: Confirm,
 ) -> Result<RemoveOutcome> {
-    remove_worktree_of(repo, path, base, None, delete_branch, confirm)
+    remove_worktree_of(repo, path, base, None, &[], delete_branch, confirm)
 }
 
 /// [`remove_worktree`] with the branch the app recorded for it: when git no
 /// longer knows the worktree, that branch is the one deleted (never the base,
-/// never one checked out in another worktree).
+/// never one checked out in another worktree). A branch in `pr_branches`
+/// follows [`PrBranch`]'s rule instead of the base's.
 pub fn remove_worktree_of(
     repo: &Path,
     path: &Path,
     base: &str,
     row_branch: Option<&str>,
+    pr_branches: &[PrBranch],
     delete_branch: bool,
     confirm: Confirm,
 ) -> Result<RemoveOutcome> {
-    remove(repo, path, base, row_branch, delete_branch, confirm, false)
+    remove(repo, path, base, row_branch, pr_branches, delete_branch, confirm, false)
 }
 
 /// Clears a worktree whose folder is gone, wherever it is: git's entry goes
 /// (lock or not: nothing on disk is left to lose), and its branch only when
 /// merged into `base`. A detached HEAD with commits `base` lacks is refused.
-pub fn prune_worktree(repo: &Path, path: &Path, base: &str, row_branch: Option<&str>) -> Result<RemoveOutcome> {
+pub fn prune_worktree(
+    repo: &Path,
+    path: &Path,
+    base: &str,
+    row_branch: Option<&str>,
+    pr_branches: &[PrBranch],
+) -> Result<RemoveOutcome> {
     // Only a folder that is really gone: one that can't be read (permissions,
     // a volume not mounted) is not pruned.
     match real(path).try_exists() {
@@ -291,14 +328,16 @@ pub fn prune_worktree(repo: &Path, path: &Path, base: &str, row_branch: Option<&
         Ok(true) => bail!("{}: its folder is still there", path.display()),
         Err(e) => bail!("{}: can't tell whether its folder is gone: {e}", path.display()),
     }
-    remove(repo, path, base, row_branch, true, Confirm::Safe, true)
+    remove(repo, path, base, row_branch, pr_branches, true, Confirm::Safe, true)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn remove(
     repo: &Path,
     path: &Path,
     base: &str,
     row_branch: Option<&str>,
+    pr_branches: &[PrBranch],
     delete_branch: bool,
     confirm: Confirm,
     prune: bool,
@@ -323,6 +362,8 @@ fn remove(
     {
         branch = Some(b.to_string());
     }
+    // D2: a linked feature's PR head, wherever its worktree is.
+    let pr_head = |b: &str| pr_branches.iter().find(|p| p.branch == b);
     let mut out = RemoveOutcome::default();
     if confirm == Confirm::Safe {
         if outside
@@ -346,6 +387,8 @@ fn remove(
         // kept branch keeps its commits: only a detached HEAD is checked.
         let tip = match &branch {
             Some(_) if keep_unmerged => None,
+            // A PR head (D2) is kept below rather than refused.
+            Some(b) if pr_head(b).is_some() => None,
             Some(b) => Some(b.clone()),
             None => git_wt.as_ref().and_then(|w| w.head.clone()),
         };
@@ -394,7 +437,16 @@ fn remove(
         if b == base {
             // Never the base itself (`-d` would delete it when HEAD has it).
             out.log.push(format!("kept branch {b}: it is the base"));
-        } else if keep_unmerged && !is_merged(repo, &b, base) {
+        } else if pr_head(&b).is_some_and(|p| !p.merged) && try_unpushed(repo, &b, base).is_none() {
+            // Unknown is not "0 unpushed": the commits would be deleted unseen.
+            out.log.push(format!("kept branch {b}: can't tell whether its commits are pushed to origin/{b}"));
+            out.kept_branch = Some(b);
+        } else if let Some(n) = pr_head(&b).filter(|p| !p.merged).and_then(|_| unpushed(repo, &b, base)) {
+            // A PR head (D2), pruned too: pushed is enough, merged is not needed.
+            out.log.push(format!("kept branch {b}: {n} commit(s) not pushed to origin/{b}"));
+            out.kept_branch = Some(b);
+            out.kept_unpushed = Some(n);
+        } else if keep_unmerged && pr_head(&b).is_none() && !is_merged(repo, &b, base) {
             out.log.push(format!("kept branch {b}: not merged into {base}"));
             out.kept_branch = Some(b);
         } else {
@@ -654,7 +706,7 @@ mod tests {
         let work = solo(&store, &repo, "work");
         commit_file(&work.path, "w.txt", "w", "unmerged work");
         std::fs::remove_dir_all(&work.path).unwrap();
-        let o = prune_worktree(&repo, &work.path, "main", Some(&work.branch)).unwrap();
+        let o = prune_worktree(&repo, &work.path, "main", Some(&work.branch), &[]).unwrap();
         assert!(o.worktree_removed && !o.branch_deleted, "{o:?}");
         assert_eq!(o.kept_branch.as_deref(), Some("orch/solo/work"));
         assert!(!listed(&repo, &work.path));
@@ -662,12 +714,126 @@ mod tests {
         let gone = outside(&repo, &repo.parent().unwrap().join("mine/gone"), "gone");
         tgit(&repo, &["worktree", "lock", "--reason", "claude agent", gone.to_str().unwrap()]);
         std::fs::remove_dir_all(&gone).unwrap();
-        let o = prune_worktree(&repo, &gone, "main", None).unwrap();
+        let o = prune_worktree(&repo, &gone, "main", None, &[]).unwrap();
         assert!(o.worktree_removed && o.branch_deleted, "{o:?}");
         assert!(!listed(&repo, &gone));
         // A folder still there is not pruned.
         let here = solo(&store, &repo, "here");
-        assert!(prune_worktree(&repo, &here.path, "main", None).unwrap_err().to_string().contains("still there"));
+        assert!(prune_worktree(&repo, &here.path, "main", None, &[]).unwrap_err().to_string().contains("still there"));
         assert!(here.path.is_dir());
+    }
+
+    /// A repo with a bare `origin` holding `renovate/foo` one commit past `main`.
+    fn with_pr_branch() -> (tempfile::TempDir, PathBuf) {
+        let (d, repo) = scratch_repo();
+        let origin = d.path().join("origin.git");
+        tgit(d.path(), &["clone", "-q", "--bare", repo.to_str().unwrap(), origin.to_str().unwrap()]);
+        tgit(&repo, &["remote", "add", "origin", origin.to_str().unwrap()]);
+        tgit(&repo, &["checkout", "-q", "-b", "renovate/foo"]);
+        commit_file(&repo, "dep.txt", "2", "bump dep");
+        tgit(&repo, &["push", "-q", "origin", "renovate/foo"]);
+        tgit(&repo, &["checkout", "-q", "main"]);
+        tgit(&repo, &["branch", "-q", "-D", "renovate/foo"]);
+        (d, repo)
+    }
+
+    fn pr(merged: bool) -> [PrBranch; 1] {
+        [PrBranch { branch: "renovate/foo".into(), merged }]
+    }
+
+    fn remove_pr(repo: &Path, row: &WorktreeRow, confirm: Confirm, merged: bool) -> RemoveOutcome {
+        remove_worktree_of(repo, &row.path, "main", None, &pr(merged), true, confirm).unwrap()
+    }
+
+    fn linked(store: &MemLedger, repo: &Path) -> WorktreeRow {
+        let kind = WorktreeKindSpec::Integration { feature: "pr-42".into(), branch: Some("renovate/foo".into()) };
+        worktree::ensure(store, repo, &kind, Some("main"), None).unwrap()
+    }
+
+    #[test]
+    fn a_pr_branch_with_unpushed_commits_is_kept_even_when_confirmed() {
+        let (_d, repo) = with_pr_branch();
+        let store = MemLedger::default();
+        // G5: no local branch: cut from origin/renovate/foo, not from main.
+        let row = linked(&store, &repo);
+        assert_eq!(row.base, "main");
+        let head = |r: &str| tgit(&repo, &["rev-parse", r]).trim().to_string();
+        assert_eq!(head("renovate/foo"), head("origin/renovate/foo"));
+        assert!(tgit(&repo, &["rev-parse", "--abbrev-ref", "renovate/foo@{u}"]).contains("origin/renovate/foo"));
+        commit_file(&row.path, "fix.txt", "f", "team fix");
+        assert_eq!(unpushed(&repo, "renovate/foo", "main"), Some(1));
+        let o = remove_pr(&repo, &row, Confirm::DiscardUnmerged, false);
+        assert!(o.worktree_removed && !o.branch_deleted, "{o:?}");
+        assert_eq!((o.kept_branch.as_deref(), o.kept_unpushed), (Some("renovate/foo"), Some(1)));
+        assert!(o.log.iter().any(|l| l == "kept branch renovate/foo: 1 commit(s) not pushed to origin/renovate/foo"));
+        assert!(worktree::branch_exists(&repo, "renovate/foo"));
+        // Nothing on the remote moved.
+        assert_ne!(head("renovate/foo"), head("origin/renovate/foo"));
+    }
+
+    #[test]
+    fn a_merged_pr_branch_goes_with_unpushed_commits_and_an_unknown_one_keeps_the_base_rule() {
+        let (_d, repo) = with_pr_branch();
+        let store = MemLedger::default();
+        let row = linked(&store, &repo);
+        commit_file(&row.path, "fix.txt", "f", "team fix");
+        // Squash-merged on GitHub: the caller knows, git does not.
+        let o = remove_pr(&repo, &row, Confirm::Safe, true);
+        assert!(o.worktree_removed && o.branch_deleted, "{o:?}");
+        // Not passed as a PR head: refused as unmerged into main, as before.
+        let (_d, repo) = with_pr_branch();
+        let row = linked(&store, &repo);
+        let e = remove_worktree(&repo, &row.path, "main", true, Confirm::Safe).unwrap_err().to_string();
+        assert!(e.contains("not merged into main"), "{e}");
+    }
+
+    #[test]
+    fn a_pushed_pr_branch_goes_and_is_not_refused_as_unmerged() {
+        let (_d, repo) = with_pr_branch();
+        let store = MemLedger::default();
+        let row = linked(&store, &repo);
+        assert_eq!(unpushed(&repo, "renovate/foo", "main"), None);
+        // Not merged into main, but pushed: Safe does not ask for a confirmation.
+        let o = remove_pr(&repo, &row, Confirm::Safe, false);
+        assert!(o.worktree_removed && o.branch_deleted, "{o:?}");
+        assert_eq!(o.kept_unpushed, None);
+        assert!(!worktree::branch_exists(&repo, "renovate/foo"));
+        assert!(git_ok(&repo, &["rev-parse", "--verify", "--quiet", "refs/remotes/origin/renovate/foo"]));
+        // The app's own branches keep the old rule.
+        assert_eq!(unpushed(&repo, "orch/x/integration", "main"), None);
+    }
+
+    #[test]
+    fn a_pruned_pr_branch_with_unpushed_commits_is_kept() {
+        let (_d, repo) = with_pr_branch();
+        let store = MemLedger::default();
+        let row = linked(&store, &repo);
+        commit_file(&row.path, "fix.txt", "f", "team fix");
+        std::fs::remove_dir_all(&row.path).unwrap();
+        let o = prune_worktree(&repo, &row.path, "main", Some(&row.branch), &pr(false)).unwrap();
+        assert!(o.worktree_removed && !o.branch_deleted, "{o:?}");
+        assert_eq!((o.kept_branch.as_deref(), o.kept_unpushed), (Some("renovate/foo"), Some(1)));
+        assert!(worktree::branch_exists(&repo, "renovate/foo"));
+        // Pushed: a prune deletes it, though not merged into main.
+        let (_d, repo) = with_pr_branch();
+        let row = linked(&store, &repo);
+        std::fs::remove_dir_all(&row.path).unwrap();
+        let o = prune_worktree(&repo, &row.path, "main", Some(&row.branch), &pr(false)).unwrap();
+        assert!(o.worktree_removed && o.branch_deleted, "{o:?}");
+    }
+
+    #[test]
+    fn a_pr_branch_merged_into_origin_base_goes() {
+        let (d, repo) = with_pr_branch();
+        let store = MemLedger::default();
+        let row = linked(&store, &repo);
+        commit_file(&row.path, "fix.txt", "f", "team fix");
+        // The PR was merged (with its head deleted): the fix is in origin/main only.
+        let origin = d.path().join("origin.git");
+        tgit(&row.path, &["push", "-q", origin.to_str().unwrap(), "HEAD:main"]);
+        tgit(&repo, &["fetch", "-q", "origin", "main"]);
+        assert_eq!(unpushed(&repo, "renovate/foo", "main"), None);
+        let o = remove_pr(&repo, &row, Confirm::Safe, false);
+        assert!(o.branch_deleted, "{o:?}");
     }
 }

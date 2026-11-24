@@ -2,6 +2,8 @@
 //! `origin/<base>` into the integration branch by a rebase run by the core
 //! (hooks off, the lead's identity), continued by the lead's `commit` on a
 //! conflict; once done, the specialists' merged branches follow it.
+//! A feature on someone else's PR can also bring the PR head in (`onto:
+//! "pr_head"`, allow-launch-team-on-update-pr §5.4).
 
 use anyhow::{Result, anyhow, bail};
 use governor::TurnKind;
@@ -16,15 +18,35 @@ use crate::store::AgentRecord;
 use crate::team::{RunCtx, effective};
 
 impl Runtime {
-    /// `rebase_base {abort?}` (lead only; checked by the caller).
+    /// `rebase_base {abort?, onto?}` (lead only; checked by the caller).
     pub(crate) fn rebase_base(&self, cx: &RunCtx, rec: &AgentRecord, args: &Value) -> Result<(String, Value)> {
         let gitconfig = self.agent_gitconfig(&rec.id);
         if args.get("abort").and_then(Value::as_bool).unwrap_or(false) {
             let r = commit::rebase_abort(&rec.worktree, gitconfig.as_deref());
-            return self.rebase_reply(cx, rec, r);
+            // The rebase is over: its recorded target goes with it.
+            commit::set_rebase_label(&rec.worktree, None);
+            return self.rebase_reply(cx, rec, r, &format!("origin/{}", cx.feature.base));
         }
+        // The branch brought in: the base, or (a linked feature) the PR head.
+        let pr_head = match args.get("onto").and_then(Value::as_str).unwrap_or("base") {
+            "base" => false,
+            "pr_head" => true,
+            o => bail!("onto is \"base\" or \"pr_head\", not {o:?}"),
+        };
+        let target = match (&cx.feature.pr_link, pr_head) {
+            (_, false) => cx.feature.base.clone(),
+            (Some(l), true) => l.head_ref.clone(),
+            (None, true) => {
+                bail!("onto \"pr_head\" is for a feature on someone else's PR: this one has its own branch")
+            }
+        };
         let state = effective(&cx.run);
-        if !matches!(state, RunState::Integrating | RunState::PrOpen) {
+        if pr_head {
+            // G4: a head moved while the tasks run can come in between them.
+            if !matches!(state, RunState::Planning | RunState::Executing | RunState::Integrating | RunState::PrOpen) {
+                bail!("the PR head is brought in once the spec is approved (this run is {})", state.label());
+            }
+        } else if !matches!(state, RunState::Integrating | RunState::PrOpen) {
             bail!("the base is brought in while integrating or once the PR is open (this run is {})", state.label());
         }
         if self.pending_pr_gate(&rec.id, Some(&cx.run.id)) {
@@ -44,15 +66,23 @@ impl Runtime {
         if !busy.is_empty() {
             bail!("every task must be merged first; still open: {}", busy.join(", "));
         }
-        let base = &cx.feature.base;
         {
             // Not beside the PR watcher's own fetch in the same repo (ref locks).
             let _watch = self.pr_watch.lock().unwrap_or_else(|e| e.into_inner());
-            gh::fetch_branches(&rec.worktree, &[base], FETCH_DEADLINE)
-                .map_err(|e| anyhow!("fetching origin/{base} failed: {e:#}"))?;
+            // An explicit refspec: `origin/<head>` is updated even when the
+            // remote's fetch refspec leaves the PR branch out.
+            let spec = gh::branch_refspec(&target);
+            gh::fetch_branches(&rec.worktree, &[&spec], FETCH_DEADLINE)
+                .map_err(|e| anyhow!("fetching origin/{target} failed: {e:#}"))?;
         }
-        let r = commit::rebase_worktree(&rec.worktree, &format!("origin/{base}"), gitconfig.as_deref());
-        self.rebase_reply(cx, rec, r)
+        // Behind only (no team commit yet): git fast-forwards.
+        let onto = format!("origin/{target}");
+        let r = commit::rebase_worktree(&rec.worktree, &onto, gitconfig.as_deref());
+        // A stop on conflicts is continued later: remember what it brings in.
+        if matches!(r, Ok(RebaseOutcome::Conflict { .. })) {
+            commit::set_rebase_label(&rec.worktree, Some(&onto));
+        }
+        self.rebase_reply(cx, rec, r, &onto)
     }
 
     /// The lead's `commit` while its rebase is in progress: continues it.
@@ -64,9 +94,16 @@ impl Runtime {
             Some(seat) => Some(self.run_ctx(&seat.run_id)?).filter(|cx| cx.team.is_lead(&seat.node)),
             None => None,
         };
+        // What the rebase replays onto, as recorded when it started (base or PR head).
+        let onto = lead_cx
+            .as_ref()
+            .map(|cx| commit::rebase_label(&rec.worktree).unwrap_or_else(|| format!("origin/{}", cx.feature.base)));
         let r = commit::rebase_continue(&rec.worktree, self.agent_gitconfig(&rec.id).as_deref());
+        if !matches!(r, Ok(RebaseOutcome::Conflict { .. })) {
+            commit::set_rebase_label(&rec.worktree, None);
+        }
         match lead_cx {
-            Some(cx) => self.rebase_reply(&cx, rec, r),
+            Some(cx) => self.rebase_reply(&cx, rec, r, onto.as_deref().unwrap_or_default()),
             None => {
                 let r = r?;
                 Ok((format!("Rebase: {}", json!(r)), json!(r)))
@@ -76,8 +113,13 @@ impl Runtime {
 
     /// Audits a rebase step and words its outcome for the lead; a finished
     /// rebase moves the specialists' branches ([`Runtime::after_rebase`]).
-    fn rebase_reply(&self, cx: &RunCtx, rec: &AgentRecord, r: Result<RebaseOutcome>) -> Result<(String, Value)> {
-        let base = format!("origin/{}", cx.feature.base);
+    fn rebase_reply(
+        &self,
+        cx: &RunCtx,
+        rec: &AgentRecord,
+        r: Result<RebaseOutcome>,
+        base: &str,
+    ) -> Result<(String, Value)> {
         let integ = cx.feature.integration_branch();
         let (decision, mut detail) = match &r {
             Ok(o) => (
@@ -92,7 +134,7 @@ impl Runtime {
             Err(e) => ("failed", json!({"error": format!("{e:#}")})),
         };
         let moved = match &r {
-            Ok(RebaseOutcome::Rebased { from, to }) => self.after_rebase(cx, rec, from, to, &base),
+            Ok(RebaseOutcome::Rebased { from, to }) => self.after_rebase(cx, rec, from, to, base),
             _ => vec![],
         };
         if !moved.is_empty() {
@@ -168,7 +210,9 @@ impl Runtime {
                 TurnKind::Continue,
             );
         }
-        if effective(&cx.run) == RunState::PrOpen
+        // A linked PR is watched from launch: its foreign head clears now.
+        let linked = cx.feature.pr_link.is_some() && cx.run.pr_number.is_some();
+        if (effective(&cx.run) == RunState::PrOpen || linked)
             && let Some(me) = self.me.upgrade()
         {
             let run = cx.run.id.clone();

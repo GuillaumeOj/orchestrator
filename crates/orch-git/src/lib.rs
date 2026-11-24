@@ -15,4 +15,4 @@ pub mod worktree;
 #[cfg(any(test, feature = "fixtures"))]
 pub mod fixtures;
 
-pub use git::{git, real, valid_id};
+pub use git::{git, is_app_branch, real, valid_branch, valid_id};

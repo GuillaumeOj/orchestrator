@@ -19,6 +19,8 @@
   import { counts, liveText } from '../lib/now.svelte.js';
   import { EFFORTS, MODEL_CHOICES, PERMISSION_MODES } from '../lib/options.js';
   import { nextOffHours, OFF_DISABLED, offHoursAllowed } from '../lib/pacing.js';
+  import { authorName, codedOf, launchError, midCut, prefillError, warningText } from '../lib/prlaunch.js';
+  import { branchOf, deleteCopy } from '../lib/prlink.js';
   import { PRESSURE } from '../lib/status.js';
   import { runFinished, slugify } from '../lib/teams.js';
   import { tooltip } from '../lib/tooltip.js';
@@ -42,6 +44,7 @@
   // P4.5: the item or brief went stale while the dialog was open (notes §5.3); the form is disabled.
   let stale = $state(null);
   let startBtn = $state();
+  let closeBtn = $state();
   let briefEl = $state();
   let messageEl = $state();
   // New session
@@ -59,6 +62,41 @@
   // Launch on feature
   let launch = $state({ project_id: '', team_id: '', existing: '', slug: '', title: '', brief: '', base: '', off_hours: false });
   // allow-multiple-prs: the Issues chips and the Pull requests choice (ux-brief §1).
+  // Launch on a PR (notes §2): `pr_prefill` is read once the dialog is open (loading → ready | error).
+  const prState = (phase, o = {}) => ({ phase, error: null, pr: null, notes: null, warnings: [], slow: false, launchErr: null, ...o });
+  let prs = $state(prState('ready'));
+  const short = (x) => shortPath(x, app.data?.core?.user_home ?? '');
+  const isPr = $derived(o?.kind === 'launch' && o.origin?.kind === 'pr');
+  const row = $derived(isPr ? o.origin.row : null);
+  const pre = $derived(!!o?.prefill || isPr);
+  let slowTimer = null;
+  async function loadPr(ov) {
+    clearTimeout(slowTimer);
+    const r = ov.origin.row;
+    prs = prState('loading');
+    slowTimer = setTimeout(() => app.overlay === ov && (prs.slow = true), 8000);
+    try {
+      const res = await invoke('pr_prefill', { project: ov.projectId, number: r.number });
+      if (app.overlay !== ov) return; // cancelled: the late answer is dropped
+      clearTimeout(slowTimer);
+      const pf = res.launch;
+      launch = { project_id: pf.project_id ?? ov.projectId, team_id: pf.team_id ?? launch.team_id, existing: '', slug: pf.slug ?? '', title: pf.title ?? '', brief: pf.brief ?? '', base: '', off_hours: !!pf.off_hours };
+      issueChips = (pf.issues ?? []).map((x) => chipOf(x));
+      prMode = 'single';
+      prs = prState('ready', { pr: pf.pr ?? null, notes: res.notes ?? null, warnings: res.warnings ?? [] });
+      queueMicrotask(() => {
+        if (briefEl) briefEl.scrollTop = 0;
+        startBtn?.focus();
+      });
+    } catch (e) {
+      if (app.overlay !== ov) return;
+      clearTimeout(slowTimer);
+      const err = prefillError(codedOf(e), r.number);
+      prs = prState('error', { error: err });
+      queueMicrotask(() => (startBtn ?? closeBtn)?.focus());
+      if (['pr_closed', 'pr_merged', 'active_feature'].includes(codedOf(e).code)) ov.onStale?.();
+    }
+  }
   let issueChips = $state([]);
   let prMode = $state('single');
   let issueError = $state(null);
@@ -103,6 +141,18 @@
       const pf = ov.prefill;
       const project_id = pf?.project_id ?? ov.projectId ?? contextProject()?.id ?? '';
       stale = null;
+      if (ov.origin?.kind === 'pr') {
+        launch = { project_id, team_id: '', existing: '', slug: '', title: '', brief: '', base: '', off_hours: false };
+        issueChips = [];
+        prMode = 'single';
+        issueError = null;
+        loadPr(ov);
+        invoke('planner_view')
+          .then((pv) => (offHours = pv.off_hours ?? null))
+          .catch(() => (offHours = null));
+        loadTeams(project_id);
+        return;
+      }
       launch = pf
         ? { project_id, team_id: pf.team_id ?? '', existing: '', slug: pf.slug ?? '', title: pf.title ?? '', brief: pf.brief ?? '', base: pf.base ?? '', off_hours: !!pf.off_hours }
         : { project_id, team_id: ov.teamId ?? '', existing: '', slug: '', title: '', brief: '', base: '', off_hours: false };
@@ -168,19 +218,33 @@
 
   async function launchTeamOnFeature() {
     if (busy || stale) return;
+    if (isPr && (prs.phase !== 'ready' || (prs.launchErr && !prs.launchErr.keep))) return;
     busy = true;
     error = null;
+    if (isPr) prs.launchErr = null;
     const slug = launchSlug;
     const teamName = launchTeam?.team.name ?? launch.team_id;
+    // The dialog may be closed (esc) while the launch runs: read what the answer needs now.
+    const ov = o;
+    const onPr = isPr;
+    const prRow = row;
     try {
       const run = await invoke('team_launch', {
-        form: { project_id: launch.project_id, team_id: launch.team_id, slug, title: launch.title, brief: launch.brief, base: launch.base || null, off_hours: launch.off_hours || undefined, intake: o.intake ?? undefined, issues: issueTexts(issueChips), pr_mode: mode },
+        form: { project_id: launch.project_id, team_id: launch.team_id, slug, title: launch.title, brief: launch.brief, base: isPr ? null : launch.base || null, off_hours: launch.off_hours || undefined, intake: o.intake ?? undefined, issues: issueTexts(issueChips), pr_mode: mode, pr: isPr ? prs.pr : undefined },
       });
+      if (onPr) ov.onLaunched?.(run.feature);
       close();
       await refresh();
       openFeature(run.feature_id);
       toast(`Launched ${teamName} on ${slug} · the lead starts when the Governor admits it`);
     } catch (e) {
+      if (onPr) {
+        const c = codedOf(e);
+        if (['pr_closed', 'pr_merged', 'fork', 'active_feature'].includes(c.code)) ov.onStale?.();
+        busy = false;
+        if (app.overlay === ov) prs.launchErr = launchError(c, prRow, short);
+        return;
+      }
       const c = parseCoded(errText(e));
       if (['bad_ref', 'too_many', 'per_issue_needs_two', 'issue_has_pr', 'pr_busy'].includes(c.code)) {
         const msg = issueErrorText(c);
@@ -195,12 +259,21 @@
   // default (unmerged ones are kept unless discarded); an agent's worktree
   // (merged? dirty? shared?) decides its default once its plan is loaded.
   let del = $state({ plan: null, remove: false, discard: false });
+  let fplan = $state(null); // feature_delete_plan: { branch, linked, unpushed }
   $effect(() => {
     const ov = o;
     if (!ov?.kind.startsWith('delete-')) return;
     untrack(() => {
       del = { plan: null, remove: ov.kind === 'delete-feature', discard: false };
       error = null;
+      fplan = null;
+      if (ov.kind === 'delete-feature') {
+        // What deleting would keep (F7); without it the generic copy ships.
+        invoke('feature_delete_plan', { feature: ov.featureId })
+          .then((plan) => app.overlay === ov && (fplan = plan))
+          .catch(() => {});
+        return;
+      }
       if (ov.kind !== 'delete-agent') return;
       invoke('agent_action', { id: ov.agentId, action: 'delete_plan', message: null })
         .then((plan) => {
@@ -234,6 +307,7 @@
   const confirmDeleteAgent = () => runDelete(o.agentId, () => deleteAgent(o.agentId, del.remove, del.discard));
 
   const delFeature = $derived(o?.kind === 'delete-feature' ? features().find((f) => f.id === o.featureId) : null);
+  const delCopy = $derived(delFeature ? deleteCopy(delFeature, fplan) : null);
   const delFeatureAgents = $derived(delFeature ? activeAgents().filter((a) => a.team?.feature_id === delFeature.id) : []);
 
   const confirmDeleteFeature = () => runDelete(delFeature?.slug ?? o.featureId, () => deleteFeature(o.featureId, del.remove, del.discard));
@@ -413,6 +487,8 @@
     {#if blocked}<p class="note warnline" data-blocked><span aria-hidden="true">{'\u{F0026}'}</span> {blocked}</p>{/if}
     {#if org.write_back_line}<p class="muted note" data-writeback>On start: {org.write_back_line}</p>{/if}
     {#if est}<p class="muted note" data-estimate>{est}</p>{/if}
+  {:else if o.origin?.kind === 'pr'}
+    <p class="muted note" data-untrusted>This text comes from GitHub (the pull request and its check logs). It goes to the agent as part of the brief you send.</p>
   {:else if o.origin?.kind === 'brief'}
     <!-- A brief's estimate is its cost block's (notes §5.2). -->
     {@const dec = app.now.decisions?.[o.origin.decision]}
@@ -470,47 +546,87 @@
     </form>
     </FloatingWindow>
   {:else if o.kind === 'launch'}
-    <FloatingWindow title="Launch {launchTeam?.team.name ?? 'a team'}" size={o.prefill ? PREFILLED : WIDE} minW={DIALOG_MIN_W} onclose={close} onkeydown={(e) => onKey(e, launchTeamOnFeature)}>
+    <FloatingWindow title="Launch {launchTeam?.team.name ?? 'a team'}" size={pre ? PREFILLED : WIDE} minW={DIALOG_MIN_W} onclose={close} onkeydown={(e) => onKey(e, launchTeamOnFeature)}>
     <form onsubmit={(e) => (e.preventDefault(), launchTeamOnFeature())}>
       {@render fromIntake()}
+      {#if isPr && prs.phase === 'error'}
+        {@const er = prs.error}
+        <p class="err" role="alert" data-prefill-error>{er.text}</p>
+        <div class="foot">
+          <button type="button" class={er.open || er.again ? 'btn ghost' : 'btn primary'} bind:this={closeBtn} onclick={close} use:tooltip={{ label: 'Close', key: 'esc' }}>Close</button>
+          {#if er.open}<button type="button" class="btn primary" bind:this={startBtn} onclick={() => { const f = er.open; close(); openFeature(f.id); }}>Open feature</button>{/if}
+          {#if er.again}<button type="button" class="btn primary" bind:this={startBtn} onclick={() => loadPr(o)}>Try again</button>{/if}
+        </div>
+      {:else}
+      {#if !isPr}
       <div class="seg" role="radiogroup" aria-label="Feature">
         <button type="button" class:on={!launch.existing} onclick={() => pickExisting('')}>New feature</button>
         {#each free as f (f.id)}<button type="button" class:on={launch.existing === f.id} onclick={() => pickExisting(f.id)}>Existing: {f.slug}</button>{/each}
       </div>
+      {/if}
+      {@const loading = isPr && prs.phase === 'loading'}
       <div class="row">
-        <label>Project
-          <Select value={launch.project_id} options={projectOptions} noun="project" onchange={setLaunchProject} />
-        </label>
+        {#if isPr}
+          <div class="works"><span class="lbl">Project</span><span class="field static" data-project>{projects().find((p) => p.id === launch.project_id)?.name ?? launch.project_id}</span></div>
+        {:else}
+          <label>Project
+            <Select value={launch.project_id} options={projectOptions} noun="project" onchange={setLaunchProject} />
+          </label>
+        {/if}
         <label>Team
-          <Select bind:value={launch.team_id} options={teamOptions} noun="team" />
+          <Select bind:value={launch.team_id} options={teamOptions} noun="team" disabled={loading} />
         </label>
       </div>
       {#if !launch.existing}
         <div class="row">
-          <label>Slug <input class="field mono" bind:value={launch.slug} placeholder={slugify(launch.title) || 'search-v2'} spellcheck="false" /></label>
+          {#if loading}
+            <div class="works"><span class="lbl">Slug</span><span class="skel" data-skeleton></span></div>
+          {:else}
+            <label>Slug <input class="field mono" bind:value={launch.slug} placeholder={slugify(launch.title) || 'search-v2'} spellcheck="false" /></label>
+          {/if}
+          {#if isPr}
+            <div class="works" data-works-on use:tooltip={'The pull request and its branches. Fixed: the team works on this branch.'}>
+              <span class="lbl">Works on</span>
+              <span class="wline"><button type="button" class="linkbtn" onclick={() => openUrl(row.url)} aria-label="Open PR #{row.number} in GitHub">PR #{row.number} ↗</button> · <span class="mono" title={row.head_ref}>{midCut(row.head_ref)} → {row.base_ref}</span> · {#if row.author?.is_bot}<span role="img" aria-label="bot">{'\u{F06A9}'}</span> {/if}{authorName(row.author)}{row.is_draft ? ' · draft' : ''}</span>
+            </div>
+          {:else}
           <label>Base <input class="field mono" bind:value={launch.base} placeholder={projects().find((p) => p.id === launch.project_id)?.default_branch ?? 'main'} spellcheck="false" /></label>
+          {/if}
         </div>
-        <!-- svelte-ignore a11y_autofocus -->
-        <label>Title <input class="field" bind:value={launch.title} autofocus={!o.prefill} disabled={!!stale} placeholder="Search v2" /></label>
+        {#if loading}
+          <div class="works"><span class="lbl">Title</span><span class="skel" data-skeleton></span></div>
+        {:else}
+          <!-- svelte-ignore a11y_autofocus -->
+          <label>Title <input class="field" bind:value={launch.title} autofocus={!pre} disabled={!!stale} placeholder="Search v2" /></label>
+        {/if}
       {/if}
-      <label>Brief <span class="muted">({o.prefill ? 'the item as markdown' : '3 lines'})</span>
-        <textarea class="field" rows={o.prefill ? 12 : 3} bind:value={launch.brief} bind:this={briefEl} disabled={!!stale} placeholder="What to build, the constraints, where the designs are."></textarea>
+      <label>Brief <span class="muted">({isPr ? 'the PR and its failing checks, as markdown' : o.prefill ? 'the item as markdown' : '3 lines'})</span>
+        <textarea class="field" rows={pre ? 12 : 3} bind:value={launch.brief} bind:this={briefEl} disabled={!!stale || loading} placeholder={loading ? `Reading PR #${row.number}, its checks and the failed logs from GitHub…${prs.slow ? '\nStill reading. Failing logs can take a while.' : ''}` : 'What to build, the constraints, where the designs are.'}></textarea>
       </label>
+      {#if isPr && prs.notes?.logs === 'cut'}<p class="muted cap" data-logs-cut>Logs are cut to the last 60 lines of each failing job, 4 jobs at most.</p>{/if}
       <div class="field-group">
         <label for="launch-issues">Issues <span class="muted">(optional)</span></label>
-        <IssuesField id="launch-issues" bind:chips={issueChips} project={launch.project_id} locked={existingLocked} disabled={!!stale} error={issueError} />
+        <IssuesField id="launch-issues" bind:chips={issueChips} project={launch.project_id} locked={existingLocked} disabled={!!stale || loading} error={issueError} />
       </div>
+      {#if !isPr}
       <div class="field-group">
         <span class="lbl" id="launch-prs">Pull requests</span>
         <PrModeControl value={mode} refs={issueChips.map((c) => c.ref)} count={issueChips.length} locked={existingModeLocked} onchange={(m) => ((prMode = m), (issueError = null))} />
       </div>
+      {/if}
       {@render scopeNote()}
       <div class="note what">
-        <span>• Creates <span class="mono">orch/{launchSlug || '…'}/integration</span> and the lead's worktree on it.</span>
+        {#if isPr}
+          <span>• Checks out <span class="mono">{row.head_ref}</span> from origin in the lead's worktree. Nothing is branched from {row.base_ref}.</span>
+          <span>• The lead drafts spec.md (and ux-brief.md, api-contract.md), then asks for the Spec gate. The feature docs stay in the app; only the team's commits go to the PR.</span>
+          <span>• The team's commits are pushed to PR #{row.number} only when you approve the push. No new pull request is opened.</span>
+        {:else}
+        <span>• Creates <span class="mono">{existingFeature?.branch ?? `orch/${launchSlug || '…'}/integration`}</span> and the lead's worktree on it.</span>
         <span>• The lead drafts spec.md (and ux-brief.md, api-contract.md) {#if !launchDocs}in the feature's docs folder{:else if launchDocs.kind === 'repo'}in <span class="mono">{slashed(launchDocs.dir)}</span>{:else}(not saved in the repository, kept on this Mac){/if}, then asks for the Spec gate.</span>
+        {/if}
         <span>• Specialists start after the gate, as the Governor and the live-agent cap allow.</span>
       </div>
-      <label class="offh" use:tooltip={offHoursAllowed(offHours) ? null : { label: 'Run off-hours', detail: OFF_DISABLED }}><input type="checkbox" bind:checked={launch.off_hours} disabled={!offHoursAllowed(offHours)} /> Run off-hours{nextOffHours(offHours) ? ` (starts ${clock(nextOffHours(offHours))})` : ''}</label>
+      <label class="offh" use:tooltip={offHoursAllowed(offHours) ? null : { label: 'Run off-hours', detail: OFF_DISABLED }}><input type="checkbox" bind:checked={launch.off_hours} disabled={!offHoursAllowed(offHours) || loading} /> Run off-hours{nextOffHours(offHours) ? ` (starts ${clock(nextOffHours(offHours))})` : ''}</label>
       {#each launchTools as d (d.server.id)}
         {#if d.server.status === 'needs_auth'}
           <p class="note tools warn">{d.server.name} MCP needs authentication: {nodeList(d.nodes, true)} will fail its tools. <button type="button" class="linkbtn" onclick={() => (launch.project_id ? openProjectSettings(launch.project_id, 'mcp', d.server.id) : openSettings('mcp', d.server.id))} use:tooltip={{ label: 'Open Settings', key: '⌘,' }}>Open Settings</button> · or launch anyway.</p>
@@ -522,15 +638,19 @@
         <p class="note"><span style:color={PRESSURE[snap.state]?.color}>{PRESSURE[snap.state]?.icon}</span> Governor {PRESSURE[snap.state]?.label}{app.data?.usage?.shadow ? ' (shadow mode)' : ''} · {liveText(c)}: the lead {c.live >= c.live_cap ? 'queues for a live slot' : 'starts when its first turn is admitted'}.</p>
       {/if}
       {@render intakeNote('team')}
+      {#each prs.warnings as w (w.code)}<p class="note warnline" data-warning><span aria-hidden="true">{'\u{F0026}'}</span> {warningText(w, row)}</p>{/each}
       {#if error}<p class="err">{error}</p>{/if}
+      {#if prs.launchErr}<p class="err" role="alert" data-launch-error>{prs.launchErr.text}</p>{/if}
       <div class="foot">
         <button type="button" class="btn ghost" onclick={close} use:tooltip={{ label: 'Cancel', key: 'esc' }}>Cancel</button>
+        {#if prs.launchErr?.open}<button type="button" class="btn" onclick={() => { const f = prs.launchErr.open; close(); openFeature(f.id); }}>Open feature</button>{/if}
         {#if stale}
           <button type="button" class="btn primary" bind:this={startBtn} onclick={close}>Close</button>
         {:else}
-          <button type="submit" class="btn primary" bind:this={startBtn} disabled={busy || issuesInvalid || !launch.team_id || !launchSlug || !launch.project_id} use:tooltip={{ label: 'Launch', key: '⌘⏎' }}>{busy ? 'Launching…' : 'Launch'}</button>
+          <button type="submit" class="btn primary" bind:this={startBtn} disabled={busy || issuesInvalid || !launch.team_id || !launchSlug || !launch.project_id || loading || (isPr && !!prs.launchErr && !prs.launchErr.keep)} use:tooltip={{ label: 'Launch', key: '⌘⏎' }}>{busy ? 'Launching…' : 'Launch'}</button>
         {/if}
       </div>
+      {/if}
     </form>
     </FloatingWindow>
   {:else if o.kind === 'add-project'}
@@ -587,10 +707,19 @@
         <span>• Its team run ends (failed, deleted by the user).</span>
         <span>• {delFeatureAgents.length ? `Killed (checked) and deleted: ${delFeatureAgents.map((a) => a.id).join(', ')}.` : 'No agent left.'}</span>
         <span>• The feature leaves the sidebar. Tasks, timeline, usage and audit log stay.</span>
+        {#if delCopy?.linked}<span data-pr-stays>• {delCopy.stays}</span>{/if}
       </div>
-      <label class="check"><input type="checkbox" bind:checked={del.remove} /> Remove its worktrees and branches, <span class="mono">orch/{delFeature?.slug ?? '…'}/integration</span> included</label>
-      {#if del.remove}
-        <label class="check"><input type="checkbox" bind:checked={del.discard} /> Discard unmerged work (otherwise unmerged worktrees are kept)</label>
+      {#if delCopy?.linked}
+        <label class="check"><input type="checkbox" bind:checked={del.remove} /> {delCopy.remove}</label>
+        {#if del.remove && delCopy.kept}<p class="muted cap" data-kept>{delCopy.kept}</p>{/if}
+        {#if del.remove}
+          <label class="check"><input type="checkbox" bind:checked={del.discard} /> {delCopy.discard}</label>
+        {/if}
+      {:else}
+        <label class="check"><input type="checkbox" bind:checked={del.remove} /> Remove its worktrees and branches, <span class="mono">{branchOf(delFeature)}</span> included</label>
+        {#if del.remove}
+          <label class="check"><input type="checkbox" bind:checked={del.discard} /> Discard unmerged work (otherwise unmerged worktrees are kept)</label>
+        {/if}
       {/if}
       {#if error}<p class="err">{error}</p>{/if}
       <div class="foot">
@@ -711,6 +840,26 @@
   .seg button.on {
     background: var(--color-surface-selected);
     color: var(--color-text-primary);
+  }
+  .static {
+    display: block;
+    background: none;
+  }
+  .skel {
+    display: block;
+    height: 1.6em;
+    border-radius: var(--radius-sm);
+    background: var(--color-surface-raised);
+  }
+  .works {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-xs);
+    flex: 1;
+    color: var(--color-text-secondary);
+  }
+  .cap {
+    font: var(--text-caption);
   }
   .what {
     display: flex;

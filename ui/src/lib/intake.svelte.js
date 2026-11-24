@@ -38,6 +38,22 @@ export function openPrefilled(
 }
 
 /**
+ * Launch team… on a PR row (notes §2): the dialog opens at once with origin `{kind: 'pr'}` and reads
+ * `pr_prefill` itself. `onLaunched(feature)` patches the row (F8); `onStale` reloads the PR list.
+ */
+export function openPrLaunch(projectId, pr, { onLaunched = null, onStale = null } = {}) {
+  app.overlay = {
+    kind: 'launch',
+    prefill: null,
+    projectId,
+    intake: undefined,
+    origin: { kind: 'pr', label: `PR #${pr.number}`, url: pr.url, title: pr.title, row: pr },
+    onLaunched,
+    onStale,
+  };
+}
+
+/**
  * Start team run / Start solo from a node (t / a, a Ready row, Work): the dialog from `work_prefill`, never a
  * start. `item` (a Ready item or a node) feeds the estimate line; the origin carries the breadcrumb and the lines
  * the dialog shows above its buttons (sub-issues, blocked by, write-back, ran before; improve-intake notes §5.2).

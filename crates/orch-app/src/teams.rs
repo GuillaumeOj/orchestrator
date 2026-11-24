@@ -85,14 +85,23 @@ pub fn features(rt: &agent_runtime::runtime::Runtime) -> Result<Vec<Value>> {
             let (done, total) = run.as_ref().and_then(|r| counts.get(&r.id).copied()).unwrap_or_default();
             json!({
                 "id": f.id, "project_id": f.project_id, "slug": f.slug, "title": f.title,
-                "branch": f.integration_branch(), "archived": f.archived, "issues": f.issues, "pr_mode": f.pr_mode,
+                "branch": f.integration_branch(), "pr_link": f.pr_link, "archived": f.archived, "issues": f.issues, "pr_mode": f.pr_mode,
                 "docs_location": agent_runtime::feature_docs::FeatureDocs::of(&f),
                 "run": run.as_ref().map(|r| json!({"id": r.id, "status": r.status, "team_id": r.team_id, "pr_url": r.pr_url,
+                                                   "pr": run_pr_json(r.pr.as_ref()),
                                                    "prs_view": agent_runtime::issues::prs_view(r, &f, gates.get(&r.id).map_or(&[], Vec::as_slice))})),
                 "tasks": {"done": done, "total": total},
             })
         })
         .collect())
+}
+
+/// The run's PR for the feature list: what the push gate's "PR head moved"
+/// warning reads (`null` while the watcher has seen none).
+fn run_pr_json(pr: Option<&orch_store::PrStatus>) -> Value {
+    pr.map_or(Value::Null, |p| {
+        json!({"state": p.state, "linked": p.linked, "foreign_head": p.foreign_head, "foreign_head_sha": p.foreign_head_sha})
+    })
 }
 
 /// What `task_update` changes: each `None` is left as it is.
@@ -133,7 +142,14 @@ impl Core {
 
     pub fn team_launch(&self, spec: agent_runtime::team::LaunchSpec) -> Result<Value> {
         let rt = self.runtime()?;
-        Ok(rt.run_value_of(&rt.launch(&spec)?))
+        let run = rt.launch(&spec)?;
+        let mut v = rt.run_value_of(&run);
+        // F8: the PR row is patched from it. The run exists now: a failed
+        // read must not report the launch as failed.
+        if let Some(f) = rt.db.feature(&run.feature_id).ok().flatten() {
+            v["feature"] = agent_runtime::pr_link::feature_ref(&f, Some(&run));
+        }
+        Ok(v)
     }
 
     /// The Feature pane: a feature's latest run with its agents, tasks, docs,
@@ -144,7 +160,7 @@ impl Core {
         match rt.db.runs(Some(&f.id), false)?.into_iter().next() {
             Some(run) => rt.run_json(&run.id),
             None => Ok(
-                json!({"feature": f, "run": null, "agents": [], "tasks": [], "docs": [], "artifacts": [], "timeline": []}),
+                json!({"feature": agent_runtime::pr_link::feature_json(&f), "run": null, "agents": [], "tasks": [], "docs": [], "artifacts": [], "timeline": []}),
             ),
         }
     }
@@ -380,6 +396,22 @@ mod tests {
         assert_eq!(linear_move(&lin(&["ENG"], None), &lin(&["OPS"], None)), (true, true));
         // Away from Linear: nothing.
         assert_eq!(linear_move(&lin(&["ENG"], None), &gh), (false, false));
+    }
+
+    #[test]
+    fn the_feature_list_run_carries_the_watched_pr() {
+        assert_eq!(run_pr_json(None), Value::Null);
+        let pr = orch_store::PrStatus {
+            state: "open".into(),
+            linked: true,
+            foreign_head: true,
+            foreign_head_sha: Some("abc".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            run_pr_json(Some(&pr)),
+            json!({"state": "open", "linked": true, "foreign_head": true, "foreign_head_sha": "abc"})
+        );
     }
 
     #[test]

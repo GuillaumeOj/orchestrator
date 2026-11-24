@@ -59,6 +59,15 @@ pub fn home_dir() -> PathBuf {
 
 pub use orch_git::{real, valid_id};
 
+/// `p` with the home folder shown as `~` (messages to the user).
+pub fn tilde(p: &std::path::Path) -> String {
+    let home = home_dir();
+    match p.strip_prefix(&home) {
+        Ok(rest) if home != std::path::Path::new("/") => format!("~/{}", rest.display()),
+        _ => p.display().to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

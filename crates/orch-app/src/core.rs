@@ -1189,6 +1189,11 @@ impl Core {
         Ok(v)
     }
 
+    /// The launch prefill of PR `number` of `project` (allow-launch-team-on-update-pr §5.2).
+    pub fn pr_prefill(&self, project: &str, number: u64) -> Result<Value> {
+        self.runtime()?.pr_prefill(project, number)
+    }
+
     /// FR-103 on demand.
     pub fn project_fetch(&self, id: &str) -> Result<Value> {
         let rt = self.runtime()?;
@@ -1279,9 +1284,12 @@ impl Core {
                     .collect();
                 Ok(json!({"action": "spec_approval", "summary": s("summary"), "docs": docs, "feature_id": feature_id}))
             }
-            "push_pr" => {
-                let d = orch_git::diff::diff(&wt, &s("base"), DIFF_PATCH_MAX)?;
-                Ok(json!({"action": "push_pr", "title": s("title"), "body": s("body"), "branch": s("branch"),
+            action @ ("push_pr" | "push_pr_update") => {
+                // A push to a linked PR shows the team's commits only (§5.5): from
+                // its `diff_base` (the lease, or the base after a rebase).
+                let from = Some(s("diff_base")).filter(|b| p.get("linked").is_some() && !b.is_empty());
+                let d = orch_git::diff::diff(&wt, from.as_deref().unwrap_or(&s("base")), DIFF_PATCH_MAX)?;
+                Ok(json!({"action": action, "title": s("title"), "body": s("body"), "branch": s("branch"),
                           "base": s("base"), "files": d.files, "truncated": d.truncated}))
             }
             // A hold the core found still open at a restart (no payload of its own).
@@ -1691,6 +1699,7 @@ pub(crate) mod tests {
                 intake: None,
                 issues: vec![],
                 pr_mode: Default::default(),
+                pr: None,
             })
             .unwrap();
         let s = core.state();
@@ -1769,6 +1778,34 @@ pub(crate) mod tests {
         assert_eq!((gate["level"].as_u64(), gate["gate"].as_str()), (Some(1), Some("spec")));
         // The spec gate names its feature, so the docs' images can be read.
         assert_eq!(core.gate_detail(gate["id"].as_str().unwrap()).unwrap()["feature_id"], json!(fid));
+        // A push gate lists the files past `base`; a linked one only past its `diff_base`.
+        let wt = tempfile::tempdir().unwrap();
+        let git = |a: &[&str]| orch_git::git(wt.path(), a).unwrap();
+        git(&["init", "-q", "-b", "main"]);
+        for (f, m) in [("a.txt", "base"), ("b.txt", "pr"), ("c.txt", "team")] {
+            std::fs::write(wt.path().join(f), f).unwrap();
+            git(&["add", f]);
+            git(&["-c", "user.name=T", "-c", "user.email=t@example.invalid", "commit", "-qm", m]);
+            if m == "base" {
+                git(&["branch", "base"]);
+            }
+            if m == "pr" {
+                git(&["branch", "lease"]);
+            }
+        }
+        let push_as = |action: &str, extra: Value| {
+            let mut p = json!({"action": action, "run": run["id"], "branch": "main", "base": "base",
+                               "worktree": wt.path(), "diff_base": "lease"});
+            p.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            let id = rt.store.write(|s| s.add_inbox_item(None, "gate", "push".into(), p, 20)).unwrap();
+            let files = core.gate_detail(&format!("gate-{id}")).unwrap()["files"].clone();
+            files.as_array().unwrap().iter().map(|f| f["path"].as_str().unwrap().to_string()).collect::<Vec<_>>()
+        };
+        let push = |extra: Value| push_as("push_pr", extra);
+        assert_eq!(push(json!({})), ["b.txt", "c.txt"], "unlinked: past the base");
+        assert_eq!(push(json!({"linked": {"number": 42}})), ["c.txt"], "linked: the team's commits only");
+        assert_eq!(push_as("push_pr_update", json!({"linked": {"number": 42}})), ["c.txt"], "linked update gate");
+        assert_eq!(push_as("push_pr_update", json!({})), ["b.txt", "c.txt"], "unlinked update gate: past the base");
         let r = core.inbox_act(gate["id"].as_str().unwrap(), "approve", None, None).unwrap();
         assert_eq!(r["lifecycle"]["state"], "sent", "the lead is told");
         assert_eq!(core.state()["features"][0]["run"]["status"], "planning");
@@ -2257,19 +2294,26 @@ pub(crate) mod tests {
         // (spawning needs Claude Code), the team agent as launched.
         let solo = solo_spec(&core.project("repo").unwrap(), "solo", &NewSession::default()).allocation.unwrap();
         core.teams_view(Some("repo")).unwrap(); // installs the preset teams
-        core.team_launch(agent_runtime::team::LaunchSpec {
-            project_id: "repo".into(),
-            team_id: "bugfix-squad".into(),
-            slug: "fx".into(),
-            title: "Fix X".into(),
-            brief: "b".into(),
-            base: None,
-            off_hours: false,
-            intake: None,
-            issues: vec![],
-            pr_mode: Default::default(),
-        })
-        .unwrap();
+        let launched = core
+            .team_launch(agent_runtime::team::LaunchSpec {
+                project_id: "repo".into(),
+                team_id: "bugfix-squad".into(),
+                slug: "fx".into(),
+                title: "Fix X".into(),
+                brief: "b".into(),
+                base: None,
+                off_hours: false,
+                intake: None,
+                issues: vec![],
+                pr_mode: Default::default(),
+                pr: None,
+            })
+            .unwrap();
+        // F8: the launch names its feature.
+        assert_eq!(launched["feature"], serde_json::json!({"id": "repo-fx", "slug": "fx", "run_status": "spec"}));
+        let feats = core.state()["features"].clone();
+        let fx = feats.as_array().unwrap().iter().find(|f| f["slug"] == "fx").unwrap();
+        assert_eq!((fx["branch"].as_str(), &fx["pr_link"]), (Some("orch/fx/integration"), &serde_json::Value::Null));
         let team = rt.store.read(|s| s.agents["fx-lead-1"].allocation.clone());
         assert_eq!((solo.as_str(), team.as_str()), ("repo", "repo"), "the project id, plan or not");
         let charged = |a: &str| rt.with_governor(|g| g.resolve_allocation(&a.into()).0.clone());

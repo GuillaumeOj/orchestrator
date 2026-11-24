@@ -23,7 +23,7 @@ use anyhow::{Result, anyhow, bail};
 use governor::{AgentId, TurnKind};
 use orch_git::commit::MergeOutcome;
 use orch_protocol::{WorktreeKindSpec, now_ms};
-use orch_store::{Artifact, Feature, Message, Project, Task, TeamRun};
+use orch_store::{Artifact, Feature, Message, PrLink, Project, Task, TeamRun};
 use orch_tasks::TaskService;
 use orch_team::{FeatureCtx, RoleDef, RunState, TaskStatus, Team, rules};
 use serde::{Deserialize, Serialize};
@@ -72,6 +72,10 @@ pub struct LaunchSpec {
     /// One PR for the feature (default) or one per issue.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pr_mode: Option<orch_store::PrMode>,
+    /// allow-launch-team-on-update-pr §5.3: work on this PR's head branch and
+    /// push to it (a new feature; `base` is ignored, the PR's base is used).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr: Option<orch_store::PrLink>,
 }
 
 /// Everything about a run, loaded together.
@@ -93,6 +97,14 @@ impl RunCtx {
             issues: self.feature.issue_refs(),
             per_issue: self.feature.pr_mode == orch_store::PrMode::PerIssue,
             docs: crate::feature_docs::FeatureDocs::of(&self.feature),
+            branch: self.feature.branch.clone(),
+            pr: self.feature.pr_link.as_ref().map(|l| orch_team::LinkedPr {
+                number: l.number,
+                url: l.url.clone(),
+                head: l.head_ref.clone(),
+                base: l.base_ref.clone(),
+                author: l.author.clone(),
+            }),
         }
     }
 }
@@ -298,7 +310,7 @@ impl Runtime {
         self.advance_inner(run_id, to, why, false)
     }
 
-    fn move_run(&self, run_id: &str, to: RunState, why: &str, checked: bool) -> Result<TeamRun> {
+    pub(crate) fn move_run(&self, run_id: &str, to: RunState, why: &str, checked: bool) -> Result<TeamRun> {
         let mut run = self.db.run(run_id)?.ok_or_else(|| anyhow!("no team run {run_id}"))?;
         if run.status == to {
             return Ok(run);
@@ -329,7 +341,7 @@ impl Runtime {
         self.advance_inner(run_id, to, why, true)
     }
 
-    fn advance_inner(&self, run_id: &str, to: RunState, why: &str, checked: bool) -> Result<TeamRun> {
+    pub(crate) fn advance_inner(&self, run_id: &str, to: RunState, why: &str, checked: bool) -> Result<TeamRun> {
         let mut run = self.db.run(run_id)?.ok_or_else(|| anyhow!("no team run {run_id}"))?;
         if !run.status.held() || to.held() || to == RunState::Failed {
             return self.move_run(run_id, to, why, checked);
@@ -395,8 +407,36 @@ impl Runtime {
             crate::issues::issue_rows(self.db.work_nodes(Some(&project.id)).unwrap_or_default())
         };
         let links = crate::issues::links(&issues, &rows, repo.as_deref());
+        let existing = self.db.feature_by_slug(&project.id, &spec.slug)?;
+        // §5.3 step 1: a launch on a PR, checked (and the PR re-read) first.
+        // F1: it always makes a new feature (a deleted one too: its old
+        // worktree and docs are not the PR's).
+        let mut relaunch_tip = None;
+        let on_pr = match (&spec.pr, &existing) {
+            (Some(_), Some(f)) => {
+                let m = if f.archived {
+                    format!("feature {} existed (deleted): pick another slug", spec.slug)
+                } else {
+                    format!("feature {} exists: pick another slug", spec.slug)
+                };
+                return Err(crate::pr_link::refused("slug_taken", m, json!({})));
+            }
+            (Some(l), None) => {
+                Some((self.check_pr_launch(&project, l, spec.pr_mode == Some(orch_store::PrMode::PerIssue))?, l))
+            }
+            // A linked feature launched again keeps its link: its PR is re-read.
+            (None, Some(f)) if f.pr_link.is_some() && self.db.runs(Some(&f.id), true)?.is_empty() => {
+                if spec.pr_mode == Some(orch_store::PrMode::PerIssue) {
+                    return Err(crate::pr_link::per_issue_refused(f.pr_link.as_ref().map_or(0, |l| l.number)));
+                }
+                self.check_pr_relaunch(&project, f)?;
+                relaunch_tip = Some(self.prepare_pr_relaunch(&project, f, f.pr_link.as_ref().unwrap())?);
+                None
+            }
+            (None, _) => None,
+        };
         let now = now_ms();
-        let feature = match self.db.feature_by_slug(&project.id, &spec.slug)? {
+        let feature = match existing {
             Some(f) => {
                 if !self.db.runs(Some(&f.id), true)?.is_empty() {
                     bail!("feature {} already has a running team", f.slug);
@@ -428,6 +468,8 @@ impl Runtime {
                         &spec.slug,
                         &crate::feature_docs::app_base(&self.cfg.paths.root, &project.id, &spec.slug).to_string_lossy(),
                     )),
+                    branch: None,
+                    pr_link: None,
                 }
             }
         };
@@ -440,6 +482,24 @@ impl Runtime {
             feature
         };
         crate::issues::check_mode(feature.pr_mode, feature.issues.len())?;
+        // §5.3 steps 2 and 4: the head fetched and the local branch lined up,
+        // still before anything is stored; then the link, branch and base.
+        let feature = match on_pr {
+            // A deleted per-issue feature coming back keeps its mode.
+            Some((_, l)) if feature.pr_mode == orch_store::PrMode::PerIssue => {
+                return Err(crate::pr_link::per_issue_refused(l.number));
+            }
+            Some((mut head, sent)) => {
+                self.prepare_pr_branch(&project.path, &mut head)?;
+                let app = crate::feature_docs::app_base(&self.cfg.paths.root, &project.id, &feature.slug);
+                crate::pr_link::linked_feature(feature, &head, sent, &app.to_string_lossy())
+            }
+            // The kept link follows the head fetched now (the lease fallback).
+            None => match (relaunch_tip, feature.pr_link.clone()) {
+                (Some(tip), Some(l)) => Feature { pr_link: Some(PrLink { head_sha_at_link: tip, ..l }), ..feature },
+                _ => feature,
+            },
+        };
         // §3.4: the app folders exist before any agent is told about them, and
         // before anything is stored or created, so a failure leaves nothing behind.
         let loc = crate::feature_docs::FeatureDocs::of(&feature);
@@ -459,7 +519,7 @@ impl Runtime {
         self.db.save_team(&team, &roles, now)?;
         let row = self.create_worktree(
             &project.path,
-            &WorktreeKindSpec::Integration { feature: feature.slug.clone() },
+            &WorktreeKindSpec::Integration { feature: feature.slug.clone(), branch: feature.branch.clone() },
             Some(&feature.base),
         )?;
         let mut feature = feature;
@@ -476,10 +536,11 @@ impl Runtime {
             feature_id: feature.id.clone(),
             status: RunState::Draft,
             resume_status: None,
-            pr_url: None,
+            // A linked run is on its PR from the start (its state stays `spec`, D5).
+            pr_url: feature.pr_link.as_ref().map(|l| l.url.clone()),
             started_at_ms: now,
             ended_at_ms: None,
-            pr_number: None,
+            pr_number: feature.pr_link.as_ref().map(|l| l.number),
             pr: None,
             prs: vec![],
         };
@@ -524,6 +585,17 @@ impl Runtime {
         // The tracker item the run came from, and its open children (B5).
         let hint =
             format!("{}{hint}", self.source_item_hint(&cx.run.id).map(|h| format!("{h}\n\n")).unwrap_or_default());
+        // §5.3.5: the PR the team works on, and that it is never replaced.
+        let hint = match &feature.pr_link {
+            Some(l) => format!(
+                "{hint}This feature works on PR #{n} ({}): its branch {} is your integration branch. Never open a \
+                 pull request; mcp__orch__request_pr pushes to PR #{n}.\n\n",
+                l.url,
+                l.head_ref,
+                n = l.number
+            ),
+            None => hint,
+        };
         format!(
             "ORCH: you lead the team on feature {} ({}). Brief from the user:\n\n{}\n\n{hint}Follow your protocol: write the docs in {}, {}, then call mcp__orch__request_spec_approval.",
             feature.title,
@@ -1458,11 +1530,29 @@ impl Runtime {
         Ok(run)
     }
 
+    /// F7: what deleting the feature does to its integration branch: the
+    /// real branch, whether it is a PR's, and its commits `origin/<head>`
+    /// lacks (kept on delete, D2; 0 for an unlinked feature or a merged PR).
+    pub fn feature_delete_plan(&self, feature_id: &str) -> Result<Value> {
+        let f = self.feature_by_id_or_slug(feature_id)?;
+        let branch = f.integration_branch();
+        let pr = orch_git::project::pr_branches(&self.db, &f.project_id).into_iter().find(|p| p.branch == branch);
+        // `null` when the count failed: cleanup keeps the branch then, so no promise.
+        let unpushed = match (self.db.project(&f.project_id)?, pr) {
+            (Some(p), Some(pr)) if f.is_linked() && !pr.merged => {
+                orch_git::cleanup::try_unpushed(&p.path, &branch, &f.base).map_or(Value::Null, |n| json!(n))
+            }
+            _ => json!(0),
+        };
+        Ok(json!({"branch": branch, "linked": f.is_linked(), "unpushed": unpushed}))
+    }
+
     /// Deletes a feature: its runs end as failed ("deleted by the user"), every
     /// agent of the feature is deleted (killed, checked, archived), then the
     /// feature is archived. With `remove_worktrees`, the agents' worktrees and
     /// the integration worktree go too (unmerged work needs `discard`). Stops
-    /// at the first agent whose kill can't be verified: the feature stays.
+    /// at the first agent whose kill can't be verified: the feature stays. A PR
+    /// branch with commits its PR lacks is kept (D2, `kept`).
     pub fn delete_feature(&self, feature_id: &str, remove_worktrees: bool, discard: bool) -> Result<Value> {
         let mut f = self.db.feature(feature_id)?.ok_or_else(|| anyhow!("no feature {feature_id}"))?;
         // First the runs, so the team tick starts no new seat meanwhile.
@@ -1508,7 +1598,17 @@ impl Runtime {
             Ok(removed) => json!({"removed": removed}),
             Err(e) => json!({"error": format!("{e:#}")}),
         };
-        let out = json!({"deleted": f.slug, "agents": agents, "worktrees": worktrees, "app_folder": app_folder});
+        // D2 (F7): the PR branches kept for their unpushed commits (`null`: git could not count them).
+        // Only the linked feature's own integration branch: other kept branches (unmerged work) are not a PR's.
+        let own = f.is_linked().then(|| f.integration_branch());
+        let kept: Vec<Value> = worktrees
+            .iter()
+            .filter_map(|r| {
+                let b = r["kept_branch"].as_str().filter(|b| own.as_deref() == Some(*b))?;
+                Some(json!({"branch": b, "commits": r["kept_unpushed"]}))
+            })
+            .collect();
+        let out = json!({"deleted": f.slug, "agents": agents, "worktrees": worktrees, "app_folder": app_folder, "kept": kept});
         self.db.audit("user", None, "feature_deleted", Some(&f.slug), "ok", out.clone())?;
         Ok(out)
     }
@@ -2930,6 +3030,7 @@ pub(crate) mod tests {
                 intake: None,
                 issues: vec![],
                 pr_mode: Default::default(),
+                pr: None,
             })
             .unwrap();
         assert_eq!(run.status, RunState::Spec);
@@ -3175,6 +3276,7 @@ pub(crate) mod tests {
                 intake: None,
                 issues: vec![],
                 pr_mode: Default::default(),
+                pr: None,
             })
             .unwrap();
         let lead = "fx-lead-1";
@@ -3223,6 +3325,7 @@ pub(crate) mod tests {
                 intake: None,
                 issues: vec![],
                 pr_mode: Default::default(),
+                pr: None,
             })
             .unwrap();
         // The feature archived under its active run (an older relaunch).

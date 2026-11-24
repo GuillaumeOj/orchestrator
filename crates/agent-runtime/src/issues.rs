@@ -252,7 +252,8 @@ pub fn prs_view(run: &TeamRun, feature: &Feature, gates: &[GateRef]) -> Vec<PrVi
         PrMode::Single => {
             let branch = feature.integration_branch();
             // A new PR asked for replaces a closed one.
-            let replaced = run.pr_number.is_none() || is_closed(run.pr.as_ref());
+            // A linked PR is never replaced: its gate is a push to it.
+            let replaced = feature.pr_link.is_none() && (run.pr_number.is_none() || is_closed(run.pr.as_ref()));
             if let Some(id) = gate("push_pr", None).filter(|_| replaced) {
                 return vec![PrView::waiting(None, branch, Some(id))];
             }
@@ -266,7 +267,9 @@ pub fn prs_view(run: &TeamRun, feature: &Feature, gates: &[GateRef]) -> Vec<PrVi
                 number: run.pr_number,
                 url: run.pr_url.clone(),
                 pr: run.pr.clone(),
-                gate: gate("push_pr_update", None),
+                // A linked PR is open from launch: its push gate is a `push_pr` one.
+                gate: gate("push_pr_update", None)
+                    .or_else(|| gate("push_pr", None).filter(|_| feature.pr_link.is_some())),
             }]
         }
         PrMode::PerIssue => feature
@@ -489,6 +492,8 @@ pub(crate) mod tests {
             issues: refs.iter().map(|r| IssueLink::new(r)).collect(),
             pr_mode: mode,
             docs_location: None,
+            branch: None,
+            pr_link: None,
         }
     }
 

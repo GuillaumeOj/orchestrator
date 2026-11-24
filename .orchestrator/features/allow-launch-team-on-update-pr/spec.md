@@ -1,0 +1,212 @@
+# Allow to Launch a Team on Update PRs · Feature spec
+
+> Feature `allow-launch-team-on-update-pr` · Integration branch `orch/allow-launch-team-on-update-pr/integration` ·
+> Team: lead, back, front, ui, ux.
+> Companions: [api-contract.md](api-contract.md) (back ↔ front), [ux-brief.md](ux-brief.md) (ux → ui → front).
+> Code base: **origin/main** (#88). The integration branch starts at #82; it is rebased on main before any code task.
+
+## 1. Problem
+
+Updater PRs (Renovate, Dependabot, or any PR opened by someone else) sometimes need a change to pass CI: a renamed
+API, a lint rule, a lockfile, a snapshot. Today a team can only start from a **new** branch (`orch/<slug>/integration`
+cut from the base) and always ends with `gh pr create`: there is no way to work **on the PR's own branch** and push the
+fix to it.
+
+The user wants to pick such a PR in the project overview's **Pull requests** list, launch a team on it, let the team
+fix it on that branch, and push the result to the same PR.
+
+### 1.1 What the code does today (read on main)
+
+- The integration branch is never stored: it is rebuilt as `orch/<slug>/integration` in `Feature::integration_branch`
+  (orch-store `teams.rs:45`), `FeatureCtx::integration_branch` (orch-team `compile.rs:138`) and the Integration
+  worktree layout (orch-git `worktree.rs:57`). ~25 callers use it (members branch from it, merge guard, sync, rebase,
+  PR lookup, prompts, UI copy). Only the worktree row stores the real `branch` (and `base`).
+- Launch (`team.rs:449`) creates the worktree from the **local** base ref, nothing fetched.
+- `request_pr` without an open PR → `push_pr` gate → `gh::push` + `gh pr create` (inbox.rs:1296). With an open PR
+  (`pr_open` + `run.pr` checked) → `push_pr_update` gate → fast-forward push or `--force-with-lease` (pr.rs:573–660).
+  **Pushing to an existing PR already works once a run is `pr_open`.**
+- The PR watcher reports CI, merged/closed, behind/conflicts, but never a head moved by someone else; a closed PR
+  moves the run back to `integrating` and the next `request_pr` would open a **new** PR.
+- The project PR list (`gh pr list --json number,title,headRefName,baseRefName,state,url,isDraft,reviewDecision,statusCheckRollup`)
+  has no author, no fork flag, no head sha, and no action.
+
+## 2. Goals
+
+1. **Launch from the PR list.** Each open PR row of Project › Pull requests gets **Launch team…**. It opens the usual
+   launch dialog prefilled: title, slug, brief (PR title, link, branches, author, the failing checks and their
+   failure excerpts), team, and the PR shown as the run's target ("Works on PR #42 · `renovate/foo` → `main`").
+2. **The team works on the PR branch.** The feature's integration branch **is the PR head branch** (`renovate/foo`),
+   checked out in the usual integration worktree from `origin/<head>` (fetched at launch). Members branch from it and
+   merge into it as usual. The feature is **linked** to the PR (number, url, head, base, head sha at launch).
+3. **The team pushes to the PR, never opens one.** The lead's `request_pr` on a linked feature asks the user to
+   **push to PR #42** (same gate card, with only the team's commits listed); approved → push to `origin/<head>` with a
+   lease on the head the app last saw; the run becomes `pr_open` on PR #42 and the existing watcher takes over (CI,
+   merged → done, updates through `push_pr_update`).
+4. **Safe with a moving or closed PR.** A head moved outside the app is told to the lead, who can bring it in
+   (`rebase_base` onto the PR head). A linked PR that is closed or merged is never replaced by a new PR.
+5. The UI names the real branch everywhere it names the integration branch today (dialog, Feature pane, delete dialog).
+
+## 3. Non-goals
+
+- **Fork PRs** (`isCrossRepository`): every push goes to `origin`. The row shows the action disabled with the reason.
+- **Per-issue PR mode** on a linked feature (refused at launch; the dialog hides the PR mode control).
+- No change to how updater bots behave; no Renovate/Dependabot-specific API (no "rebase" checkbox, no bot commands).
+  Renovate usually stops rebasing a branch someone else committed to; that is its business.
+- No automatic launch (e.g. "on every failing Renovate PR"): starting stays a dialog the user submits.
+- No GitHub Enterprise: `github.com` / `origin`, as everywhere else.
+- No other entry point than the project PR list in this feature (the Feature pane, Work browser and Mission control
+  keep their current launches).
+
+## 4. Decisions (lead's; the user can overturn them at spec approval)
+
+- **D1 · Feature docs stay off the PR** (amended after B0, G1). Main now has `docs_location` (change-how-specs-are-saved,
+  #87): a linked feature is launched with its docs **and** designs in the **app folder** (`Loc::App`,
+  `<app data>/projects/<project>/features/<slug>`) whatever the project setting, so no `.orchestrator/features/<slug>/`
+  ever enters the PR. Guard: `request_pr` on a linked feature is still refused when `origin/<base>...HEAD` touches
+  `.orchestrator/features/<slug>/` (a doc committed by hand).
+- **D2 · The linked branch is never deleted on the remote**, and locally only when its head is in `origin/<head>`
+  (pushed). Deleting a linked feature, pruning or removing the project keeps an unpushed local PR branch.
+- **D3 · One active feature per PR.** A PR already linked to a feature with a run that is not done/failed shows
+  **Open feature** instead of Launch team. A PR launch always makes a new feature (F1, api-contract §8).
+- **D4 · Draft PRs are allowed**; closed/merged PRs are not listed (the list is open PRs only).
+- **D5 · Same lifecycle.** A linked run follows the usual states (spec → spec gate → planning → … → pr gate → pr open
+  → done); no shortcut state. The spec gate stays: it is where the user sees what the team will change on someone
+  else's PR.
+
+### 4.1 Gap decisions (B0 [back-notes.md](back-notes.md) G1–G6)
+
+- **G1** taken: D1 above. The lead prompt for a linked feature drops the "remove the docs" step.
+- **G2** `LaunchSpec.pr` carries no `cross_repo`: the launch re-reads the PR with `gh pr view` (open, same repo, head sha)
+  and refuses `fork` / `pr_closed` itself. Front never sends `cross_repo`.
+- **G3** The push lease is `run.pr.head_sha` (last watcher check), else `pr_link.head_sha_at_link`.
+- **G4** `rebase_base onto: "pr_head"` is allowed from `planning` on (planning, executing, integrating, pr_open) under the
+  existing "every task done, or ready with no branch" rule; `onto: "base"` keeps its states. The foreign-head turn says
+  so ("once no task is in progress").
+- **G5** Start ref not persisted: `complete()` (also the reconciler's) creates a missing local branch that is not
+  `orch/*` from `origin/<branch>` when that ref exists, else from `row.base` as today.
+- **G6** `foreign_head` is recomputed each check: true when `head_sha` ≠ `pushed_sha` (or ≠ link head before any
+  push) and `head_sha` is not an ancestor of the local HEAD; the lead turn is sent once per new foreign `head_sha`
+  (stored `foreign_head_sha`).
+
+## 5. Behaviour
+
+### 5.1 PR list (back + front)
+
+- `gh pr list` also asks for `author`, `isCrossRepository`, `headRefOid`, `headRepositoryOwner`; each PR row gains
+  `author {login, is_bot}`, `cross_repo`, `head_sha` and `feature` (the linked feature on this project, if any:
+  id, slug, run status) — api-contract §1.
+- Row action: **Launch team…** (enabled), **Open feature** (D3), or disabled **Launch team…** with the reason
+  ("Fork PR: the app pushes to origin only").
+
+### 5.2 Prefill (back)
+
+`pr_prefill(project, number)` returns the launch prefill (shape of intake's `prefill_forms`) plus `pr` (the link to
+send back) and `origin` (the dialog's "From PR #42" chip). It runs `gh pr view` (fresh head sha, state, checks) and,
+for each failing check run of GitHub Actions, the failed log tail (`gh run view <run> --log-failed`, last 60 lines per
+job, 4 jobs, 12 KB in all; annotations when there is no log). Slug: `pr-<n>-<kebab title>` (unique, ≤ 40). Team: the
+project's default team as for intake. Brief template in api-contract §2. A closed / merged / fork PR → error code.
+
+### 5.3 Launch (back)
+
+`LaunchSpec` gains `pr: Option<PrLink>` (api-contract §3). With `pr` set:
+
+1. Refused: `issues` non-empty with per-issue mode, a fork PR, a PR linked to an active feature (D3), the head branch
+   checked out in another worktree (the user's main checkout included: "renovate/foo is checked out in ~/dev/shop;
+   switch that checkout to another branch first").
+2. Fetch `origin <head>`; check the PR is still open and get its head sha (from the link, refreshed by the fetch).
+3. Feature: new columns `branch` (the integration branch name, NULL = `orch/<slug>/integration`) and `pr_link` (JSON).
+   `base` = the PR base. Every derivation of the integration branch reads `branch` when set (`Feature`, `FeatureCtx`,
+   `app_state.features[].branch`, orchd CLI); the worktree layout takes the branch explicitly.
+4. Integration worktree at the usual path `<proj>.worktrees/<slug>/integration`, branch `<head>`:
+   - no local `<head>` → `git worktree add -b <head> <path> origin/<head>` (upstream set to `origin/<head>`);
+   - a local `<head>` already at or behind `origin/<head>` → fast-forward it to `origin/<head>`;
+   - a local `<head>` with commits not on origin → refused ("local renovate/foo has 2 commits that PR #42 does not
+     have; push or delete them first").
+   The worktree row keeps `base` = the PR base (diffs, cleanup, PR base stay right); the start ref is separate.
+5. Run as usual (lead started, brief queued, run `spec`). The lead prompt says: "Pull requests: this feature works on
+   PR #42 (`renovate/foo` → `main`, opened by renovate[bot]). The integration branch is `renovate/foo`. Never open a
+   pull request; `request_pr` pushes to PR #42. The feature docs are in the app folder, never on the branch (D1)."
+
+### 5.4 Merge, sync, rebase (back)
+
+- Merge guard: the source must start with `orch/<slug>/` and must not be the feature's integration branch (whatever
+  its name) nor `issue/*`. Specialists' branches stay `orch/<slug>/<node>-<n>`.
+- `policy/rt.rs` protects the real integration branch name.
+- `rebase_base` gains `onto: "base" | "pr_head"` (default `base`). `pr_head` (linked features only) fetches
+  `origin/<head>` and rebases the integration branch on it (same conflict / continue / abort / member-reset machinery);
+  when the local branch is behind only (no team commit yet), it fast-forwards.
+
+### 5.5 Push to the PR (back)
+
+(Amended after U1's review; G3, G6, F1, F6 folded in.)
+
+- `request_pr` on a linked feature without `pr_open` is refused when:
+  - the PR is closed or merged;
+  - `.orchestrator/features/<slug>/` is in `origin/<base>...HEAD` (D1 guard);
+  - **the PR head the app last saw (the lease, G3) is not an ancestor of HEAD**, unless the last `rebase_base` (onto
+    `base`) started from a head that contained the lease (the team rewrote those commits itself). Otherwise someone
+    else pushed commits the branch does not have: "PR #42 has commits the branch does not have (abc1234): bring them
+    in with `rebase_base` onto `pr_head`, then ask again". A force push can therefore never drop a foreign commit;
+  - `origin/<head>..HEAD` is empty ("No commit to push to PR #42").
+- Else a `push_pr` gate with `linked: {number, url}`, `lease_sha`, `commits` (the `origin/<head>..HEAD` list, same
+  shape as `push_pr_update`'s) and `diff_summary` over `origin/<head>...HEAD` (the team's commits only).
+- Approved → `gh pr view` (still open; head still `lease_sha`, else the gate fails `pr_moved`, F6) → push: a
+  fast-forward when the lease is an ancestor of HEAD, else (only the rebase case above)
+  `--force-with-lease=<head>:<lease_sha>` → `pr_opened(linked url)` → `pr_open`, `pushed_sha` = HEAD. **No
+  `gh pr create`.** Audit `pr_push_linked`.
+- In `pr_open` the existing `push_pr_update` path is used, with the same foreign-commit refusal (it already has
+  `foreign_pushes`).
+- **Closed linked PR before `pr_open`**: the run **keeps its state**; the lead is told "PR #42 was closed outside the
+  app; ask the user", `request_pr` is refused while it is closed; reopened → cleared, lead told (F5). Closed after
+  `pr_open` → `integrating` as today (with the same refusal instead of "opens a new pull request"). Merged → `done`.
+
+### 5.6 Watcher (back)
+
+- Linked runs are checked by `pr_tick` from launch (any state but done/failed), so the Feature pane shows the PR's CI
+  and state from the start. Before `pr_open`, only closed/reopened/merged and a foreign head are acted on.
+- **Foreign head** (G6): `foreign_head` = `head_sha` is not an ancestor of the local HEAD and ≠ `pushed_sha`;
+  `foreign_head_sha` = that head. One ORCH turn per new foreign head ("PR #42's head moved to abc1234 (pushed outside
+  the app, probably by renovate[bot]). Bring it in with `rebase_base` onto `pr_head` once no task is in progress,
+  before asking for the push."). Cleared when HEAD contains it.
+
+### 5.7 Delete and cleanup (back)
+
+D2: `remove_worktree` / feature delete / prune / project removal never run `git branch -D` on a linked branch unless
+its head is in `origin/<head>`, **or in `origin/<base>`, or the linked PR is merged** (a merged PR usually deletes its
+head branch, so `origin/<head>` is gone). Otherwise they keep it and say so ("kept renovate/foo: 1 commit not pushed
+to PR #42"). Nothing is ever deleted on the remote.
+
+### 5.8 UI (front, after ui)
+
+- Project › Pull requests rows: author (bot mark), CI, the action (5.1). **Load PRs** unchanged.
+- Launch dialog, PR variant: "From PR #42" origin chip; a read-only **Works on** line (PR link, head → base, author)
+  replacing Base; no PR mode control; copy "Checks out renovate/foo" instead of "Creates orch/…/integration";
+  the prefilled brief editable; errors from launch inline (5.3.1, 5.3.4).
+- Feature pane: header / PR card shows "PR #42 · renovate/foo → main" from launch (state, CI, linked, foreign head
+  warning), the real branch name in place of the hard-coded one (`FeaturePane.svelte`, the integration branch line).
+- Gate card for a linked push: "Push 3 commits to PR #42 (renovate/foo)" instead of "Open a pull request".
+- Delete-feature dialog: the real branch and D2's rule in the checkbox copy.
+
+## 6. Acceptance
+
+1. A same-repo open PR in Project › Pull requests → Launch team… → dialog prefilled with failing check excerpts →
+   Launch → the integration worktree is on `renovate/foo` at `origin/renovate/foo`; members branch from it.
+2. The run's spec gate (docs in the app folder), tasks and merges work as for any feature; the lead's `request_pr`
+   shows "Push n commits to PR #42"; approve → the commits are on `origin/renovate/foo`, no new PR exists, the run is
+   `pr_open` on #42; CI and merge are followed; merge → `done`.
+3. Fork PR: action disabled with the reason. A PR with an active linked feature: Open feature.
+4. A head pushed by someone else before the push: lead told; the approval with the old lease is refused, never
+   overwrites; `rebase_base onto pr_head` then a new request pushes.
+5. Closed linked PR: lead told, push refused until reopened, no `gh pr create` possible.
+6. Deleting a linked feature with unpushed commits keeps the local branch; nothing is ever deleted on the remote.
+7. Unlinked features behave exactly as before (all existing tests pass; `branch` NULL everywhere).
+
+## 7. Work split (planned after approval)
+
+- **ux** X1: flows, copy, states (notes `docs/design/allow-launch-team-on-update-pr-design-notes.md`) → hands off to ui.
+- **ui** U1: FigCraft frames (PR list rows, dialog PR variant, Feature pane linked PR, gate card, delete dialog) and
+  exports under `design/`.
+- **back** B1 store + launch + branch derivation + guards (5.3, 5.4 guard, 5.7); B2 PR list + prefill (5.1, 5.2);
+  B3 push gate, watcher, `rebase_base onto pr_head`, lead prompt (5.4 rebase, 5.5, 5.6).
+- **front** F1 (after U1, B1, B2): PR list, dialog, Feature pane, gate card, delete dialog.
+- **ux / ui** review F1.

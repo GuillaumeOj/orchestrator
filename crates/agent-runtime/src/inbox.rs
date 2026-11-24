@@ -1172,7 +1172,15 @@ impl Runtime {
         }
         // The PR is open: push the new commits to it rather than open another.
         if let Some(run) = self.open_pr_run(rec) {
+            // Someone else's PR: the docs guard holds for the updates too.
+            if let Some(cx) = cx.as_ref() {
+                self.linked_docs_guard(&rec.worktree, cx)?;
+            }
             return self.request_pr_update(rec, &run);
+        }
+        // Someone else's PR: a push to it, never a new one (§5.5).
+        if let Some(cx) = cx.as_ref().filter(|cx| cx.feature.pr_link.is_some()) {
+            return self.request_pr_linked(rec, cx);
         }
         let (title, body, draft) = pr_text(args)?;
         // The feature's issues are closed by its PR (spec §3.1).
@@ -1271,6 +1279,9 @@ impl Runtime {
     /// After the PR gate is approved: push with the user's credentials, open
     /// the PR, tell the agent (ADR-009: only the app pushes).
     pub(crate) fn open_pr(&self, item: u64, p: &Value) {
+        if p.get("linked").is_some_and(Value::is_object) {
+            return self.push_pr_linked(item, p);
+        }
         let agent = self.store.read(|s| s.inbox.iter().find(|i| i.id == item).and_then(|i| i.agent_id.clone()));
         let s = |k: &str| p.get(k).and_then(Value::as_str).unwrap_or("").to_string();
         let wt = std::path::PathBuf::from(s("worktree"));

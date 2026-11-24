@@ -5,6 +5,7 @@
 // Copy: docs/design/p4-design-notes.md §3–§5.
 
 import { clock, waited } from './format.js';
+import { isLinkedPush, linkedGate, pushedLine, pushRefusal, pushTitle } from './prlink.js';
 import { decisionKind } from './status.js';
 
 export const UNDO_MS = 5000;
@@ -282,7 +283,7 @@ export function effectText(d, mine = {}) {
   const agent = agentOf(d) ?? 'the agent';
   const eta = lc.effect_detail ? ` starts ${lc.effect_detail}` : '';
   const { action, message } = mine;
-  if (lc.state === 'failed') return `Failed: ${cut(lc.error ?? 'unknown error', 80)}`;
+  if (lc.state === 'failed') return pushRefusal(d) ?? `Failed: ${cut(lc.error ?? 'unknown error', 80)}`;
   switch (lc.effect) {
     case 'allowed':
       if (d.kind === 'sandbox') return `Allowed · ${agent} restarts and retries`;
@@ -322,6 +323,8 @@ export function effectText(d, mine = {}) {
       return `Answer queued · ${agent}${eta}`;
     case 'pr_opened':
       return prOpened(d, lc.effect_detail);
+    case 'pr_pushed':
+      return pushedLine(d);
     case 'restarted':
       return `Restarted fresh · ${agent}`;
     case 'retried':
@@ -365,6 +368,8 @@ export function decisionToast(d, mine = null) {
   // A dismissal (Dismiss, Delete, an alert's Restart fresh, answered in the
   // pane) keeps the `dismissed` state; its effect says what happened.
   if (lc.state !== 'effect' && lc.state !== 'failed' && lc.state !== 'dismissed') return null;
+  if (lc.effect === 'pr_pushed' && lc.state !== 'failed')
+    return `Pushed to PR #${d.payload?.linked?.number ?? ''}`.trim();
   if (mine || lc.decided_by === 'user' || lc.state === 'failed') return effectText(d, mine ?? {});
   const by = lc.decided_by ?? '';
   if (lc.effect === 'restarted') return `Restarted fresh · ${agent}`;
@@ -393,7 +398,7 @@ export function marker(d, pending = null, now = Date.now()) {
         return { state: 'sent', text: `Pushing ${d.payload?.branch ?? 'the branch'}…` };
       return { state: 'sent', text: `Sent to ${agent}${at(lc.sent_at_ms)}` };
     case 'effect': {
-      const url = lc.effect === 'pr_opened' ? lc.effect_detail : null;
+      const url = lc.effect === 'pr_opened' || lc.effect === 'pr_pushed' ? lc.effect_detail : null;
       // Settled by the Overwatch while you were reading it (P4.4 notes §3).
       if (lc.decided_by === 'overwatch' && (lc.effect === 'allowed' || lc.effect === 'denied'))
         return {
@@ -403,7 +408,7 @@ export function marker(d, pending = null, now = Date.now()) {
       return { state: 'effect', text: `${effectText(d) ?? 'Done'}${at(lc.effect_at_ms)}`, url };
     }
     case 'failed':
-      return { state: 'failed', text: `Failed · ${lc.error ?? 'unknown error'}` };
+      return { state: 'failed', text: pushRefusal(d) ?? `Failed · ${lc.error ?? 'unknown error'}` };
     case 'stale':
       return { state: 'stale', text: `Stale · ${lc.stale_why ?? 'the context changed'}` };
     case 'dismissed':
@@ -430,6 +435,8 @@ export function due(pending, now) {
 
 // ---------------------------------------------------------------- PR gates (allow-multiple-prs ux-brief §3)
 
+// The lines only a linked push has (prlink.js linkedGate), absent on the other PR gates.
+const NO_LINKED = { lease: null, diffHead: null, moved: null };
 const isPrGate = (d) => d?.kind === 'gate' && ['push_pr', 'push_pr_update'].includes(d.payload?.action);
 
 /**
@@ -439,6 +446,7 @@ const isPrGate = (d) => d?.kind === 'gate' && ['push_pr', 'push_pr_update'].incl
  */
 export function prGateTitle(d, issueTitle = null) {
   const p = d?.payload;
+  if (isLinkedPush(d)) return pushTitle(p);
   if (!isPrGate(d) || !p.issue) return null;
   if (p.action === 'push_pr_update') return `Push to PR #${p.pr_number} (${p.issue})`;
   return `Open PR for ${p.issue}${issueTitle ? ` "${issueTitle}"` : ''}`;
@@ -450,9 +458,10 @@ export function prGateTitle(d, issueTitle = null) {
  * when the feature lists issues. `feature` is the gate's feature (its issues).
  * Returns `{ title, sub, note, closes }`, null for another card.
  */
-export function prGate(d, feature = null) {
+export function prGate(d, feature = null, run = null) {
   if (!isPrGate(d)) return null;
   const p = d.payload;
+  if (isLinkedPush(d)) return { ...linkedGate(d, feature, run), closes: null };
   const issues = feature?.issues ?? [];
   if (p.issue) {
     const title = issues.find((i) => i.ref === p.issue)?.title ?? null;
@@ -461,6 +470,7 @@ export function prGate(d, feature = null) {
       sub: p.branch ? `${p.branch} → ${p.base ?? 'main'}` : null,
       note: p.action === 'push_pr' ? `Built from the integration branch: tasks of ${p.issue} and shared work.` : null,
       closes: null,
+      ...NO_LINKED,
     };
   }
   return {
@@ -468,5 +478,6 @@ export function prGate(d, feature = null) {
     sub: null,
     note: null,
     closes: p.action === 'push_pr' && issues.length ? `Closes ${issues.map((i) => i.ref).join(', ')}` : null,
+    ...NO_LINKED,
   };
 }

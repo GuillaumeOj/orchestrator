@@ -139,6 +139,7 @@ const EFFECT_VERB = {
   allowed: 'allowed',
   denied: 'denied',
   pr_opened: 'approved',
+  pr_pushed: 'pushed',
   restarted: 'restarted',
   applied: 'applied',
   skipped: 'skipped',

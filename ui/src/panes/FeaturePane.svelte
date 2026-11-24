@@ -20,15 +20,17 @@
   import Select from '../components/Select.svelte';
   import StatusBadge from '../components/StatusBadge.svelte';
   import HintRow from '../components/work/HintRow.svelte';
-  import { app, boardNotice, confirm, openAgent, openCanvas, openEditor, openUrl, refresh, toast } from '../lib/app.svelte.js';
+  import { app, boardNotice, confirm, focusCard, openAgent, openCanvas, openEditor, openUrl, refresh, toast } from '../lib/app.svelte.js';
   import { deliveryMark } from '../lib/delivery.js';
   import { isDesign } from '../lib/ecosystem.js';
   import { designsWithDocs, locationOf, slashed } from '../lib/featuredocs.js';
   import { ago, dayHm, plural } from '../lib/format.js';
+  import { isOpen } from '../lib/inbox.js';
   import { errText, invoke } from '../lib/ipc.js';
   import { isTypingTarget } from '../lib/keyboard.js';
   import { onTopics, runAttention, runPhase, statusOf } from '../lib/now.svelte.js';
   import { isPerIssue, prsCounts } from '../lib/pr.js';
+  import { branchOf, closedText, foreignHeadWarning, linkedLine, linkedState, linkOf, prePushText } from '../lib/prlink.js';
   import { docRepoPath, runFinished, runStateColor, runStateLabel, TL_FILTERS, timelineFilter, timelineText } from '../lib/teams.js';
   import { ifCut, tooltip } from '../lib/tooltip.js';
   import { openWork } from '../lib/work.js';
@@ -66,18 +68,29 @@
   // The run's phase as the core's run record has it (a finished run has none: its status).
   const rr = $derived(run ? runAttention(run.id) : null);
   const phase = $derived(runPhase(run));
+  // A feature linked to someone else's PR (notes §3): its link, where it stands, the push gate waiting on you.
+  const link = $derived(linkOf(v?.feature));
+  const ll = $derived(link ? linkedLine(link) : null);
+  const lstate = $derived(link ? linkedState(run) : null);
+  const pushGate = $derived(
+    link && run
+      ? (Object.values(app.now?.decisions ?? {}).find((d) => d.kind === 'gate' && d.payload?.action === 'push_pr' && d.payload?.run === run.id && isOpen(d)) ?? null)
+      : null,
+  );
+  const foreign = $derived(link && run?.pr?.foreign_head && lstate !== 'merged' ? foreignHeadWarning(link, run.pr) : null);
   /** Row 2 of the header: the pieces present, joined by ` · ` (the branch piece is always there). */
-  const metaText = $derived(
+  const metaPieces = $derived(
     v
       ? [
           v.team ? `${v.team.name} v${v.team.version}` : null,
-          `\u{E725} ${v.feature.integration_worktree ? `orch/${v.feature.slug}/integration` : '—'}`,
+          `\u{E725} ${v.feature.integration_worktree ? branchOf(v.feature) : '—'}`,
+          link ? 'PR' : null, // the slot of the link button (notes §3.1)
           run ? `started ${ago(run.started_at_ms)}` : null,
-        ]
-          .filter(Boolean)
-          .join(' · ')
-      : '',
+        ].filter(Boolean)
+      : [],
   );
+  const metaText = $derived(metaPieces.map((x) => (x === 'PR' ? `PR #${link.number}` : x)).join(' · '));
+
 
   // allow-multiple-prs: the card lists one row per issue in that mode (the view keeps `issue: null` in single mode).
   const perIssue = $derived(v?.feature?.pr_mode === 'per_issue' || isPerIssue(run?.prs_view));
@@ -359,7 +372,7 @@
           <Menu items={menu} label="More actions" />
         </span>
       </div>
-      <div class="row2 muted" use:tooltip={ifCut(metaText)}>{metaText}</div>
+      <div class="row2 muted" use:tooltip={ifCut(metaText)}>{#each metaPieces as piece, i (i)}{#if i}{' · '}{/if}{#if piece === 'PR'}<button type="button" class="link" aria-label="Open PR #{link.number} on GitHub" onclick={() => openUrl(link.url)}>PR #{link.number}</button>{:else}{piece}{/if}{/each}</div>
       <FeatureIssues feature={v.feature} {run} onsaved={(f) => (v = { ...v, feature: f })} />
     </header>
 
@@ -436,10 +449,21 @@
 
         <section class="card">
           <div class="cardh"><b>PR and artifacts</b>{#if perIssue}<span class="muted">{prsCounts(run?.prs_view)}</span><span class="grow"></span><PrRefresh {run} feature={spec.featureId} onrun={(r) => (v = { ...v, run: r })} />{/if}</div>
+          {#if ll}
+            <p class="linked cap" data-linked-line><span class="muted">Works on</span> <button type="button" class="link" aria-label="Open PR #{ll.number} on GitHub" onclick={() => openUrl(ll.url)}>PR #{ll.number} <span aria-hidden="true">{'\u{F03CC}'}</span></button> <span class="muted">·</span> <span class="mono">{ll.branches}</span> <span class="muted">· opened by {ll.author}</span></p>
+            {#if foreign}
+              <p class="warnline cap" data-foreign-head><span aria-hidden="true">{'\u{F0026}'}</span> {foreign.before}{#if foreign.sha}<button type="button" class="link mono" onclick={() => openUrl(foreign.url)}>{foreign.sha}</button>{foreign.after}{/if}</p>
+            {/if}
+          {/if}
           {#if perIssue && run?.prs_view?.length}<PrRows {run} feature={v.feature} {taskCounts} onrun={(r) => (v = { ...v, run: r })} />
           {:else if perIssue}<p class="muted">No PR yet: the lead asks with request_pr per issue after integration (PR gate).</p>
           {:else if run?.pr_url}<PrLine {run} feature={spec.featureId} onrun={(r) => (v = { ...v, run: r })} />
           {:else}<p class="muted">No PR yet: the lead asks with request_pr after integration (PR gate).</p>{/if}
+          {#if lstate === 'before'}
+            <p class="muted nline" data-prepush>{prePushText(link.number, !!pushGate)}{#if pushGate} <button type="button" class="link" onclick={() => focusCard(pushGate.id)}>Show card</button>{/if}</p>
+          {:else if lstate === 'closed'}
+            <p class="nline closedline" data-closed>{closedText(link.number)}</p>
+          {/if}
           {#each v.artifacts.filter((a) => !isDesign(a)) as a (a.id)}
             <div class="art"><span class="muted">{a.kind}</span> <span class="ell">{a.uri}</span> <span class="muted">({a.from_node}{a.to_node ? ` → ${a.to_node}` : ''})</span></div>
           {/each}
@@ -515,6 +539,30 @@
   .nerr {
     margin: 0;
     font: var(--text-caption);
+  }
+  .linked,
+  .warnline {
+    margin: 0;
+  }
+  .link {
+    padding: 0;
+    background: none;
+    border: 0;
+    color: var(--color-accent-default);
+    font: inherit;
+    cursor: pointer;
+  }
+  .link:hover {
+    text-decoration: underline;
+  }
+  .cap {
+    font: var(--text-caption);
+  }
+  .warnline {
+    color: var(--color-status-queued);
+  }
+  .closedline {
+    color: var(--color-status-error);
   }
   .nerr {
     padding: var(--space-sm) var(--space-md);

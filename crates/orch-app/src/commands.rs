@@ -583,6 +583,12 @@ pub async fn run_act(core: CoreState<'_>, run: String, action: String) -> Res<Va
     blocking(core, move |c| c.run_act(&run, &action)).await
 }
 
+/// F7: the integration branch and what a delete keeps of it.
+#[tauri::command]
+pub async fn feature_delete_plan(core: CoreState<'_>, feature: String) -> Res<Value> {
+    blocking(core, move |c| c.runtime()?.feature_delete_plan(&feature)).await
+}
+
 #[tauri::command]
 pub async fn feature_delete(core: CoreState<'_>, feature: String, remove_worktrees: bool, discard: bool) -> Res<Value> {
     blocking(core, move |c| c.feature_delete(&feature, remove_worktrees, discard)).await
@@ -969,6 +975,12 @@ pub async fn project_branches(core: CoreState<'_>, id: String) -> Res<Vec<String
 #[tauri::command]
 pub async fn project_detail(core: CoreState<'_>, id: String, with_prs: bool) -> Res<Value> {
     blocking(core, move |c| c.project_detail(&id, with_prs)).await
+}
+
+/// The launch prefill of a PR: brief, slug, link, notes, warnings (api-contract §2).
+#[tauri::command]
+pub async fn pr_prefill(core: CoreState<'_>, project: String, number: u64) -> Res<Value> {
+    blocking(core, move |c| c.pr_prefill(&project, number)).await
 }
 
 #[tauri::command]

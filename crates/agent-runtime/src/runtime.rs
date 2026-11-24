@@ -4251,7 +4251,8 @@ pub(crate) mod tests {
             db.write(|tx| {
                 tx.execute_batch(
                     "DROP INDEX usage_samples_session; ALTER TABLE usage_samples DROP COLUMN session_id;
-                     ALTER TABLE features DROP COLUMN docs_location; PRAGMA user_version = 22;",
+                     ALTER TABLE features DROP COLUMN docs_location; ALTER TABLE features DROP COLUMN branch;
+                     ALTER TABLE features DROP COLUMN pr_link; PRAGMA user_version = 22;",
                 )?;
                 Ok(())
             })

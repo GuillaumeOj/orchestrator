@@ -305,6 +305,22 @@ fn rebase_git(wt: &Path, gitconfig: Option<&Path>, args: &[&str]) -> Result<Stri
     run(c, None)
 }
 
+/// The label (`origin/<branch>`) the app recorded when it started the rebase in progress.
+pub fn rebase_label(worktree_path: &Path) -> Option<String> {
+    let gd = worktree::inspect(&real(worktree_path)).gitdir?;
+    std::fs::read_to_string(gd.join("orch-rebase-onto")).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+}
+
+/// Records (`Some`) or forgets (`None`) the label of the rebase in progress.
+pub fn set_rebase_label(worktree_path: &Path, label: Option<&str>) {
+    let Some(gd) = worktree::inspect(&real(worktree_path)).gitdir else { return };
+    let f = gd.join("orch-rebase-onto");
+    match label {
+        Some(l) => drop(std::fs::write(f, l)),
+        None => drop(std::fs::remove_file(f)),
+    }
+}
+
 fn rebase_file(gitdir: &Path, name: &str) -> Option<String> {
     ["rebase-merge", "rebase-apply"]
         .iter()
@@ -443,9 +459,15 @@ mod tests {
     fn merges_into_a_worktree_and_reports_conflicts() {
         let (d, repo) = scratch_repo();
         let led = MemLedger::default();
-        let integ = worktree::ensure(&led, &repo, &WorktreeKindSpec::Integration { feature: "f".into() }, None, None)
-            .unwrap()
-            .path;
+        let integ = worktree::ensure(
+            &led,
+            &repo,
+            &WorktreeKindSpec::Integration { feature: "f".into(), branch: None },
+            None,
+            None,
+        )
+        .unwrap()
+        .path;
         let back = worktree::ensure(
             &led,
             &repo,
@@ -522,9 +544,15 @@ mod tests {
     fn feature() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf, PathBuf) {
         let (d, repo) = scratch_repo();
         let led = MemLedger::default();
-        let integ = worktree::ensure(&led, &repo, &WorktreeKindSpec::Integration { feature: "f".into() }, None, None)
-            .unwrap()
-            .path;
+        let integ = worktree::ensure(
+            &led,
+            &repo,
+            &WorktreeKindSpec::Integration { feature: "f".into(), branch: None },
+            None,
+            None,
+        )
+        .unwrap()
+        .path;
         let back = worktree::ensure(
             &led,
             &repo,

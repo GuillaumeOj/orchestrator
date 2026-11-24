@@ -739,6 +739,13 @@ WHERE usage_samples.id = p.id
     r#"
 ALTER TABLE features ADD COLUMN docs_location TEXT;
 "#,
+    // 25 (allow-launch-team-on-update-pr §5.3): the integration branch when it
+    // is not `orch/<slug>/integration` (a PR's head branch), and the PR the
+    // feature works on (JSON `PrLink`). NULL = an unlinked feature.
+    r#"
+ALTER TABLE features ADD COLUMN branch TEXT;
+ALTER TABLE features ADD COLUMN pr_link TEXT;
+"#,
 ];
 
 pub(crate) fn migrate(c: &mut Connection) -> Result<()> {

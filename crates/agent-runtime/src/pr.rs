@@ -36,6 +36,8 @@ pub(crate) type PrWatch = BTreeMap<String, u64>;
 pub enum PrChange {
     Merged,
     Closed,
+    /// Open again after it was seen closed (a linked PR, F5).
+    Reopened,
     /// `ci.overall` changed to or from `error` / `ok` (or failed again on a new head).
     Ci {
         from: String,
@@ -65,6 +67,9 @@ pub fn pr_changes(old: Option<&PrStatus>, new: &PrStatus) -> Vec<PrChange> {
         };
     }
     let mut out = vec![];
+    if old_state == "closed" {
+        out.push(PrChange::Reopened);
+    }
     let from = old.map_or("none", |o| o.ci.overall.as_str());
     let to = new.ci.overall.as_str();
     let decisive = |s: &str| s == "error" || s == "ok";
@@ -124,7 +129,7 @@ impl Runtime {
     // ------------------------------------------------------------ gh seam
 
     /// `gh pr view` in `dir`; tests replace `gh` through `cfg.gh`.
-    fn gh_pr_view(&self, dir: &Path, number: u64) -> Result<PrView> {
+    pub(crate) fn gh_pr_view(&self, dir: &Path, number: u64) -> Result<PrView> {
         match self.gh_override() {
             Some(g) => gh::parse_pr_view(&g.run(&gh::pr_view_args(number))?),
             None => gh::pr_view(dir, number),
@@ -159,14 +164,14 @@ impl Runtime {
 
     /// The background pass (every [`PR_EVERY`], on the fetch thread): checks
     /// each open PR of each `pr_open` run (one per issue in `per_issue`
-    /// mode), paused and deferred runs included. Nothing while offline or on
-    /// low battery (FR-103).
+    /// mode), paused and deferred runs included, and the PR of each linked
+    /// run from its launch (§5.6). Nothing while offline or on low battery (FR-103).
     pub fn pr_tick(&self, now: u64) {
         if orch_git::fetch::blocked(&self.cfg.fetch, self.cfg.conditions.as_ref()).is_some() {
             return;
         }
         let runs = self.db.runs(None, true).unwrap_or_default();
-        for r in runs.iter().filter(|r| effective(r) == RunState::PrOpen) {
+        for r in runs.iter().filter(|r| effective(r) == RunState::PrOpen || self.linked_watch(r)) {
             if r.pr_number.is_some() {
                 if let Err(e) = self.pr_check(&r.id, false, now, None) {
                     self.run_event(&r.id, None, "pr.error", json!(format!("{e:#}")));
@@ -179,6 +184,13 @@ impl Runtime {
                 }
             }
         }
+    }
+
+    /// A linked run not yet (or no longer) `pr_open`: its PR is still watched.
+    fn linked_watch(&self, r: &TeamRun) -> bool {
+        r.pr_number.is_some()
+            && !effective(r).finished()
+            && self.db.feature(&r.feature_id).ok().flatten().is_some_and(|f| f.pr_link.is_some())
     }
 
     /// `pr_refresh`: checks the open PRs of the feature's latest run now
@@ -261,6 +273,10 @@ impl Runtime {
             pushed_sha,
             checked_at_ms: now,
             error: None,
+            // Set by the caller (a linked feature's PR).
+            linked: false,
+            foreign_head: false,
+            foreign_head_sha: None,
         };
         if st.state != "open" {
             watch.remove(key);
@@ -300,16 +316,60 @@ impl Runtime {
             };
         new.unpushed = orch_git::cleanup::try_ahead_behind(&wt, "HEAD", &new.head_sha).map_or(0, |(a, _)| a);
         new.rewritten = new.pushed_sha.as_deref().is_some_and(|p| !orch_git::cleanup::is_merged(&wt, p, "HEAD"));
+        if let Some(l) = &feature.pr_link {
+            // G6: a head that is neither what the app pushed (or linked at)
+            // nor in the branch was pushed by someone else.
+            let known = new.pushed_sha.as_deref().unwrap_or(&l.head_sha_at_link);
+            new.linked = true;
+            new.foreign_head = new.state == "open"
+                && new.head_sha != known
+                && !orch_git::cleanup::is_merged(&wt, &new.head_sha, "HEAD");
+            new.foreign_head_sha = new.foreign_head.then(|| new.head_sha.clone());
+        }
         // Only the PR columns: a pause or stop made while `gh` and the fetch ran stays.
         self.db.set_run_pr(run_id, &new, Some(&url).filter(|u| !u.is_empty()).map(String::as_str))?;
         drop(watch);
         let run = self.db.run(run_id)?.ok_or_else(|| anyhow!("no team run {run_id}"))?;
+        let state = effective(&run);
+        let changes = pr_changes(old.as_ref(), &new);
         // A refresh of a run no longer `pr_open` (done, failed, back to
-        // integrating) stores the status but moves and tells nothing.
-        if effective(&run) == RunState::PrOpen {
-            self.pr_apply(&run, &feature, None, n, &pr_changes(old.as_ref(), &new));
+        // integrating) stores the status but moves and tells nothing; a
+        // linked run's PR is followed from launch, but before `pr_open`
+        // only its end, closing and reopening count (§5.6).
+        if state == RunState::PrOpen {
+            self.pr_apply(&run, &feature, None, n, &changes);
+        } else if feature.pr_link.is_some() && !state.finished() {
+            let ends: Vec<PrChange> = changes
+                .into_iter()
+                .filter(|c| matches!(c, PrChange::Merged | PrChange::Closed | PrChange::Reopened))
+                .collect();
+            self.pr_apply(&run, &feature, None, n, &ends);
+        }
+        if new.foreign_head && !state.finished() && old.and_then(|o| o.foreign_head_sha) != new.foreign_head_sha {
+            self.foreign_head_told(&run, &feature, n, &new.head_sha);
         }
         Ok(self.db.run(run_id)?.unwrap_or(run))
+    }
+
+    /// One ORCH turn per new foreign head of a linked PR (§5.6, G6).
+    fn foreign_head_told(&self, run: &TeamRun, feature: &Feature, n: u64, head: &str) {
+        let by = feature.pr_link.as_ref().and_then(|l| l.author.as_deref()).map(|a| format!(", probably by {a}"));
+        self.run_event(&run.id, None, "pr.foreign_head", json!({"number": n, "head_sha": head}));
+        // G4: rebase_base onto pr_head is open from planning on.
+        let when = if matches!(effective(run), RunState::Draft | RunState::Spec | RunState::SpecGate) {
+            "once the spec is approved and no task is in progress"
+        } else {
+            "once no task is in progress"
+        };
+        let text = format!(
+            "ORCH: PR #{n}'s head moved to {} (pushed outside the app{}). Bring it in with mcp__orch__rebase_base \
+             {{\"onto\": \"pr_head\"}} {when}, before asking for the push.",
+            crate::inbox::short(head),
+            by.unwrap_or_default()
+        );
+        if let Some(lead) = self.run_ctx(&run.id).ok().and_then(|cx| self.lead_of(&cx)) {
+            let _ = self.deliver_kind(&lead.id, &text, TurnKind::Continue);
+        }
     }
 
     /// [`Runtime::pr_check`] for the PR of `issue` (`per_issue` mode):
@@ -397,6 +457,28 @@ impl Runtime {
                         &label,
                         *c == PrChange::Merged,
                     ));
+                }
+                PrChange::Reopened if issue.is_none() && feature.pr_link.is_some() => {
+                    self.run_event(&run.id, None, "pr.reopened", json!({"number": n}));
+                    // Closed once `pr_open` (the app had pushed): back to it, followed again.
+                    let pushed = pr.is_some_and(|p| p.pushed_sha.is_some());
+                    if pushed
+                        && effective(run) == RunState::Integrating
+                        && self.advance_inner(&run.id, RunState::PrOpen, "pull request reopened", false).is_ok()
+                    {
+                        tell.push(format!(
+                            "ORCH: PR #{n} is open again: the run is back to pr_open; mcp__orch__request_pr pushes \
+                             new commits to it."
+                        ));
+                    } else {
+                        tell.push(format!(
+                            "ORCH: PR #{n} is open again: mcp__orch__request_pr pushes the team's commits to it."
+                        ));
+                    }
+                }
+                PrChange::Reopened => {}
+                PrChange::Merged | PrChange::Closed if feature.pr_link.is_some() => {
+                    tell.push(self.linked_pr_ended(run, feature, n, &url, *c == PrChange::Merged));
                 }
                 PrChange::Merged | PrChange::Closed => {
                     let (to, why, what, lead) = if *c == PrChange::Merged {
@@ -489,6 +571,58 @@ impl Runtime {
         }
     }
 
+    /// A linked PR merged (→ done, from any state) or closed outside the app
+    /// (§5.5: a `pr_open` or `pr_gate` run goes back to integrating, any other keeps its
+    /// state; `request_pr` is refused until it is reopened). The lead's turn.
+    fn linked_pr_ended(&self, run: &TeamRun, feature: &Feature, n: u64, url: &str, merged: bool) -> String {
+        let what = if merged { "merged" } else { "closed" };
+        let why = format!("pull request {what}");
+        let moved = if merged {
+            // Linked: done from whatever step the team is at, a pause included.
+            self.move_run(&run.id, RunState::Done, &why, false).map(|_| ())
+        } else if matches!(effective(run), RunState::PrOpen | RunState::PrGate) {
+            // `pr_gate` too: its push gate is withdrawn below, and `rebase_base` is refused in that state.
+            self.advance_run(&run.id, RunState::Integrating, &why).map(|_| ())
+        } else {
+            Ok(())
+        };
+        if let Err(e) = moved {
+            self.run_event(&run.id, None, "team_error", json!(format!("{e:#}")));
+        }
+        self.run_event(&run.id, None, &format!("pr.{what}"), json!({"number": n, "linked": true}));
+        self.withdraw_pr_updates(&run.id, None, &why);
+        // A push asked before the merge or the close has nothing to push to.
+        let run_id = run.id.as_str();
+        self.close_items_where(
+            |i| {
+                i.payload.get("action") == Some(&json!("push_pr"))
+                    && i.payload.get("linked").is_some_and(Value::is_object)
+                    && i.payload.get("run").and_then(Value::as_str) == Some(run_id)
+            },
+            &why,
+        );
+        let title = if merged {
+            format!("Feature {} merged", feature.slug)
+        } else {
+            format!("Feature {} PR closed", feature.slug)
+        };
+        let _ = self.add_item(
+            None,
+            "info",
+            title,
+            json!({"action": format!("pr_{what}"), "run": run.id, "feature": feature.id, "pr_number": n, "url": url}),
+            PRIORITY_ALERT,
+        );
+        if merged {
+            format!("ORCH: PR #{n} was merged. The feature is done; end your turn.")
+        } else {
+            format!(
+                "ORCH: PR #{n} was closed outside the app. Ask the user what they want with mcp__orch__ask_user; \
+                 mcp__orch__request_pr is refused while it is closed (never open another pull request)."
+            )
+        }
+    }
+
     /// Closes the pending update gates of a run's PR (merged or closed):
     /// in `per_issue` mode only those of `issue`.
     fn withdraw_pr_updates(&self, run_id: &str, issue: Option<&str>, why: &str) {
@@ -541,8 +675,11 @@ impl Runtime {
         let u = url.as_str();
         run.pr_url = Some(url.clone());
         run.pr_number = Some(number);
-        // A new PR (after one was closed): the old one's status goes.
-        run.pr = None;
+        // A new PR (after one was closed): the old one's status goes. A
+        // linked PR is the same one, watched since launch: it stays.
+        if !run.pr.as_ref().is_some_and(|p| p.linked) {
+            run.pr = None;
+        }
         let _ = self.db.upsert_run(&run);
         let _ = self.advance_run(&run.id, RunState::PrOpen, "pull request opened");
         self.run_event(&run.id, None, "pr.opened", json!({"number": number, "url": u}));
@@ -600,7 +737,8 @@ impl Runtime {
         // foreign commits already in the base (checked above).
         let lease = pr.head_sha.clone();
         let force = !orch_git::cleanup::is_merged(wt, &lease, "HEAD");
-        let commits = gh::commits_since(wt, if force { &base_ref } else { &lease })?;
+        let from = if force { base_ref } else { lease.clone() };
+        let commits = gh::commits_since(wt, &from)?;
         if commits.is_empty() || head == lease {
             bail!("nothing to push: {branch} has no commit that PR #{n} lacks");
         }
@@ -610,16 +748,16 @@ impl Runtime {
             format!("{}: push {} commit(s) to PR #{n} ({branch})", rec.id, commits.len())
         };
         let url = run.pr_url.clone().unwrap_or_default();
-        let id = self.add_item(
-            Some(&rec.id),
-            "gate",
-            title,
-            json!({"action": "push_pr_update", "run": run.id, "issue": null, "branch": branch, "pr_number": n, "url": url,
+        let mut payload = json!({"action": "push_pr_update", "run": run.id, "issue": null, "branch": branch, "pr_number": n, "url": url,
                    "commits": commits.iter().map(|(sha, subject)| json!({"sha": sha, "subject": subject})).collect::<Vec<_>>(),
                    "force": force, "lease_sha": lease, "foreign_replaced": foreign_replaced, "head": head,
-                   "base": pr.base, "worktree": wt}),
-            PRIORITY_GATE,
-        )?;
+                   "base": pr.base, "worktree": wt});
+        // A linked PR is someone else's: its gate shows the team's new commits only.
+        if self.db.feature(&run.feature_id).ok().flatten().is_some_and(|f| f.is_linked()) {
+            payload["linked"] = json!({"number": n, "url": url});
+            payload["diff_base"] = json!(from);
+        }
+        let id = self.add_item(Some(&rec.id), "gate", title, payload, PRIORITY_GATE)?;
         self.db.audit(
             &format!("agent:{}", rec.id),
             Some(&rec.id),
@@ -1341,6 +1479,7 @@ mod tests {
         let text = ok(rt, LEAD, "commit", json!({"message": "resolve"}));
         assert!(text.starts_with("Rebased orch/fx/integration onto origin/main"), "{text}");
         assert_eq!(events(&fx, "git.rebase").len(), 1);
+        assert_eq!(events(&fx, "git.rebase")[0]["onto"], "origin/main", "the recorded target, not a guess");
         assert!(
             rt.db.audit_log(Some(LEAD), 50).unwrap().iter().any(|a| a.action == "rebase" && a.decision == "conflict")
         );

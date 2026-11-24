@@ -118,6 +118,39 @@ pub struct FeatureCtx {
     /// Where its docs and designs are saved (empty: the legacy folders).
     #[serde(default)]
     pub docs: crate::DocsLocation,
+    /// The integration branch when it is not `orch/<slug>/integration` (a
+    /// PR's head branch).
+    #[serde(default)]
+    pub branch: Option<String>,
+    /// The pull request the feature works on (allow-launch-team-on-update-pr §5.3.5).
+    #[serde(default)]
+    pub pr: Option<LinkedPr>,
+}
+
+/// Someone else's PR a feature is linked to: its integration branch is the head.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LinkedPr {
+    pub number: u64,
+    pub url: String,
+    pub head: String,
+    pub base: String,
+    #[serde(default)]
+    pub author: Option<String>,
+}
+
+/// The lead's "Pull requests" line for a feature on someone else's PR.
+pub fn linked_prs_line(p: &LinkedPr) -> String {
+    let by = p.author.as_deref().map(|a| format!(", opened by {a}")).unwrap_or_default();
+    format!(
+        "this feature works on PR #{n} ({url}: `{head}` → `{base}`{by}). The integration branch is `{head}`. Never \
+         open a pull request: mcp__orch__request_pr pushes the team's commits to PR #{n}. The feature docs are in \
+         the app folder, never on the branch. When you are told PR #{n}'s head moved, bring it in with \
+         mcp__orch__rebase_base {{\"onto\": \"pr_head\"}} once no task is in progress.",
+        n = p.number,
+        url = p.url,
+        head = p.head,
+        base = p.base,
+    )
 }
 
 /// The lead's "Pull requests" line (allow-multiple-prs spec §3.7), also the
@@ -139,7 +172,7 @@ pub fn prs_line(issues: &[String], per_issue: bool) -> String {
 
 impl FeatureCtx {
     pub fn integration_branch(&self) -> String {
-        format!("orch/{}/integration", self.slug)
+        self.branch.clone().unwrap_or_else(|| format!("orch/{}/integration", self.slug))
     }
     /// The resolved folders (the legacy ones when none was given).
     pub fn location(&self) -> crate::DocsLocation {
@@ -307,7 +340,7 @@ fn lead_protocol(team: &Team, f: &FeatureCtx) -> String {
          again when it reports. A task created with `plan_first` starts with a plan: approve it or send it back \
          with mcp__orch__decide_plan.\n\
          7. When every task is done and the integration branch passes its tests, call mcp__orch__request_pr. The \
-         user approves the pull request; the orchestrator pushes and opens it. Once the PR is open the feature is \
+         user approves {}. Once the PR is open the feature is \
          not done: you are told when CI fails or the PR falls behind or conflicts with its base. Fix it: tasks as \
          usual for CI; mcp__orch__rebase_base (once every task is merged) when it is behind or conflicts. Then \
          mcp__orch__request_pr again to push. The feature is done when the PR is merged.\n\
@@ -323,7 +356,14 @@ fn lead_protocol(team: &Team, f: &FeatureCtx) -> String {
         if specialists.is_empty() { "yourself".to_string() } else { specialists.join(", ") },
         review_step(team.review),
         f.integration_branch(),
-        prs_line(&f.issues, f.per_issue)
+        match &f.pr {
+            Some(p) => format!("the push; the orchestrator pushes to PR #{}", p.number),
+            None => "the pull request; the orchestrator pushes and opens it".into(),
+        },
+        match &f.pr {
+            Some(p) => linked_prs_line(p),
+            None => prs_line(&f.issues, f.per_issue),
+        }
     )
 }
 
@@ -416,6 +456,30 @@ mod tests {
         );
         assert!(per.contains("the feature is done when every issue's PR is merged."));
         assert!(!compile_node(&t, "back", &roles, &ctx()).unwrap().prompt.contains("Pull requests:"));
+    }
+
+    #[test]
+    fn a_lead_on_a_linked_pr_pushes_to_it() {
+        let (roles, t) = presets::full_stack();
+        let pr = LinkedPr {
+            number: 42,
+            url: "https://github.com/o/r/pull/42".into(),
+            head: "renovate/foo".into(),
+            base: "main".into(),
+            author: Some("renovate[bot]".into()),
+        };
+        let f = FeatureCtx { branch: Some("renovate/foo".into()), pr: Some(pr), ..ctx() };
+        let p = compile_node(&t, "lead", &roles, &f).unwrap().prompt;
+        assert!(
+            p.contains(
+                "Pull requests: this feature works on PR #42 (https://github.com/o/r/pull/42: `renovate/foo` → \
+                 `main`, opened by renovate[bot]). The integration branch is `renovate/foo`. Never open a pull request"
+            ),
+            "{p}"
+        );
+        assert!(p.contains("The user approves the push; the orchestrator pushes to PR #42."), "{p}");
+        assert!(!p.contains("pushes and opens it"));
+        assert!(p.contains("{\"onto\": \"pr_head\"}"));
     }
 
     #[test]

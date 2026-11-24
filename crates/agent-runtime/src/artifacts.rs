@@ -346,6 +346,8 @@ mod tests {
             issues: vec![],
             pr_mode: Default::default(),
             docs_location: None,
+            branch: None,
+            pr_link: None,
         };
         rt.db.upsert_feature(&f).unwrap();
         let dir = ".orchestrator/features/shop/design";

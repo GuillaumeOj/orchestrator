@@ -18,6 +18,7 @@ import * as L from './layout.js';
 import { runNowCost, runNowDialog } from './mission.js';
 import { attention, clearDigest, counts, needsYou, statusOf } from './now.svelte.js';
 import { canOpenSession, overwatchOf } from './overwatch.js';
+import { keptText } from './prlink.js';
 import { reason as reasonOf } from './sandbox.js';
 import { isLocalHost, liveTitle, looksLikePath, POLL_MS, parseOsc7 } from './shellcwd.js';
 import { STATUS } from './status.js';
@@ -1477,8 +1478,13 @@ export async function deleteAgent(id, removeWorktree, confirmDiscard) {
 export async function deleteFeature(featureId, removeWorktrees, discard) {
   const r = await invoke('feature_delete', { feature: featureId, removeWorktrees, discard });
   const kept = r.worktrees.filter((w) => w.error || w.kept).length;
+  // A PR branch kept for its unpushed commits (D2) is not an error (F7).
+  const branches = keptText(
+    r.kept,
+    features().find((f) => f.id === featureId),
+  );
   toast(
-    `Deleted ${r.deleted} · ${r.agents.length} agent(s), no process left${kept ? ` · ${kept} worktree(s) kept` : ''}`,
+    `Deleted ${r.deleted} · ${r.agents.length} agent(s), no process left${kept ? ` · ${kept} worktree(s) kept` : ''}${branches}`,
     kept ? { kind: 'error' } : {},
   );
   await refresh();
@@ -2499,7 +2505,7 @@ export function decisionPushed(prev, d) {
   if (!text) return;
   if (state === 'failed')
     toast(text, { kind: 'error', sticky: true, action: { label: 'Show card', run: () => focusCard(d.id) } });
-  else if (d.lifecycle.effect === 'pr_opened' && d.lifecycle.effect_detail)
+  else if ((d.lifecycle.effect === 'pr_opened' || d.lifecycle.effect === 'pr_pushed') && d.lifecycle.effect_detail)
     toast(text, { action: { label: 'Open PR', run: () => openUrl(d.lifecycle.effect_detail) } });
   else toast(text);
 }

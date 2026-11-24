@@ -43,11 +43,25 @@ pub struct Feature {
     /// setting when it was created; `None` = the legacy folders.
     #[serde(default)]
     pub docs_location: Option<orch_team::DocsLocation>,
+    /// The integration branch when it is not `orch/<slug>/integration`: the
+    /// head branch of the PR the feature works on.
+    #[serde(default)]
+    pub branch: Option<String>,
+    /// The pull request the feature works on (launched from the PR list); the
+    /// team pushes to it and never opens one.
+    #[serde(default)]
+    pub pr_link: Option<PrLink>,
 }
 
 impl Feature {
+    /// The real integration branch: `branch` when set, else `orch/<slug>/integration`.
     pub fn integration_branch(&self) -> String {
-        format!("orch/{}/integration", self.slug)
+        self.branch.clone().unwrap_or_else(|| format!("orch/{}/integration", self.slug))
+    }
+
+    /// Works on someone else's PR (see [`Feature::pr_link`]).
+    pub fn is_linked(&self) -> bool {
+        self.pr_link.is_some()
     }
 
     /// The refs of its issues, in order.
@@ -59,6 +73,20 @@ impl Feature {
     pub fn issue_branch(&self, reference: &str) -> String {
         format!("orch/{}/issue/{}", self.slug, issue_key(reference))
     }
+}
+
+/// The pull request a linked feature works on, as it was at launch.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PrLink {
+    pub number: u64,
+    pub url: String,
+    pub head_ref: String,
+    pub base_ref: String,
+    /// The PR head when the feature was launched (`head_sha` in a launch request, api-contract §3).
+    #[serde(default, alias = "head_sha")]
+    pub head_sha_at_link: String,
+    #[serde(default)]
+    pub author: Option<String>,
 }
 
 /// An issue of a feature: a canonical `ref` (`#12` for the project's GitHub
@@ -225,6 +253,17 @@ pub struct PrStatus {
     /// The last check failed: the rest is the last good status.
     #[serde(default)]
     pub error: Option<String>,
+    /// The PR was not opened by the app: the feature is linked to it
+    /// (allow-launch-team-on-update-pr §5.6).
+    #[serde(default)]
+    pub linked: bool,
+    /// The head moved outside the app: not what the app pushed (or linked
+    /// at) and not in the local branch (G6).
+    #[serde(default)]
+    pub foreign_head: bool,
+    /// That moved head while `foreign_head` (F4); the lead is told once per sha.
+    #[serde(default)]
+    pub foreign_head_sha: Option<String>,
 }
 
 /// CI of a PR: one job per CheckRun / StatusContext.
@@ -839,7 +878,7 @@ fn shadowed<T: serde::de::DeserializeOwned>(rows: Vec<(String, String, String)>)
         .collect()
 }
 
-const FEATURE_COLS: &str = "id, project_id, slug, title, brief, base, integration_worktree, allocation, created_at_ms, archived, issues, pr_mode, docs_location";
+const FEATURE_COLS: &str = "id, project_id, slug, title, brief, base, integration_worktree, allocation, created_at_ms, archived, issues, pr_mode, docs_location, branch, pr_link";
 
 fn row_feature(r: &rusqlite::Row) -> rusqlite::Result<Feature> {
     Ok(Feature {
@@ -864,6 +903,8 @@ fn row_feature(r: &rusqlite::Row) -> rusqlite::Result<Feature> {
         pr_mode: PrMode::parse(&r.get::<_, String>(11)?).unwrap_or_default(),
         // Unreadable JSON reads as the legacy folders rather than hiding the feature.
         docs_location: r.get::<_, Option<String>>(12)?.and_then(|s| serde_json::from_str(&s).ok()),
+        branch: r.get(13)?,
+        pr_link: r.get::<_, Option<String>>(14)?.and_then(|s| serde_json::from_str(&s).ok()),
     })
 }
 
@@ -1107,11 +1148,11 @@ impl Store {
         self.write_touching(topics, move |tx| {
             tx.execute(
                 &format!(
-                    "INSERT INTO features({FEATURE_COLS}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)
+                    "INSERT INTO features({FEATURE_COLS}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)
                      ON CONFLICT(id) DO UPDATE SET title=excluded.title, brief=excluded.brief, base=excluded.base,
                        integration_worktree=excluded.integration_worktree, allocation=excluded.allocation,
                        archived=excluded.archived, issues=excluded.issues, pr_mode=excluded.pr_mode,
-                       docs_location=excluded.docs_location"
+                       docs_location=excluded.docs_location, branch=excluded.branch, pr_link=excluded.pr_link"
                 ),
                 params![
                     f.id,
@@ -1126,7 +1167,9 @@ impl Store {
                     f.archived,
                     js(&f.issues),
                     f.pr_mode.as_str(),
-                    f.docs_location.as_ref().map(js)
+                    f.docs_location.as_ref().map(js),
+                    f.branch,
+                    f.pr_link.as_ref().map(js)
                 ],
             )?;
             Ok(())
@@ -1159,6 +1202,19 @@ impl Store {
         self.read(move |c| {
             let mut st = c.prepare(&format!(
                 "SELECT {FEATURE_COLS} FROM features WHERE archived=0 AND (?1 IS NULL OR project_id=?1)
+                 ORDER BY created_at_ms DESC, id"
+            ))?;
+            Ok(st.query_map([p], row_feature)?.collect::<rusqlite::Result<_>>()?)
+        })
+    }
+
+    /// A project's features on a PR (`pr_link` set), archived ones too:
+    /// their branches stay protected after a delete that kept the worktree.
+    pub fn linked_features(&self, project_id: &str) -> Result<Vec<Feature>> {
+        let p = project_id.to_string();
+        self.read(move |c| {
+            let mut st = c.prepare(&format!(
+                "SELECT {FEATURE_COLS} FROM features WHERE project_id=?1 AND pr_link IS NOT NULL
                  ORDER BY created_at_ms DESC, id"
             ))?;
             Ok(st.query_map([p], row_feature)?.collect::<rusqlite::Result<_>>()?)
@@ -1929,10 +1985,40 @@ mod tests {
             issues: vec![],
             pr_mode: Default::default(),
             docs_location: None,
+            branch: None,
+            pr_link: None,
         };
         s.upsert_feature(&f).unwrap();
         assert_eq!(s.feature_by_slug("p1", "checkout-v2").unwrap().unwrap().id, "f1");
         assert_eq!(f.integration_branch(), "orch/checkout-v2/integration");
+        assert_eq!(s.feature("f1").unwrap().unwrap().branch, None, "unlinked: NULL");
+        // A feature on a PR: its real branch and the link round-trip.
+        let link = PrLink {
+            number: 42,
+            url: "https://github.com/o/r/pull/42".into(),
+            head_ref: "renovate/foo".into(),
+            base_ref: "main".into(),
+            head_sha_at_link: "9f2c".into(),
+            author: Some("renovate[bot]".into()),
+        };
+        let linked = Feature {
+            id: "f9".into(),
+            slug: "pr-42".into(),
+            branch: Some("renovate/foo".into()),
+            pr_link: Some(link),
+            ..f.clone()
+        };
+        s.upsert_feature(&linked).unwrap();
+        let back = s.feature("f9").unwrap().unwrap();
+        assert_eq!(back, linked);
+        assert_eq!((back.integration_branch().as_str(), back.is_linked()), ("renovate/foo", true));
+        assert_eq!(s.linked_features("p1").unwrap().len(), 1, "only the linked one");
+        s.upsert_feature(&Feature { archived: true, ..linked.clone() }).unwrap();
+        assert_eq!(s.linked_features("p1").unwrap()[0].id, "f9", "archived ones too");
+        assert_eq!(s.features(Some("p1")).unwrap().len(), 1);
+        s.upsert_feature(&Feature { pr_link: None, branch: None, ..linked }).unwrap();
+        assert!(s.linked_features("p1").unwrap().is_empty());
+        assert_eq!(s.feature("f9").unwrap().unwrap().pr_link, None, "updated on conflict");
         let mut run = TeamRun {
             id: "r1".into(),
             team_id: "full-stack".into(),
@@ -1973,6 +2059,9 @@ mod tests {
             rewritten: false,
             checked_at_ms: 9,
             error: None,
+            linked: true,
+            foreign_head: true,
+            foreign_head_sha: Some("abc".into()),
         });
         s.upsert_run(&run).unwrap();
         assert_eq!(s.run("r1").unwrap().unwrap(), run, "the PR status round-trips");
@@ -2208,6 +2297,8 @@ mod tests {
             issues: vec![],
             pr_mode: Default::default(),
             docs_location: None,
+            branch: None,
+            pr_link: None,
         })
         .unwrap();
         s.delete_project("p1").unwrap();

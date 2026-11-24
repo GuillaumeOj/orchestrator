@@ -69,7 +69,7 @@ impl Runtime {
         Ok(p)
     }
 
-    fn project(&self, id: &str) -> Result<Project> {
+    pub(crate) fn project(&self, id: &str) -> Result<Project> {
         self.db.project(id)?.ok_or_else(|| anyhow!("no project {id}"))
     }
 
@@ -129,7 +129,7 @@ impl Runtime {
             "agents": agents,
         });
         if with_prs {
-            v["prs"] = match orch_git::gh::prs(&p.path) {
+            v["prs"] = match self.pr_list(&p) {
                 Ok(prs) => json!(prs),
                 Err(e) => json!({"error": format!("{e:#}")}),
             };
@@ -190,8 +190,9 @@ impl Runtime {
             bail!("agent {a} uses this worktree: archive or kill it first");
         }
         let confirm = if confirm_discard { Confirm::DiscardUnmerged } else { Confirm::Safe };
+        let prs = project::pr_branches(&self.db, &p.id);
         let Some(out) = self.remove_one(&p, &wt, |base, branch| {
-            cleanup::remove_worktree_of(&p.path, &wt, base, branch, delete_branch, confirm)
+            cleanup::remove_worktree_of(&p.path, &wt, base, branch, &prs, delete_branch, confirm)
         })?
         else {
             if wt.exists() {
@@ -229,6 +230,7 @@ impl Runtime {
                 _ => false,
             })
             .collect();
+        let prs = project::pr_branches(&self.db, &p.id);
         let mut report = PruneReport::default();
         for w in gone {
             let wt = resolve(&w.path);
@@ -236,7 +238,7 @@ impl Runtime {
                 report.skipped.push(Skipped { path: w.path, reason: format!("agent {a} uses this worktree") });
                 continue;
             }
-            match self.remove_one(&p, &wt, |base, branch| cleanup::prune_worktree(&p.path, &wt, base, branch)) {
+            match self.remove_one(&p, &wt, |base, branch| cleanup::prune_worktree(&p.path, &wt, base, branch, &prs)) {
                 Ok(Some(o)) => {
                     if o.branch_deleted
                         && let Some(b) = &w.branch

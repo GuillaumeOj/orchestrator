@@ -9,7 +9,7 @@ use orch_protocol::WorktreeKindSpec;
 pub use orch_store::{WorktreeRow, WorktreeRowState};
 
 pub use crate::git::git;
-use crate::git::{git_ok, real, valid_id};
+use crate::git::{git_ok, is_app_branch, real, valid_branch, valid_id};
 
 /// Where worktree rows are kept: the core's store (the runtime's in-memory
 /// mirror, or `orch_store::Store` directly). Creation writes the row before
@@ -54,12 +54,17 @@ pub fn layout(repo: &Path, kind: &WorktreeKindSpec) -> Result<(PathBuf, String)>
             check(slug)?;
             (root.join("solo").join(slug), format!("orch/solo/{slug}"))
         }
-        WorktreeKindSpec::Integration { feature } => {
+        WorktreeKindSpec::Integration { feature, branch } => {
             check(feature)?;
             if feature == "solo" {
                 bail!("\"solo\" is reserved");
             }
-            (root.join(feature).join("integration"), format!("orch/{feature}/integration"))
+            let branch = match branch {
+                Some(b) if !valid_branch(b) => bail!("invalid branch {b:?}"),
+                Some(b) => b.clone(),
+                None => format!("orch/{feature}/integration"),
+            };
+            (root.join(feature).join("integration"), branch)
         }
         WorktreeKindSpec::Team { feature, role, n } => {
             check(feature)?;
@@ -150,6 +155,11 @@ pub fn branch_exists(repo: &Path, branch: &str) -> bool {
     git_ok(repo, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")])
 }
 
+/// `refs/remotes/origin/<branch>` exists (as last fetched).
+pub fn remote_branch_exists(repo: &Path, branch: &str) -> bool {
+    git_ok(repo, &["rev-parse", "--verify", "--quiet", &format!("refs/remotes/origin/{branch}")])
+}
+
 /// Creates (or finishes creating) a worktree. Each step is idempotent:
 /// 1. DB row `creating`; 2. `git worktree add` unless git already has it;
 /// 3. `git worktree lock` unless locked; 4. row `ready`.
@@ -172,6 +182,11 @@ pub fn ensure(
     let (path, branch) = layout(&repo, kind)?;
     if let Some(row) = store.get_row(&path) {
         if row.state == WorktreeRowState::Ready && path.is_dir() {
+            // The same path on another branch (a feature deleted without its
+            // worktrees, launched again on a PR): never reused as this one.
+            if row.branch != branch {
+                bail!("{} is on {}, not {branch}: remove that worktree first", path.display(), row.branch);
+            }
             lock(&repo, &path, row.agent_id.as_deref())?;
             return Ok(row);
         }
@@ -200,8 +215,13 @@ pub fn complete(store: &dyn WorktreeLedger, row: &WorktreeRow) -> Result<Worktre
             std::fs::create_dir_all(parent)?;
         }
         let p = row.path.display().to_string();
+        let remote = format!("origin/{}", row.branch);
         if branch_exists(repo, &row.branch) {
             git(repo, &["worktree", "add", "-q", &p, &row.branch])?;
+        } else if !is_app_branch(&row.branch) && remote_branch_exists(repo, &row.branch) {
+            // Someone else's branch (a PR head): cut from its remote, never
+            // from the base, also when the reconciler finishes the row.
+            git(repo, &["worktree", "add", "-q", "--track", "-b", &row.branch, &p, &remote])?;
         } else {
             git(repo, &["worktree", "add", "-q", "-b", &row.branch, &p, &row.base])?;
         }
@@ -301,7 +321,7 @@ mod tests {
         let r = Path::new("/x/proj/demo");
         let (p, b) = layout(r, &WorktreeKindSpec::Solo { slug: "fix".into() }).unwrap();
         assert_eq!((p, b.as_str()), (PathBuf::from("/x/proj/demo.worktrees/solo/fix"), "orch/solo/fix"));
-        let (p, b) = layout(r, &WorktreeKindSpec::Integration { feature: "checkout".into() }).unwrap();
+        let (p, b) = layout(r, &WorktreeKindSpec::Integration { feature: "checkout".into(), branch: None }).unwrap();
         assert_eq!(
             (p, b.as_str()),
             (PathBuf::from("/x/proj/demo.worktrees/checkout/integration"), "orch/checkout/integration")
@@ -313,7 +333,12 @@ mod tests {
             (PathBuf::from("/x/proj/demo.worktrees/checkout/backend-2"), "orch/checkout/backend-2")
         );
         assert!(layout(r, &WorktreeKindSpec::Solo { slug: "../x".into() }).is_err());
-        assert!(layout(r, &WorktreeKindSpec::Integration { feature: "solo".into() }).is_err());
+        assert!(layout(r, &WorktreeKindSpec::Integration { feature: "solo".into(), branch: None }).is_err());
+        let pr = |b: &str| WorktreeKindSpec::Integration { feature: "pr-42".into(), branch: Some(b.into()) };
+        let (p, b) = layout(r, &pr("renovate/tokio-1.x")).unwrap();
+        assert_eq!((p, b.as_str()), (PathBuf::from("/x/proj/demo.worktrees/pr-42/integration"), "renovate/tokio-1.x"));
+        assert!(layout(r, &pr("-x")).is_err());
+        assert!(layout(r, &pr("a..b")).is_err());
     }
 
     #[test]
