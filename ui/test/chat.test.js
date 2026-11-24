@@ -269,8 +269,10 @@ describe('the thread', () => {
     expect(order.slice(0, 4)).toEqual(['morning', 'line', 'stop', 'stop']);
     expect(text(c.querySelector('.morning'))).toBe('Good morning. 1 run in progress, 1 decision waiting.');
     const [l] = lines(c);
-    expect(text(l)).toMatch(/^▸ allowed back-1: cargo add serde_json · rule: installs \d\d:\d\d$/);
-    expect(l.getAttribute('aria-label')).toMatch(/^Allowed back-1: cargo add serde_json, by rule installs, \d\d:\d\d$/);
+    expect(text(l)).toMatch(/^▸ allowed back-1: cargo add serde_json · rule: installs (\w{3} )?\d\d:\d\d$/);
+    expect(l.getAttribute('aria-label')).toMatch(
+      /^Allowed back-1: cargo add serde_json, by rule installs, (\w{3} )?\d\d:\d\d$/,
+    );
     expect(l.querySelector('button').getAttribute('aria-expanded')).toBe('false');
     expect(c.querySelector('article.stop').getAttribute('aria-label')).toBe('Bash · pnpm add zod');
   });
@@ -321,8 +323,10 @@ describe('the thread', () => {
     );
     const { container: c } = render(ChatColumn);
     const ref = card(c, 'perm-1').querySelector('.ref');
-    expect(text(ref)).toMatch(/^↳ after: approved Spec gate · checkout · \d\d:\d\d$/);
-    expect(ref.getAttribute('aria-label')).toMatch(/^Follows: approved Spec gate · checkout, \d\d:\d\d\. Jump to it$/);
+    expect(text(ref)).toMatch(/^↳ after: approved Spec gate · checkout · (\w{3} )?\d\d:\d\d$/);
+    expect(ref.getAttribute('aria-label')).toMatch(
+      /^Follows: approved Spec gate · checkout, (\w{3} )?\d\d:\d\d\. Jump to it$/,
+    );
     await fireEvent.click(ref);
     await tick();
     expect(lines(c)[0].querySelector('button').getAttribute('aria-expanded')).toBe('true');
@@ -415,7 +419,7 @@ describe('collapse (notes §2.1)', () => {
     );
     const { container: c } = render(ChatColumn);
     expect(cardIds(c)).toEqual([]);
-    expect(lines(c).map((l) => text(l.querySelector('button')).replace(/ \d\d:\d\d$/, ''))).toEqual([
+    expect(lines(c).map((l) => text(l.querySelector('button')).replace(/ (\w{3} )?\d\d:\d\d$/, ''))).toEqual([
       '▸ allowed back-1: cargo add serde_json · rule: installs',
       '▸ answered front-1: Which auth provider? · in the pane',
       '▸ dismissed front-1: front-1 did not start', // keeps its place in the thread

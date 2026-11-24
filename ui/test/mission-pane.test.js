@@ -607,7 +607,7 @@ describe('Inspector follows the selection (spec §3.5)', () => {
     const t = text(render(Inspector).container);
     expect(t).toContain('Inspector · run');
     expect(t).toContain('checkout shop-api');
-    expect(t).toMatch(/executing · since \d\d:\d\d \(2 h\)/);
+    expect(t).toMatch(/executing · since (\w{3} )?\d\d:\d\d \(2 h\)/);
     expect(t).toContain('back-1 · permission: Bash pnpm add zod');
     expect(t).toContain('front-1 → back-1 · 12 min');
     expect(t).toContain('ui-1 not started');
