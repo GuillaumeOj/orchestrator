@@ -543,7 +543,7 @@ describe('the rule proposal card', () => {
     const at = Date.now() - 60000;
     const c = await open({ ...prop, payload: { ...prop.payload, edited_at_ms: at } });
     expect(text(cardOf(c).querySelector('.lc'))).toMatch(
-      /Opened in nvim · \d\d:\d\d\. Uncomment the rule to enable it\.$/,
+      /Opened in nvim · (\w{3} )?\d\d:\d\d\. Uncomment the rule to enable it\.$/,
     );
     expect(cardOf(c).querySelectorAll('.actions button')).toHaveLength(3);
   });

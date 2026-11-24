@@ -257,7 +257,7 @@ describe('agent pane: header and strips (§1.3.1)', () => {
     const b = p.strip.querySelector('button');
     expect(txt(b)).toBe('Resume');
     expect(b.disabled).toBe(true);
-    expect(txt(p.strip)).toMatch(/Blocked by the 5-hour limit · resets \d\d:\d\d/);
+    expect(txt(p.strip)).toMatch(/Blocked by the 5-hour limit · resets (\w{3} )?\d\d:\d\d/);
   });
 
   it('the WaitingChip is in the strip while one shows, else in the header', () => {
