@@ -192,7 +192,7 @@ impl Output {
 pub const DEFAULT_ROWS: u16 = 50;
 pub const DEFAULT_COLS: u16 = 160;
 
-/// The screen model panics on an empty grid: one cell at least.
+/// The screen model takes a grid of one cell at least (`NonZeroU16`): a zero size from the PTY is clamped to 1.
 fn grid(rows: u16, cols: u16) -> (NonZeroU16, NonZeroU16) {
     (NonZeroU16::new(rows).unwrap_or(NonZeroU16::MIN), NonZeroU16::new(cols).unwrap_or(NonZeroU16::MIN))
 }
