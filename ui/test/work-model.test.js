@@ -474,7 +474,7 @@ describe('states copy (§11)', () => {
   it('status lines: offline, error with Fix, complexity, gh_sub_issues, gh_scope', () => {
     const p = { id: 'shop-api', name: 'shop-api', label: 'acme/shop', kind: 'github' };
     expect(statusLine(p, { status: 'ok', offline: true, refreshed_at_ms: now - 3600000 }, now).text).toMatch(
-      /^Showing what was cached at \d\d:\d\d\. Starting still works; write-back waits\.$/,
+      /^Showing what was cached at (\w{3} )?\d\d:\d\d\. Starting still works; write-back waits\.$/,
     );
     expect(
       statusLine(p, { status: 'error', error: { code: 'gh_auth' }, refreshed_at_ms: now - 3 * 3600000 }, now),

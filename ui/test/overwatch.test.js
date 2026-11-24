@@ -468,11 +468,11 @@ describe('text entries (notes §2.1)', () => {
     );
     expect(order.slice(0, 3)).toEqual(['c-1', 'card', 'c-3']);
     const user = c.querySelector('[data-entry="c-1"]');
-    expect(user.getAttribute('aria-label')).toMatch(/^You, \d\d:\d\d$/);
+    expect(user.getAttribute('aria-label')).toMatch(/^You, (\w{3} )?\d\d:\d\d$/);
     expect(user.querySelector('strong')).toBeNull(); // plain text: no markdown for your own message
     expect(text(user)).toContain('why is **checkout** slow?');
     const reply = c.querySelector('[data-entry="c-3"]');
-    expect(reply.getAttribute('aria-label')).toMatch(/^Overwatch, \d\d:\d\d$/);
+    expect(reply.getAttribute('aria-label')).toMatch(/^Overwatch, (\w{3} )?\d\d:\d\d$/);
     expect(reply.querySelector('code').textContent).toBe('back-1');
     expect([...reply.querySelectorAll('li')].map(text)).toEqual(['the live cap', 'a permission']);
   });
@@ -883,7 +883,7 @@ describe('the annotation (notes §4)', () => {
     const srcs = () => [...card(c, 'perm-1').querySelectorAll('.srcs > *:not([aria-hidden])')].map(text);
     expect(srcs()).toEqual([
       'allow-list.md §2 ↗',
-      expect.stringMatching(/^your message \d\d:\d\d ↗$/),
+      expect.stringMatching(/^your message (\w{3} )?\d\d:\d\d ↗$/),
       'back-1 ↗',
       '+ 2 more',
     ]);
